@@ -297,6 +297,54 @@ export interface NICInfo {
   interfaceIndex?: number;
 }
 
+export interface WindowsAdapterSnapshot {
+  interfaceIndex: number;
+  interfaceAlias: string;
+  interfaceDescription?: string;
+  mediaType: 'ETHERNET' | 'WIFI' | 'OTHER';
+  operationalStatus: string;
+  eligible: boolean;
+  eligibilityReason?: string;
+  dhcpEnabled: boolean;
+  ipv4Addresses: Array<{ address: string; prefixLength: number }>;
+  defaultGateways: string[];
+  dnsAutomatic: boolean;
+  dnsServers: string[];
+  capturedAt: string;
+}
+
+export type PairState =
+  | 'IDLE' | 'PREPARING' | 'CHECKING_ADDRESS' | 'READY_FOR_CONFIRMATION'
+  | 'APPLYING' | 'VERIFYING' | 'PAIRED' | 'RESTORING' | 'RESTORED'
+  | 'FAILED' | 'ROLLBACK_REQUIRED' | 'CANCELLED';
+
+export interface PairCandidate {
+  ipAddress: string;
+  prefixLength: number;
+  confidence: 'AVAILABLE' | 'UNCERTAIN';
+  evidence: string[];
+}
+
+export interface PairSessionState {
+  id: string;
+  state: PairState;
+  deviceId: string;
+  cameraIp: string;
+  cameraSubnetMask: string;
+  adapter: WindowsAdapterSnapshot;
+  originalAdapter: WindowsAdapterSnapshot;
+  candidates: PairCandidate[];
+  selectedCandidate?: PairCandidate;
+  createdAt: string;
+  updatedAt: string;
+  technicianConfirmedAt?: string;
+  adapterConfigurationVerified?: boolean;
+  cameraReachabilityVerified?: boolean;
+  message?: string;
+  errorCode?: string;
+  recoveryAvailable: boolean;
+}
+
 export type WorkMode = 'QUICK_WORK' | 'PROJECT';
 
 export interface ProjectSession {

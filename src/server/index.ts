@@ -15,12 +15,14 @@ import { BulkReIpEngine } from '../core/engine/bulk_reip.ts';
 import { ProjectReverificationEngine } from '../core/engine/reverification.ts';
 import { ProjectValidationError } from '../core/storage/project_db.ts';
 import { DeviceDiagnosticEngine, DiagnosticRefreshMonitor } from '../core/engine/diagnostic_engine.ts';
+import { PairService } from '../core/network/pair_service.ts';
 
 const app = express();
 const server = createServer(app);
 const wss = new WebSocketServer({ server, path: '/ws' });
 const diagnosticEngine = new DeviceDiagnosticEngine();
 const diagnosticControllers = new Map<string, AbortController>();
+const pairService = new PairService();
 
 app.use(cors());
 app.use(express.json());
@@ -46,6 +48,9 @@ const diagnosticMonitor = new DiagnosticRefreshMonitor(
   3,
 );
 diagnosticMonitor.start();
+pairService.initializeRecovery().then(state => {
+  if (state) broadcast({ type: 'PAIR_STATE_CHANGED', data: { pair: state } });
+}).catch(error => console.error('Pair recovery inspection failed:', error instanceof Error ? error.message : error));
 
 // Wire pipeline events to WebSocket clients
 pipelineEngine.subscribe(event => {
@@ -208,6 +213,34 @@ app.get('/api/diagnostics/refresh', (req, res) => res.json(diagnosticMonitor.get
 app.post('/api/diagnostics/refresh/start', (req, res) => { diagnosticMonitor.start(); res.json(diagnosticMonitor.getState()); });
 app.post('/api/diagnostics/refresh/stop', (req, res) => { diagnosticMonitor.stop(); res.json(diagnosticMonitor.getState()); });
 app.post('/api/diagnostics/refresh/run', (req, res) => { res.status(202).json({ started: true }); void diagnosticMonitor.refreshNow(); });
+
+// Pair PC to Camera Network — fixed operations only; no arbitrary command surface.
+app.get('/api/pair/adapters', async (req, res) => {
+  try { res.json(await pairService.getEligibleAdapters()); }
+  catch (error) { res.status(500).json({ error: error instanceof Error ? error.message : 'Unable to inspect Windows adapters.' }); }
+});
+app.get('/api/pair/status', (req, res) => res.json(pairService.getStatus()));
+app.post('/api/pair/prepare', async (req, res) => {
+  try {
+    const pair = await pairService.prepare(String(req.body.deviceId || ''), Number(req.body.interfaceIndex));
+    broadcast({ type: 'PAIR_STATE_CHANGED', data: { pair } }); res.json(pair);
+  } catch (error: any) { res.status(400).json({ error: error?.message || 'Pair preparation failed.', code: error?.code }); }
+});
+app.post('/api/pair/candidate', (req, res) => {
+  try { const pair = pairService.selectCandidate(String(req.body.ipAddress || '')); broadcast({ type: 'PAIR_STATE_CHANGED', data: { pair } }); res.json(pair); }
+  catch (error: any) { res.status(400).json({ error: error?.message || 'Candidate selection failed.', code: error?.code }); }
+});
+app.post('/api/pair/confirm', async (req, res) => {
+  try {
+    const pair = await pairService.confirmAndApply(String(req.body.sessionId || ''), req.body.confirmed === true);
+    broadcast({ type: 'PAIR_STATE_CHANGED', data: { pair, project: projectDb.getProject() } }); res.json(pair);
+  } catch (error: any) { const pair = pairService.getStatus(); broadcast({ type: 'PAIR_STATE_CHANGED', data: { pair } }); res.status(error?.code === 'ADMIN_REQUIRED' ? 403 : 400).json({ error: error?.message || 'Pair failed.', code: error?.code, pair }); }
+});
+app.post('/api/pair/restore', async (req, res) => {
+  try { const pair = await pairService.restore(); broadcast({ type: 'PAIR_STATE_CHANGED', data: { pair } }); res.json(pair); }
+  catch (error: any) { const pair = pairService.getStatus(); broadcast({ type: 'PAIR_STATE_CHANGED', data: { pair } }); res.status(400).json({ error: error?.message || 'Restore failed.', code: error?.code, pair }); }
+});
+app.post('/api/pair/cancel', (req, res) => { const pair = pairService.cancelPreparation(); broadcast({ type: 'PAIR_STATE_CHANGED', data: { pair } }); res.json(pair); });
 
 app.post('/api/discovery/stop', (req, res) => {
   const stopped = pipelineEngine.stopDiscovery();

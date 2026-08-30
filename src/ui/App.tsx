@@ -8,6 +8,7 @@ import {
   NICInfo,
   OnvifCustomConfig,
   ProjectSession,
+  PairSessionState,
 } from '../types/index.ts';
 import { MasterDeviceTable } from './components/MasterDeviceTable.tsx';
 import { DuplicateDrawer } from './components/DuplicateDrawer.tsx';
@@ -22,6 +23,7 @@ import { DeviceInspectorDrawer } from './components/DeviceInspectorDrawer.tsx';
 import { BulkReIpModal } from './components/BulkReIpModal.tsx';
 import { AvailableIpFinderModal } from './components/AvailableIpFinderModal.tsx';
 import { SiteSurveyReportModal } from './components/SiteSurveyReportModal.tsx';
+import { PairNetworkModal } from './components/PairNetworkModal.tsx';
 import { BulkReIpPlanItem } from '../core/engine/bulk_reip.ts';
 import {
   ShieldCheck,
@@ -52,6 +54,9 @@ export default function App() {
   const [interfaces, setInterfaces] = useState<NICInfo[]>([]);
   const [isScanning, setIsScanning] = useState(false);
   const [diagnosticRefresh, setDiagnosticRefresh] = useState<{ enabled: boolean; running: boolean; intervalMs: number }>({ enabled: false, running: false, intervalMs: 30000 });
+  const [pairSession, setPairSession] = useState<PairSessionState | null>(null);
+  const [pairDevice, setPairDevice] = useState<Device | null>(null);
+  const [pairModalDismissed, setPairModalDismissed] = useState(false);
 
   // Search & Filters (Sections 7 & 8)
   const [searchQuery, setSearchQuery] = useState('');
@@ -86,10 +91,11 @@ export default function App() {
   // Fetch initial data
   const fetchData = async () => {
     try {
-      const [sessionRes, auditRes, refreshRes] = await Promise.all([
+      const [sessionRes, auditRes, refreshRes, pairRes] = await Promise.all([
         fetch('http://localhost:3001/api/project/session'),
         fetch('http://localhost:3001/api/audit-logs'),
         fetch('http://localhost:3001/api/diagnostics/refresh'),
+        fetch('http://localhost:3001/api/pair/status'),
       ]);
 
       if (sessionRes.ok) {
@@ -99,6 +105,7 @@ export default function App() {
       }
       if (auditRes.ok) setAuditLogs(await auditRes.json());
       if (refreshRes.ok) setDiagnosticRefresh(await refreshRes.json());
+      if (pairRes.ok) setPairSession(await pairRes.json());
     } catch (err) {
       console.error('Failed to fetch backend data:', err);
     }
@@ -122,6 +129,10 @@ export default function App() {
           setProject(data.data.project);
           setSelectedDeviceForInspector(current => current?.id === data.data.device?.id ? data.data.device : current);
           if (data.data.refresh) setDiagnosticRefresh(data.data.refresh);
+        }
+        if (data.type === 'PAIR_STATE_CHANGED') {
+          setPairSession(data.data?.pair || null);
+          if (data.data?.project) setProject(data.data.project);
         }
         if ((data.type === 'PROJECT_SESSION_CHANGED' || data.type === 'PROJECT_SAVED') && data.data?.session) {
           setProjectSession(data.data.session);
@@ -517,6 +528,11 @@ export default function App() {
 
         {/* Section 13.3 Rogue DHCP Banner (if detected) */}
         {project && <RogueDhcpBanner rogueEvents={project.rogueDhcpEvents} />}
+        {pairSession?.recoveryAvailable && ['PAIRED', 'ROLLBACK_REQUIRED'].includes(pairSession.state) && (
+          <button onClick={() => { const device = project?.devices.find(item => item.id === pairSession.deviceId) || null; setPairDevice(device); setPairModalDismissed(false); }} className="w-full p-3 rounded-xl border border-amber-600/60 bg-amber-950/40 text-amber-200 text-xs flex items-center justify-center gap-2">
+            <Network className="w-4 h-4" />Temporary adapter Pair may be active on {pairSession.originalAdapter.interfaceAlias}. Review or restore original network configuration.
+          </button>
+        )}
 
         {/* Workspace Toolbar: Search, Filters & Network Adapter Info (Sections 7, 8, 24) */}
         <div className="bg-slate-900 border border-slate-800 rounded-xl p-3 flex flex-wrap items-center justify-between gap-3 shadow-sm">
@@ -622,6 +638,7 @@ export default function App() {
           onInspectDevice={(dev) => setSelectedDeviceForInspector(dev)}
           onOpenBrowser={handleOpenBrowser}
           onDiagnose={(dev) => handleDiagnose([dev]).catch(error => window.alert(error.message))}
+          onPair={(dev) => { setPairDevice(dev); setPairModalDismissed(false); }}
         />
       </main>
 
@@ -666,6 +683,14 @@ export default function App() {
           setSelectedDeviceForBrowser(dev);
         }}
         onDiagnose={(dev) => handleDiagnose([dev]).catch(error => window.alert(error.message))}
+      />
+
+      <PairNetworkModal
+        isOpen={pairDevice !== null || Boolean(!pairModalDismissed && pairSession?.recoveryAvailable && ['PAIRED', 'ROLLBACK_REQUIRED'].includes(pairSession.state))}
+        device={pairDevice || project?.devices.find(device => device.id === pairSession?.deviceId) || null}
+        pair={pairSession}
+        onClose={() => { setPairDevice(null); setPairModalDismissed(true); }}
+        onPairUpdated={(pair) => { setPairSession(pair); if (pair.state === 'RESTORED' || pair.state === 'CANCELLED') setPairDevice(null); fetchData(); }}
       />
 
       {/* Section 5: Bulk Re-IP Modal with Conflict Audit */}

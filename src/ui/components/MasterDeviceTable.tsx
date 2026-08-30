@@ -13,6 +13,7 @@ import {
   StickyNote,
   Video,
   Activity,
+  Network,
 } from 'lucide-react';
 
 interface MasterDeviceTableProps {
@@ -27,6 +28,7 @@ interface MasterDeviceTableProps {
   onInspectDevice: (dev: Device) => void;
   onOpenBrowser: (dev: Device, mode: 'EMBEDDED' | 'EDGE' | 'CHROME' | 'SYSTEM') => void;
   onDiagnose: (dev: Device) => void;
+  onPair: (dev: Device) => void;
 }
 
 export const MasterDeviceTable: React.FC<MasterDeviceTableProps> = ({
@@ -41,6 +43,7 @@ export const MasterDeviceTable: React.FC<MasterDeviceTableProps> = ({
   onInspectDevice,
   onOpenBrowser,
   onDiagnose,
+  onPair,
 }) => {
   const [editingNameId, setEditingNameId] = useState<string | null>(null);
   const [tempName, setTempName] = useState<string>('');
@@ -329,6 +332,16 @@ export const MasterDeviceTable: React.FC<MasterDeviceTableProps> = ({
                           <Video className="w-3 h-3 text-sky-400" />
                           Inspect
                         </button>
+
+                        {dev.status === 'DIFFERENT_SUBNET' && (
+                          <button
+                            onClick={() => onPair(dev)}
+                            title="Temporarily match a selected PC adapter to this camera network"
+                            className="px-2.5 py-1 rounded bg-purple-900/50 hover:bg-purple-700 text-purple-200 transition font-medium text-[11px] flex items-center gap-1"
+                          >
+                            <Network className="w-3 h-3" />Pair
+                          </button>
+                        )}
 
                         <button
                           onClick={() => onDiagnose(dev)}
