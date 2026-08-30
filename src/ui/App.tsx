@@ -1,11 +1,12 @@
 import React, { useState, useEffect } from 'react';
-import { SiteProject, PhaseState, Device, IPCollisionRecord, RogueDHCPOffer, AuditLogEntry } from '../types/index.ts';
+import { SiteProject, PhaseState, Device, IPCollisionRecord, RogueDHCPOffer, AuditLogEntry, OnvifCustomConfig } from '../types/index.ts';
 import { ExecutionPipeline } from './components/ExecutionPipeline.tsx';
 import { DeviceGrid } from './components/DeviceGrid.tsx';
 import { DuplicateDrawer } from './components/DuplicateDrawer.tsx';
 import { RogueDhcpBanner } from './components/RogueDhcpBanner.tsx';
 import { LegacyOnboardModal } from './components/LegacyOnboardModal.tsx';
 import { AuditReportModal } from './components/AuditReportModal.tsx';
+import { DeviceConfigModal } from './components/DeviceConfigModal.tsx';
 import {
   ShieldCheck,
   HardDrive,
@@ -17,6 +18,7 @@ import {
   AlertTriangle,
   Flame,
   Activity,
+  Cpu,
 } from 'lucide-react';
 
 export default function App() {
@@ -29,6 +31,7 @@ export default function App() {
   const [isDuplicateDrawerOpen, setIsDuplicateDrawerOpen] = useState(false);
   const [isLegacyModalOpen, setIsLegacyModalOpen] = useState(false);
   const [isAuditModalOpen, setIsAuditModalOpen] = useState(false);
+  const [selectedDeviceForConfig, setSelectedDeviceForConfig] = useState<Device | null>(null);
 
   // Fetch initial state
   const fetchData = async () => {
@@ -55,7 +58,13 @@ export default function App() {
     ws.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data);
-        if (data.type === 'PHASE_COMPLETE' || data.type === 'PIPELINE_COMPLETE' || data.type === 'COLLISION_RESOLVED' || data.type === 'DEVICE_ONBOARDED') {
+        if (
+          data.type === 'PHASE_COMPLETE' ||
+          data.type === 'PIPELINE_COMPLETE' ||
+          data.type === 'COLLISION_RESOLVED' ||
+          data.type === 'DEVICE_ONBOARDED' ||
+          data.type === 'DEVICE_CONFIG_UPDATED'
+        ) {
           fetchData();
         }
       } catch (err) {
@@ -107,6 +116,18 @@ export default function App() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
+    });
+    await fetchData();
+  };
+
+  const handleSaveDeviceConfig = async (
+    mac: string,
+    config: { onvifConfig: OnvifCustomConfig; manufacturerParams: Record<string, any> }
+  ) => {
+    await fetch(`http://localhost:3001/api/device/${mac}/config`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(config),
     });
     await fetchData();
   };
@@ -231,6 +252,7 @@ export default function App() {
           <DeviceGrid
             devices={project.devices}
             onOpenDuplicateDrawer={() => setIsDuplicateDrawerOpen(true)}
+            onConfigureDevice={(dev) => setSelectedDeviceForConfig(dev)}
           />
         )}
       </main>
@@ -270,6 +292,14 @@ export default function App() {
           auditLogs={auditLogs}
         />
       )}
+
+      {/* Device Configuration & ONVIF Studio Modal */}
+      <DeviceConfigModal
+        isOpen={selectedDeviceForConfig !== null}
+        onClose={() => setSelectedDeviceForConfig(null)}
+        device={selectedDeviceForConfig}
+        onSave={handleSaveDeviceConfig}
+      />
     </div>
   );
 }

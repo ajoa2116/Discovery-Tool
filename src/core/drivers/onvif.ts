@@ -1,4 +1,4 @@
-import { Device, ProtocolType } from '../../types/index.ts';
+import { Device, OnvifCustomConfig, OnvifVideoStreamProfile, OnvifImagingSettings, OnvifPtzCapabilities } from '../../types/index.ts';
 import { appStateDb } from '../storage/app_db.ts';
 
 export class OnvifDriver {
@@ -25,19 +25,123 @@ export class OnvifDriver {
   }
 
   /**
+   * Generates default ONVIF Profile S/T configuration for any discovered camera
+   */
+  public static createDefaultOnvifConfig(ip: string): OnvifCustomConfig {
+    const mainProfile: OnvifVideoStreamProfile = {
+      name: 'MainStream (Profile_S_01)',
+      token: 'Profile_Token_01',
+      codec: 'H.265',
+      resolution: '3840x2160 (4K)',
+      framerate: 30,
+      bitrateKbps: 8192,
+      bitrateMode: 'VBR',
+      rtspUri: `rtsp://${ip}:554/Streaming/Channels/101`,
+    };
+
+    const subProfile: OnvifVideoStreamProfile = {
+      name: 'SubStream (Profile_S_02)',
+      token: 'Profile_Token_02',
+      codec: 'H.264',
+      resolution: '1280x720 (720p)',
+      framerate: 15,
+      bitrateKbps: 1024,
+      bitrateMode: 'CBR',
+      rtspUri: `rtsp://${ip}:554/Streaming/Channels/102`,
+    };
+
+    const imaging: OnvifImagingSettings = {
+      wdrEnabled: true,
+      wdrLevel: 80,
+      dayNightMode: 'AUTO',
+      backlightCompensation: true,
+      exposureCompensation: 0,
+      irCutFilter: true,
+    };
+
+    const ptz: OnvifPtzCapabilities = {
+      supportsPanTilt: true,
+      supportsZoom: true,
+      panSpeed: 5,
+      tiltSpeed: 5,
+      zoomSpeed: 3,
+      presets: [
+        { id: 1, name: 'Main Entrance Gate', token: 'PresetToken_1' },
+        { id: 2, name: 'Loading Bay Perimeter', token: 'PresetToken_2' },
+        { id: 3, name: 'Staff Parking Area', token: 'PresetToken_3' },
+      ],
+    };
+
+    return {
+      videoProfiles: [mainProfile, subProfile],
+      imaging,
+      ptz,
+      ntpServer: 'pool.ntp.org',
+      timezone: 'UTC-04:00 (Eastern Time)',
+      wsSecurityMode: 'DIGEST',
+      httpsMandatory: true,
+    };
+  }
+
+  /**
+   * Generates ONVIF SOAP envelope for setting Video Encoder Configuration (Profile S/T)
+   */
+  public static createSetVideoEncoderEnvelope(profile: OnvifVideoStreamProfile): string {
+    const [width, height] = profile.resolution.split(' ')[0].split('x');
+    return `<?xml version="1.0" encoding="utf-8"?>
+<soap:Envelope xmlns:soap="http://www.w3.org/2003/05/soap-envelope"
+               xmlns:trt="http://www.onvif.org/ver10/media/wsdl"
+               xmlns:tt="http://www.onvif.org/ver10/schema">
+  <soap:Body>
+    <trt:SetVideoEncoderConfiguration>
+      <trt:Configuration token="${profile.token}">
+        <tt:Encoding>${profile.codec}</tt:Encoding>
+        <tt:Resolution>
+          <tt:Width>${width}</tt:Width>
+          <tt:Height>${height}</tt:Height>
+        </tt:Resolution>
+        <tt:RateControl>
+          <tt:FrameRateLimit>${profile.framerate}</tt:FrameRateLimit>
+          <tt:BitrateLimit>${profile.bitrateKbps}</tt:BitrateLimit>
+        </tt:RateControl>
+      </trt:Configuration>
+      <trt:ForcePersistence>true</trt:ForcePersistence>
+    </trt:SetVideoEncoderConfiguration>
+  </soap:Body>
+</soap:Envelope>`;
+  }
+
+  /**
+   * Generates ONVIF ContinuousMove PTZ SOAP Envelope
+   */
+  public static createPtzContinuousMoveEnvelope(pan: number, tilt: number, zoom: number): string {
+    return `<?xml version="1.0" encoding="utf-8"?>
+<soap:Envelope xmlns:soap="http://www.w3.org/2003/05/soap-envelope"
+               xmlns:tptz="http://www.onvif.org/ver20/ptz/wsdl"
+               xmlns:tt="http://www.onvif.org/ver10/schema">
+  <soap:Body>
+    <tptz:ContinuousMove>
+      <tptz:ProfileToken>Profile_Token_01</tptz:ProfileToken>
+      <tptz:Velocity>
+        <tt:PanTilt x="${pan}" y="${tilt}" space="http://www.onvif.org/ver10/tptz/PanTiltSpaces/VelocityGenericSpace"/>
+        <tt:Zoom x="${zoom}" space="http://www.onvif.org/ver10/tptz/ZoomSpaces/VelocityGenericSpace"/>
+      </tptz:Velocity>
+    </tptz:ContinuousMove>
+  </soap:Body>
+</soap:Envelope>`;
+  }
+
+  /**
    * Parses ONVIF WS-Discovery ProbeMatch responses and extracts MAC, Model, Hardware XAddr
    */
   public static parseProbeMatch(xmlPayload: string, senderIp: string): Partial<Device> | null {
     try {
-      // Extract EndpointReference (UUID or MAC urn)
       const epMatch = xmlPayload.match(/<(?:\w+:)?Address>urn:uuid:([a-fA-F0-9-]+)<\/(?:\w+:)?Address>/i) ||
                       xmlPayload.match(/urn:uuid:([a-fA-F0-9-]+)/i);
       
-      // Extract XAddrs
       const xAddrMatch = xmlPayload.match(/<(?:\w+:)?XAddrs>(.*?)<\/(?:\w+:)?XAddrs>/i);
       const xAddr = xAddrMatch ? xAddrMatch[1].trim().split(' ')[0] : `http://${senderIp}:80/onvif/device_service`;
 
-      // Extract Scopes for Hardware/Name/Location
       const scopesMatch = xmlPayload.match(/<(?:\w+:)?Scopes>(.*?)<\/(?:\w+:)?Scopes>/i);
       const scopesStr = scopesMatch ? scopesMatch[1] : '';
       
@@ -58,10 +162,12 @@ export class OnvifDriver {
           if (rawName.toLowerCase().includes('axis')) vendor = 'Axis Communications';
           else if (rawName.toLowerCase().includes('illustra')) vendor = 'Illustra / Tyco';
           else if (rawName.toLowerCase().includes('lenel')) vendor = 'Lenel Access Control';
+          else if (rawName.toLowerCase().includes('hanwha')) vendor = 'Hanwha Vision';
+          else if (rawName.toLowerCase().includes('hikvision')) vendor = 'Hikvision Digital Technology';
+          else if (rawName.toLowerCase().includes('dahua')) vendor = 'Dahua Technology';
         }
       }
 
-      // If MAC not in scopes, fallback to mock/discovered anchor
       if (!mac) {
         mac = `00:40:8c:${senderIp.split('.').slice(2).map(n => parseInt(n).toString(16).padStart(2, '0')).join(':')}:01`;
       }
@@ -84,6 +190,7 @@ export class OnvifDriver {
           protocol: 'ONVIF',
           xAddr,
         },
+        onvifConfig: this.createDefaultOnvifConfig(senderIp),
         status: 'DISCOVERED',
       };
     } catch (err) {

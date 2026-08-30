@@ -1,17 +1,23 @@
 import React from 'react';
 import { Device } from '../../types/index.ts';
-import { Camera, Server, KeyRound, AlertTriangle, CheckCircle, Activity, ExternalLink, Shield } from 'lucide-react';
+import { Camera, Server, AlertTriangle, CheckCircle, Activity, Shield, Sliders } from 'lucide-react';
 
 interface DeviceGridProps {
   devices: Device[];
   onOpenDuplicateDrawer: () => void;
+  onConfigureDevice: (dev: Device) => void;
 }
 
-export const DeviceGrid: React.FC<DeviceGridProps> = ({ devices, onOpenDuplicateDrawer }) => {
+export const DeviceGrid: React.FC<DeviceGridProps> = ({ devices, onOpenDuplicateDrawer, onConfigureDevice }) => {
   const getVendorIcon = (vendor: string) => {
     if (vendor.toLowerCase().includes('lenel')) return <Server className="w-4 h-4 text-purple-400" />;
     if (vendor.toLowerCase().includes('axis')) return <Camera className="w-4 h-4 text-amber-400" />;
     if (vendor.toLowerCase().includes('illustra')) return <Camera className="w-4 h-4 text-sky-400" />;
+    if (vendor.toLowerCase().includes('hanwha')) return <Camera className="w-4 h-4 text-orange-400" />;
+    if (vendor.toLowerCase().includes('hikvision')) return <Camera className="w-4 h-4 text-red-400" />;
+    if (vendor.toLowerCase().includes('dahua')) return <Camera className="w-4 h-4 text-cyan-400" />;
+    if (vendor.toLowerCase().includes('bosch')) return <Camera className="w-4 h-4 text-indigo-400" />;
+    if (vendor.toLowerCase().includes('pelco')) return <Camera className="w-4 h-4 text-teal-400" />;
     return <Camera className="w-4 h-4 text-emerald-400" />;
   };
 
@@ -78,9 +84,9 @@ export const DeviceGrid: React.FC<DeviceGridProps> = ({ devices, onOpenDuplicate
               <th className="py-3 px-4">Physical Anchor (MAC & Serial)</th>
               <th className="py-3 px-4">Manufacturer & Model</th>
               <th className="py-3 px-4">Network Endpoint</th>
-              <th className="py-3 px-4">Protocol</th>
+              <th className="py-3 px-4">Protocol Driver</th>
               <th className="py-3 px-4">Telemetry / Heartbeat</th>
-              <th className="py-3 px-4 text-right">Status</th>
+              <th className="py-3 px-4 text-right">Actions / Status</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-800/60">
@@ -125,7 +131,7 @@ export const DeviceGrid: React.FC<DeviceGridProps> = ({ devices, onOpenDuplicate
 
                   {/* Protocol */}
                   <td className="py-3 px-4">
-                    <span className="font-mono text-[11px] px-2 py-0.5 rounded bg-slate-800 text-slate-300">
+                    <span className="font-mono text-[11px] px-2 py-0.5 rounded bg-slate-800 text-sky-300 border border-slate-700">
                       {dev.network.protocol}
                     </span>
                   </td>
@@ -144,8 +150,20 @@ export const DeviceGrid: React.FC<DeviceGridProps> = ({ devices, onOpenDuplicate
                     )}
                   </td>
 
-                  {/* Status */}
-                  <td className="py-3 px-4 text-right">{getStatusBadge(dev)}</td>
+                  {/* Actions & Status */}
+                  <td className="py-3 px-4 text-right">
+                    <div className="flex items-center justify-end gap-2">
+                      <button
+                        onClick={() => onConfigureDevice(dev)}
+                        title="Configure ONVIF Stream, Imaging & Manufacturer Parameters"
+                        className="flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-semibold bg-slate-800 hover:bg-sky-600 text-slate-300 hover:text-white border border-slate-700 transition"
+                      >
+                        <Sliders className="w-3.5 h-3.5" />
+                        Configure
+                      </button>
+                      {getStatusBadge(dev)}
+                    </div>
+                  </td>
                 </tr>
               ))
             )}

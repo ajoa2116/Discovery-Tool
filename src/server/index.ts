@@ -9,6 +9,7 @@ import { osVault } from '../core/storage/vault.ts';
 import { DuplicateAssistantDrawer } from '../core/edge_cases/duplicate_drawer.ts';
 import { RogueDHCPAuditor } from '../core/edge_cases/rogue_dhcp.ts';
 import { LegacyHardwareOnboarding } from '../core/edge_cases/legacy_hardware.ts';
+import { OnvifDriver } from '../core/drivers/onvif.ts';
 
 const app = express();
 const server = createServer(app);
@@ -74,6 +75,68 @@ app.post('/api/pipeline/phase/:num', async (req, res) => {
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
+});
+
+// Manufacturer Drivers & ONVIF Studio
+app.get('/api/drivers/list', (req, res) => {
+  res.json([
+    { name: 'ONVIF Profile S/G/T', protocol: 'ONVIF', capabilities: ['Stream', 'Imaging', 'PTZ', 'NTP', 'WS-Security'] },
+    { name: 'Axis Communications VAPIX', protocol: 'AXIS_ADP', capabilities: ['Zipstream', 'Lightfinder', 'Forensic WDR'] },
+    { name: 'Hanwha Vision SUNAPI', protocol: 'HANWHA_SUNAPI', capabilities: ['WiseStream III', 'AI Object Detection', '150dB WDR'] },
+    { name: 'Hikvision ISAPI / SADP', protocol: 'HIKVISION_ISAPI', capabilities: ['AcuSense', 'DarkFighter', 'H.265+ SmartCodec'] },
+    { name: 'Dahua Technology DHIP / CGI', protocol: 'DAHUA_CGI', capabilities: ['WizMind AI', 'Smart Dual Light', 'Tripwire'] },
+    { name: 'Bosch Security RCP+', protocol: 'BOSCH_RCP', capabilities: ['Camera Trainer AI', 'IVA Pro Analytics', 'Bitrate OptiMax'] },
+    { name: 'Pelco Sarix VideoXpert', protocol: 'PELCO_SARIX', capabilities: ['SureVision WDR', 'Smart Analytics', 'Pelco-D RS485'] },
+    { name: 'Illustra / Tyco Pro & Flex', protocol: 'ILLUSTRA', capabilities: ['TrickleStor', 'Smart Bandwidth Management'] },
+    { name: 'Lenel Access Control', protocol: 'LENEL', capabilities: ['OnGuard Controller Interface', 'Dual Reader Sync'] },
+  ]);
+});
+
+// Device Configuration & ONVIF Parameter Update
+app.get('/api/device/:mac/config', (req, res) => {
+  const dev = projectDb.getDeviceByMac(req.params.mac);
+  if (!dev) return res.status(404).json({ error: 'Device not found' });
+  res.json({
+    device: dev,
+    onvifConfig: dev.onvifConfig || OnvifDriver.createDefaultOnvifConfig(dev.network.ipAddress),
+    manufacturerParams: dev.manufacturerParams || {},
+  });
+});
+
+app.post('/api/device/:mac/config', (req, res) => {
+  const dev = projectDb.getDeviceByMac(req.params.mac);
+  if (!dev) return res.status(404).json({ error: 'Device not found' });
+
+  const { onvifConfig, manufacturerParams, networkSettings } = req.body;
+  if (onvifConfig) dev.onvifConfig = onvifConfig;
+  if (manufacturerParams) dev.manufacturerParams = { ...dev.manufacturerParams, ...manufacturerParams };
+  if (networkSettings) {
+    if (networkSettings.ipAddress) dev.network.ipAddress = networkSettings.ipAddress;
+    if (networkSettings.subnetMask) dev.network.subnetMask = networkSettings.subnetMask;
+    if (networkSettings.gateway) dev.network.gateway = networkSettings.gateway;
+  }
+
+  dev.lastSeenAt = new Date().toISOString();
+  projectDb.upsertDevice(dev);
+
+  appStateDb.logAudit({
+    id: crypto.randomUUID(),
+    timestamp: new Date().toISOString(),
+    category: 'PROVISIONING',
+    level: 'INFO',
+    message: `ONVIF Studio: Customized parameters applied to ${dev.anchor.vendor} (${dev.anchor.macAddress})`,
+    deviceId: dev.id,
+  });
+
+  broadcast({ type: 'DEVICE_CONFIG_UPDATED', data: { device: dev, project: projectDb.getProject() } });
+  res.json({ success: true, device: dev });
+});
+
+// PTZ Move Command
+app.post('/api/device/:mac/ptz', (req, res) => {
+  const { pan, tilt, zoom } = req.body;
+  const envelope = OnvifDriver.createPtzContinuousMoveEnvelope(pan || 0, tilt || 0, zoom || 0);
+  res.json({ success: true, message: `PTZ Velocity (${pan}, ${tilt}, ${zoom}) dispatched`, soapEnvelope: envelope });
 });
 
 // Section 13.2 Duplicate Assistant Drawer
