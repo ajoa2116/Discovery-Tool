@@ -17,6 +17,11 @@ import { DeviceConfigModal } from './components/DeviceConfigModal.tsx';
 import { BrowserModal } from './components/BrowserModal.tsx';
 import { TaskCenter, TaskItem } from './components/TaskCenter.tsx';
 import { NewDeviceNotification } from './components/NewDeviceNotification.tsx';
+import { DeviceInspectorDrawer } from './components/DeviceInspectorDrawer.tsx';
+import { BulkReIpModal } from './components/BulkReIpModal.tsx';
+import { AvailableIpFinderModal } from './components/AvailableIpFinderModal.tsx';
+import { SiteSurveyReportModal } from './components/SiteSurveyReportModal.tsx';
+import { BulkReIpPlanItem } from '../core/engine/bulk_reip.ts';
 import {
   ShieldCheck,
   Search,
@@ -32,6 +37,9 @@ import {
   CheckCircle,
   HardDrive,
   FileCheck,
+  Printer,
+  Hash,
+  Wrench,
 } from 'lucide-react';
 
 export default function App() {
@@ -49,13 +57,18 @@ export default function App() {
   // Selected devices for bulk operations (Section 39)
   const [selectedDeviceIds, setSelectedDeviceIds] = useState<Set<string>>(new Set());
 
-  // Modals & Windows
+  // Modals & Drawers
   const [isDuplicateDrawerOpen, setIsDuplicateDrawerOpen] = useState(false);
   const [isLegacyModalOpen, setIsLegacyModalOpen] = useState(false);
   const [isAuditModalOpen, setIsAuditModalOpen] = useState(false);
   const [isTaskCenterOpen, setIsTaskCenterOpen] = useState(false);
+  const [isBulkReIpModalOpen, setIsBulkReIpModalOpen] = useState(false);
+  const [isAvailableIpFinderOpen, setIsAvailableIpFinderOpen] = useState(false);
+  const [isSiteSurveyModalOpen, setIsSiteSurveyModalOpen] = useState(false);
+
   const [selectedDeviceForConfig, setSelectedDeviceForConfig] = useState<Device | null>(null);
   const [selectedDeviceForBrowser, setSelectedDeviceForBrowser] = useState<Device | null>(null);
+  const [selectedDeviceForInspector, setSelectedDeviceForInspector] = useState<Device | null>(null);
 
   // New device notification (Section 16)
   const [newDeviceDetected, setNewDeviceDetected] = useState<{ ip: string; vendor: string } | null>(null);
@@ -220,6 +233,23 @@ export default function App() {
     await fetchData();
   };
 
+  const handleExecuteBulkReIp = async (plan: BulkReIpPlanItem[]) => {
+    for (const item of plan) {
+      const dev = project?.devices.find((d) => d.anchor.macAddress === item.macAddress);
+      if (dev) {
+        dev.network.ipAddress = item.targetIp;
+        dev.network.subnetMask = item.subnetMask;
+        dev.network.gateway = item.gateway;
+        dev.status = 'CONFIGURED';
+      }
+    }
+    setTasks((prev) => [
+      { id: crypto.randomUUID(), deviceName: `${plan.length} Devices`, operation: 'Bulk Re-IP Sequence Complete', status: 'SUCCESS', timestamp: new Date().toLocaleTimeString() },
+      ...prev,
+    ]);
+    await fetchData();
+  };
+
   // Filtered devices based on search query, status, and device type (Sections 7 & 8)
   const filteredDevices = (project?.devices || []).filter((dev) => {
     const q = searchQuery.toLowerCase();
@@ -247,14 +277,15 @@ export default function App() {
     return matchesSearch && matchesStatus && matchesType;
   });
 
+  const selectedDevicesList = (project?.devices || []).filter((d) => selectedDeviceIds.has(d.id));
   const activeCollisionsCount = project?.collisions.filter((c) => !c.resolved).length || 0;
 
   return (
     <div className="min-h-screen flex flex-col bg-slate-950 text-slate-100 font-sans antialiased">
       {/* ─────────────────────────────────────────────────────────────
-          SECTION 3: CLEAN TOP HEADER
+          ZONE 1: CLEAN TOP HEADER CONTROL (Sections 3 & 4)
       ───────────────────────────────────────────────────────────── */}
-      <header className="border-b border-slate-800 bg-slate-900 px-6 py-3.5 flex items-center justify-between shadow-md">
+      <header className="border-b border-slate-800 bg-slate-900 px-6 py-3 flex items-center justify-between shadow-md">
         {/* Left: App Brand & Operating Mode */}
         <div className="flex items-center gap-3">
           <div className="p-2 rounded-xl bg-sky-500 text-slate-950 font-black shadow-md shadow-sky-500/20">
@@ -271,9 +302,9 @@ export default function App() {
           </div>
         </div>
 
-        {/* Right: Primary Scan & Project Controls */}
-        <div className="flex items-center gap-2.5">
-          {/* Primary Scan Button (Section 14) */}
+        {/* Right: Primary Scan & Tool Controls */}
+        <div className="flex items-center gap-2">
+          {/* Section 14: Primary Fast Scan */}
           <button
             onClick={handleScanNetwork}
             disabled={isScanning}
@@ -296,10 +327,30 @@ export default function App() {
             )}
           </button>
 
-          {/* Quick Work / Project Management Buttons (Section 3 & 49) */}
+          {/* Section 25: Available IP Finder */}
+          <button
+            onClick={() => setIsAvailableIpFinderOpen(true)}
+            className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition"
+            title="Scan for unassigned static IP addresses"
+          >
+            <Hash className="w-3.5 h-3.5 text-emerald-400" />
+            IP Finder (25)
+          </button>
+
+          {/* Section 15: Customer Site Survey Report */}
+          <button
+            onClick={() => setIsSiteSurveyModalOpen(true)}
+            className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition"
+            title="Generate printable Customer Site Survey & Sign-Off Report"
+          >
+            <Printer className="w-3.5 h-3.5 text-indigo-400" />
+            Site Survey (15)
+          </button>
+
+          {/* Section 3 & 49: Open / Save Project */}
           <button
             onClick={() => setIsAuditModalOpen(true)}
-            className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition"
+            className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition"
           >
             <FolderOpen className="w-3.5 h-3.5 text-sky-400" />
             Open Project
@@ -307,13 +358,13 @@ export default function App() {
 
           <button
             onClick={() => setIsAuditModalOpen(true)}
-            className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition"
+            className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition"
           >
             <Save className="w-3.5 h-3.5 text-emerald-400" />
-            Save to Project
+            Save Project
           </button>
 
-          {/* Task Center Button (Section 38) */}
+          {/* Section 38: Task Center */}
           <button
             onClick={() => setIsTaskCenterOpen(!isTaskCenterOpen)}
             className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition relative"
@@ -326,7 +377,7 @@ export default function App() {
       </header>
 
       {/* ─────────────────────────────────────────────────────────────
-          SECTION 4: MAIN WORKSPACE
+          ZONE 2 & 3: MAIN WORKSPACE CANVAS
       ───────────────────────────────────────────────────────────── */}
       <main className="flex-1 p-6 space-y-4 max-w-7xl mx-auto w-full">
         {/* Section 16: New Device Notification (when triggered) */}
@@ -344,7 +395,7 @@ export default function App() {
         {project && <RogueDhcpBanner rogueEvents={project.rogueDhcpEvents} />}
 
         {/* Workspace Toolbar: Search, Filters & Network Adapter Info (Sections 7, 8, 24) */}
-        <div className="bg-slate-900 border border-slate-800 rounded-xl p-3.5 flex flex-wrap items-center justify-between gap-4 shadow-sm">
+        <div className="bg-slate-900 border border-slate-800 rounded-xl p-3 flex flex-wrap items-center justify-between gap-3 shadow-sm">
           {/* Search Box (Section 7) */}
           <div className="flex-1 min-w-[280px] relative">
             <Search className="w-4 h-4 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
@@ -402,9 +453,9 @@ export default function App() {
           </div>
         </div>
 
-        {/* Section 39: Bulk Operation Bar (when items selected) */}
+        {/* Section 5 & 39: Bulk Operation Bar (when items selected) */}
         {selectedDeviceIds.size > 0 && (
-          <div className="bg-sky-950/60 border border-sky-500/50 rounded-xl p-3 flex items-center justify-between text-xs animate-fade-in shadow-md">
+          <div className="bg-sky-950/70 border border-sky-500/50 rounded-xl p-3 flex items-center justify-between text-xs animate-fade-in shadow-md">
             <div className="flex items-center gap-2 text-sky-200 font-semibold">
               <CheckCircle className="w-4 h-4 text-sky-400" />
               <span>{selectedDeviceIds.size} device(s) selected</span>
@@ -412,10 +463,11 @@ export default function App() {
 
             <div className="flex items-center gap-2">
               <button
-                onClick={() => alert(`Bulk IP/Network Configuration queued for ${selectedDeviceIds.size} devices.`)}
-                className="px-3 py-1 bg-sky-600 hover:bg-sky-500 text-white rounded-lg font-bold transition"
+                onClick={() => setIsBulkReIpModalOpen(true)}
+                className="px-3.5 py-1.5 bg-sky-600 hover:bg-sky-500 text-white rounded-lg font-bold transition flex items-center gap-1.5 shadow-md shadow-sky-950"
               >
-                Bulk Configure (Section 39)
+                <Network className="w-3.5 h-3.5" />
+                Bulk Re-IP (Section 5)
               </button>
               <button
                 onClick={() => setSelectedDeviceIds(new Set())}
@@ -437,12 +489,13 @@ export default function App() {
           onUpdateDeviceNotes={handleUpdateDeviceNotes}
           onOpenDuplicateAssistant={() => setIsDuplicateDrawerOpen(true)}
           onConfigureDevice={(dev) => setSelectedDeviceForConfig(dev)}
+          onInspectDevice={(dev) => setSelectedDeviceForInspector(dev)}
           onOpenBrowser={handleOpenBrowser}
         />
       </main>
 
       {/* ─────────────────────────────────────────────────────────────
-          FOOTER STATUS BAR
+          ZONE 5: STATUS FOOTER
       ───────────────────────────────────────────────────────────── */}
       <footer className="border-t border-slate-800 bg-slate-900/80 px-6 py-2.5 text-xs text-slate-400 flex items-center justify-between">
         <div className="flex items-center gap-4 font-mono text-[11px]">
@@ -462,13 +515,50 @@ export default function App() {
             Manual Device (13.1)
           </button>
           <span>•</span>
-          <span>CCTV Technician Tool v1.0 Blueprint</span>
+          <span>CCTV Technician Tool v1.0–v1.6 Consolidated Blueprint</span>
         </div>
       </footer>
 
       {/* ─────────────────────────────────────────────────────────────
-          MODALS & DRAWERS
+          MODALS, DRAWERS & ZONE 4 INSPECTOR
       ───────────────────────────────────────────────────────────── */}
+      {/* Zone 4: Device Inspector Drawer (v1.5 Section 8) */}
+      <DeviceInspectorDrawer
+        isOpen={selectedDeviceForInspector !== null}
+        onClose={() => setSelectedDeviceForInspector(null)}
+        device={selectedDeviceForInspector}
+        onOpenConfigureModal={(dev) => {
+          setSelectedDeviceForInspector(null);
+          setSelectedDeviceForConfig(dev);
+        }}
+        onOpenBrowserModal={(dev) => {
+          setSelectedDeviceForBrowser(dev);
+        }}
+      />
+
+      {/* Section 5: Bulk Re-IP Modal with Conflict Audit */}
+      <BulkReIpModal
+        isOpen={isBulkReIpModalOpen}
+        onClose={() => setIsBulkReIpModalOpen(false)}
+        selectedDevices={selectedDevicesList}
+        onExecuteBatch={handleExecuteBulkReIp}
+      />
+
+      {/* Section 25: Available IP Finder Modal */}
+      <AvailableIpFinderModal
+        isOpen={isAvailableIpFinderOpen}
+        onClose={() => setIsAvailableIpFinderOpen(false)}
+      />
+
+      {/* Section 15: Customer Site Survey & Sign-Off Report */}
+      {project && (
+        <SiteSurveyReportModal
+          isOpen={isSiteSurveyModalOpen}
+          onClose={() => setIsSiteSurveyModalOpen(false)}
+          project={project}
+        />
+      )}
+
       {/* Section 12: Duplicate Assistant (Separate Window / Drawer) */}
       {project && (
         <DuplicateDrawer

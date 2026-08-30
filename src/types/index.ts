@@ -1,3 +1,10 @@
+export type HardwareClass =
+  | 'IP_CAMERA'
+  | 'MANAGED_SWITCH'
+  | 'ACCESS_CONTROL'
+  | 'INTERCOM'
+  | 'PERIMETER_LIDAR';
+
 export type ProtocolType =
   | 'ONVIF'
   | 'AXIS_ADP'
@@ -8,18 +15,51 @@ export type ProtocolType =
   | 'DAHUA_CGI'
   | 'BOSCH_RCP'
   | 'PELCO_SARIX'
+  | 'SNMP_LLDP'
+  | 'OPTEX_REC'
   | 'RTSP'
   | 'HTTP_LEGACY'
   | 'PASSIVE_SNIFF';
 
-export type DeviceStatus = 'DISCOVERED' | 'AUTHENTICATED' | 'PROVISIONING' | 'CONFIGURED' | 'COLLISION' | 'ERROR' | 'UNRESPONSIVE';
+export type DeviceStatus =
+  | 'DISCOVERED'
+  | 'AUTHENTICATED'
+  | 'PROVISIONING'
+  | 'CONFIGURED'
+  | 'COLLISION'
+  | 'ERROR'
+  | 'UNRESPONSIVE';
 
 export interface DevicePhysicalAnchor {
   macAddress: string;           // Primary permanent physical anchor (e.g. 00:40:8c:12:34:56)
   serialNumber?: string;        // Secondary hardware serial anchor
-  vendor: string;               // e.g. Axis, Illustra, Lenel, Hanwha, Hikvision, Dahua, Bosch, Pelco
+  vendor: string;               // e.g. Axis, Illustra, Lenel, Hanwha, Hikvision, Dahua, Bosch, Pelco, Cisco, Optex
   model?: string;
   firmwareVersion?: string;
+  hardwareClass?: HardwareClass;
+}
+
+export interface SwitchPortTelemetry {
+  switchName: string;
+  switchIp: string;
+  portId: string;               // e.g. GigabitEthernet1/0/12
+  vlanId: number;
+  poeWatts: number;             // e.g. 12.8W
+  poeStatus: 'DELIVERING' | 'FAULT' | 'OFF';
+}
+
+export interface AccessControlTelemetry {
+  boardType: string;            // e.g. Mercury LNL-1320-S3 Dual Reader Interface
+  doorCount: number;
+  dipSwitchConfig: string;      // e.g. DIP 1-ON, 2-OFF, 3-OFF, 4-ON
+  osdpPassthroughActive: boolean;
+}
+
+export interface LidarTelemetry {
+  detectionZoneActive: boolean;
+  relayOutputTriggered: boolean;
+  targetCount: number;
+  sensitivityLevel: string;
 }
 
 export interface OnvifVideoStreamProfile {
@@ -27,27 +67,27 @@ export interface OnvifVideoStreamProfile {
   token: string;
   codec: 'H.264' | 'H.265' | 'MJPEG';
   resolution: '3840x2160 (4K)' | '2560x1440 (2K)' | '1920x1080 (1080p)' | '1280x720 (720p)';
-  framerate: number;           // FPS (e.g. 30, 60)
-  bitrateKbps: number;         // e.g. 4096, 8192
+  framerate: number;
+  bitrateKbps: number;
   bitrateMode: 'CBR' | 'VBR';
   rtspUri: string;
 }
 
 export interface OnvifImagingSettings {
   wdrEnabled: boolean;
-  wdrLevel: number;            // 0 - 100
+  wdrLevel: number;
   dayNightMode: 'AUTO' | 'DAY' | 'NIGHT';
   backlightCompensation: boolean;
-  exposureCompensation: number;// -5 to +5
+  exposureCompensation: number;
   irCutFilter: boolean;
 }
 
 export interface OnvifPtzCapabilities {
   supportsPanTilt: boolean;
   supportsZoom: boolean;
-  panSpeed: number;            // 1 - 10
-  tiltSpeed: number;           // 1 - 10
-  zoomSpeed: number;           // 1 - 10
+  panSpeed: number;
+  tiltSpeed: number;
+  zoomSpeed: number;
   presets: Array<{ id: number; name: string; token: string }>;
 }
 
@@ -68,7 +108,7 @@ export interface NetworkEndpoint {
   dns?: string[];
   port: number;
   protocol: ProtocolType;
-  xAddr?: string;               // ONVIF service address
+  xAddr?: string;
 }
 
 export interface Device {
@@ -77,9 +117,12 @@ export interface Device {
   network: NetworkEndpoint;
   status: DeviceStatus;
   statusMessage?: string;
-  discoveredPhase: number;      // Phase 2, 3, etc.
+  discoveredPhase: number;
   firstSeenAt: string;
   lastSeenAt: string;
+  switchTelemetry?: SwitchPortTelemetry;
+  accessTelemetry?: AccessControlTelemetry;
+  lidarTelemetry?: LidarTelemetry;
   onvifConfig?: OnvifCustomConfig;
   manufacturerParams?: Record<string, any>;
   telemetry?: {
@@ -161,4 +204,18 @@ export interface NICInfo {
   broadcast: string;
   mac: string;
   isInternal: boolean;
+}
+
+export interface ReverificationResult {
+  totalKnown: number;
+  recognizedCount: number;
+  changedIpCount: number;
+  newDevicesCount: number;
+  possibleReplacements: Array<{
+    expectedName: string;
+    expectedMac: string;
+    foundMac: string;
+    foundIp: string;
+    model: string;
+  }>;
 }

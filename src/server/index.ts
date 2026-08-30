@@ -10,6 +10,8 @@ import { DuplicateAssistantDrawer } from '../core/edge_cases/duplicate_drawer.ts
 import { RogueDHCPAuditor } from '../core/edge_cases/rogue_dhcp.ts';
 import { LegacyHardwareOnboarding } from '../core/edge_cases/legacy_hardware.ts';
 import { OnvifDriver } from '../core/drivers/onvif.ts';
+import { AvailableIpFinder } from '../core/engine/ip_finder.ts';
+import { BulkReIpEngine } from '../core/engine/bulk_reip.ts';
 
 const app = express();
 const server = createServer(app);
@@ -50,6 +52,29 @@ app.get('/api/project/export', (req, res) => {
   res.send(projectDb.exportProjectJson());
 });
 
+// Available IP Finder (Section 25)
+app.get('/api/ip-finder/available', (req, res) => {
+  const prefix = (req.query.prefix as string) || '192.168.1';
+  const start = parseInt((req.query.start as string) || '100');
+  const end = parseInt((req.query.end as string) || '240');
+  const available = AvailableIpFinder.scanAvailableIps(prefix, start, end);
+  res.json({ prefix, available });
+});
+
+// Bulk Re-IP (Section 5)
+app.post('/api/bulk/re-ip/plan', (req, res) => {
+  const { macs, startIp, subnetMask, gateway, step } = req.body;
+  const result = BulkReIpEngine.generatePlan(macs, startIp, subnetMask, gateway, step || 1);
+  res.json(result);
+});
+
+app.post('/api/bulk/re-ip/execute', async (req, res) => {
+  const { plan } = req.body;
+  const result = await BulkReIpEngine.executeBatch(plan);
+  broadcast({ type: 'BULK_REIP_COMPLETE', data: { result, project: projectDb.getProject() } });
+  res.json(result);
+});
+
 // 6-Phase Pipeline
 app.get('/api/pipeline/status', (req, res) => {
   res.json(pipelineEngine.getStates());
@@ -75,21 +100,6 @@ app.post('/api/pipeline/phase/:num', async (req, res) => {
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
-});
-
-// Manufacturer Drivers & ONVIF Studio
-app.get('/api/drivers/list', (req, res) => {
-  res.json([
-    { name: 'ONVIF Profile S/G/T', protocol: 'ONVIF', capabilities: ['Stream', 'Imaging', 'PTZ', 'NTP', 'WS-Security'] },
-    { name: 'Axis Communications VAPIX', protocol: 'AXIS_ADP', capabilities: ['Zipstream', 'Lightfinder', 'Forensic WDR'] },
-    { name: 'Hanwha Vision SUNAPI', protocol: 'HANWHA_SUNAPI', capabilities: ['WiseStream III', 'AI Object Detection', '150dB WDR'] },
-    { name: 'Hikvision ISAPI / SADP', protocol: 'HIKVISION_ISAPI', capabilities: ['AcuSense', 'DarkFighter', 'H.265+ SmartCodec'] },
-    { name: 'Dahua Technology DHIP / CGI', protocol: 'DAHUA_CGI', capabilities: ['WizMind AI', 'Smart Dual Light', 'Tripwire'] },
-    { name: 'Bosch Security RCP+', protocol: 'BOSCH_RCP', capabilities: ['Camera Trainer AI', 'IVA Pro Analytics', 'Bitrate OptiMax'] },
-    { name: 'Pelco Sarix VideoXpert', protocol: 'PELCO_SARIX', capabilities: ['SureVision WDR', 'Smart Analytics', 'Pelco-D RS485'] },
-    { name: 'Illustra / Tyco Pro & Flex', protocol: 'ILLUSTRA', capabilities: ['TrickleStor', 'Smart Bandwidth Management'] },
-    { name: 'Lenel Access Control', protocol: 'LENEL', capabilities: ['OnGuard Controller Interface', 'Dual Reader Sync'] },
-  ]);
 });
 
 // Device Configuration & ONVIF Parameter Update
@@ -124,7 +134,7 @@ app.post('/api/device/:mac/config', (req, res) => {
     timestamp: new Date().toISOString(),
     category: 'PROVISIONING',
     level: 'INFO',
-    message: `ONVIF Studio: Customized parameters applied to ${dev.anchor.vendor} (${dev.anchor.macAddress})`,
+    message: `Parameters updated for ${dev.anchor.vendor} (${dev.anchor.macAddress})`,
     deviceId: dev.id,
   });
 

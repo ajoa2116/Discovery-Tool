@@ -10,8 +10,8 @@ import {
   Globe,
   Shield,
   AlertTriangle,
-  FolderPlus,
   StickyNote,
+  Video,
 } from 'lucide-react';
 
 interface MasterDeviceTableProps {
@@ -23,6 +23,7 @@ interface MasterDeviceTableProps {
   onUpdateDeviceNotes: (id: string, notes: string) => void;
   onOpenDuplicateAssistant: () => void;
   onConfigureDevice: (dev: Device) => void;
+  onInspectDevice: (dev: Device) => void;
   onOpenBrowser: (dev: Device, mode: 'EMBEDDED' | 'EDGE' | 'CHROME' | 'SYSTEM') => void;
 }
 
@@ -35,6 +36,7 @@ export const MasterDeviceTable: React.FC<MasterDeviceTableProps> = ({
   onUpdateDeviceNotes,
   onOpenDuplicateAssistant,
   onConfigureDevice,
+  onInspectDevice,
   onOpenBrowser,
 }) => {
   const [editingNameId, setEditingNameId] = useState<string | null>(null);
@@ -45,7 +47,8 @@ export const MasterDeviceTable: React.FC<MasterDeviceTableProps> = ({
 
   const [openActionMenuId, setOpenActionMenuId] = useState<string | null>(null);
 
-  const startEditName = (dev: Device) => {
+  const startEditName = (dev: Device, e: React.MouseEvent) => {
+    e.stopPropagation();
     setEditingNameId(dev.id);
     setTempName(dev.anchor.model || dev.anchor.vendor);
   };
@@ -57,7 +60,8 @@ export const MasterDeviceTable: React.FC<MasterDeviceTableProps> = ({
     setEditingNameId(null);
   };
 
-  const startEditNotes = (dev: Device) => {
+  const startEditNotes = (dev: Device, e: React.MouseEvent) => {
+    e.stopPropagation();
     setEditingNotesId(dev.id);
     setTempNotes(dev.statusMessage || '');
   };
@@ -72,7 +76,10 @@ export const MasterDeviceTable: React.FC<MasterDeviceTableProps> = ({
       case 'COLLISION':
         return (
           <button
-            onClick={onOpenDuplicateAssistant}
+            onClick={(e) => {
+              e.stopPropagation();
+              onOpenDuplicateAssistant();
+            }}
             className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40 hover:bg-amber-500/30 transition animate-pulse"
           >
             <AlertTriangle className="w-3 h-3" />
@@ -164,12 +171,13 @@ export const MasterDeviceTable: React.FC<MasterDeviceTableProps> = ({
                 return (
                   <tr
                     key={dev.id}
-                    className={`hover:bg-slate-850/70 transition ${
+                    onClick={() => onInspectDevice(dev)}
+                    className={`hover:bg-slate-850/80 transition cursor-pointer ${
                       isSelected ? 'bg-sky-950/25' : dev.status === 'COLLISION' ? 'bg-amber-950/15' : ''
                     }`}
                   >
                     {/* 1. Select Checkbox */}
-                    <td className="py-3 px-3 text-center">
+                    <td className="py-3 px-3 text-center" onClick={(e) => e.stopPropagation()}>
                       <input
                         type="checkbox"
                         checked={isSelected}
@@ -181,7 +189,7 @@ export const MasterDeviceTable: React.FC<MasterDeviceTableProps> = ({
                     {/* 2. Name (Inline Editable per Section 6) */}
                     <td className="py-3 px-3 font-medium text-slate-100">
                       {isEditingName ? (
-                        <div className="flex items-center gap-1">
+                        <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
                           <input
                             type="text"
                             value={tempName}
@@ -205,7 +213,7 @@ export const MasterDeviceTable: React.FC<MasterDeviceTableProps> = ({
                         </div>
                       ) : (
                         <div
-                          onClick={() => startEditName(dev)}
+                          onClick={(e) => startEditName(dev, e)}
                           className="group flex items-center gap-1.5 cursor-pointer hover:text-sky-300 transition"
                           title="Click to rename inline"
                         >
@@ -216,7 +224,7 @@ export const MasterDeviceTable: React.FC<MasterDeviceTableProps> = ({
                     </td>
 
                     {/* 3. IP Address (Hyperlink per Section 13) */}
-                    <td className="py-3 px-3 font-mono">
+                    <td className="py-3 px-3 font-mono" onClick={(e) => e.stopPropagation()}>
                       <button
                         onClick={() => onOpenBrowser(dev, 'EMBEDDED')}
                         className="text-sky-400 hover:text-sky-300 font-semibold underline underline-offset-2 flex items-center gap-1"
@@ -257,7 +265,7 @@ export const MasterDeviceTable: React.FC<MasterDeviceTableProps> = ({
                     {/* 9. Notes (Inline Editable per Section 5) */}
                     <td className="py-3 px-3 text-slate-400">
                       {isEditingNotes ? (
-                        <div className="flex items-center gap-1">
+                        <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
                           <input
                             type="text"
                             value={tempNotes}
@@ -276,7 +284,7 @@ export const MasterDeviceTable: React.FC<MasterDeviceTableProps> = ({
                         </div>
                       ) : (
                         <div
-                          onClick={() => startEditNotes(dev)}
+                          onClick={(e) => startEditNotes(dev, e)}
                           className="cursor-pointer hover:text-slate-200 transition text-[11px] truncate max-w-[120px] flex items-center gap-1"
                           title="Click to add/edit note"
                         >
@@ -287,15 +295,15 @@ export const MasterDeviceTable: React.FC<MasterDeviceTableProps> = ({
                     </td>
 
                     {/* 10. Actions (Section 31) */}
-                    <td className="py-3 px-3 text-right relative">
+                    <td className="py-3 px-3 text-right relative" onClick={(e) => e.stopPropagation()}>
                       <div className="flex items-center justify-end gap-1.5">
                         <button
-                          onClick={() => onConfigureDevice(dev)}
-                          title="Configure ONVIF Stream, Imaging & Manufacturer Parameters"
+                          onClick={() => onInspectDevice(dev)}
+                          title="Inspect Live RTSP & Switch PoE Telemetry"
                           className="px-2.5 py-1 rounded bg-slate-800 hover:bg-sky-600 text-slate-300 hover:text-white transition font-medium text-[11px] flex items-center gap-1"
                         >
-                          <Sliders className="w-3 h-3" />
-                          Configure
+                          <Video className="w-3 h-3 text-sky-400" />
+                          Inspect
                         </button>
 
                         <button
@@ -334,8 +342,8 @@ export const MasterDeviceTable: React.FC<MasterDeviceTableProps> = ({
                           <div className="border-t border-slate-800 my-1" />
 
                           <button
-                            onClick={() => {
-                              startEditName(dev);
+                            onClick={(e) => {
+                              startEditName(dev, e);
                               setOpenActionMenuId(null);
                             }}
                             className="w-full text-left px-2.5 py-1.5 rounded hover:bg-slate-800 text-slate-200 flex items-center gap-2"
@@ -345,8 +353,8 @@ export const MasterDeviceTable: React.FC<MasterDeviceTableProps> = ({
                           </button>
 
                           <button
-                            onClick={() => {
-                              startEditNotes(dev);
+                            onClick={(e) => {
+                              startEditNotes(dev, e);
                               setOpenActionMenuId(null);
                             }}
                             className="w-full text-left px-2.5 py-1.5 rounded hover:bg-slate-800 text-slate-200 flex items-center gap-2"
