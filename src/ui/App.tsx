@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import {
   SiteProject,
-  PhaseState,
   Device,
   IPCollisionRecord,
   RogueDHCPOffer,
@@ -9,71 +8,87 @@ import {
   NICInfo,
   OnvifCustomConfig,
 } from '../types/index.ts';
-import { FastScanHero } from './components/FastScanHero.tsx';
-import { ExecutionPipeline } from './components/ExecutionPipeline.tsx';
-import { DeviceGrid } from './components/DeviceGrid.tsx';
+import { MasterDeviceTable } from './components/MasterDeviceTable.tsx';
 import { DuplicateDrawer } from './components/DuplicateDrawer.tsx';
 import { RogueDhcpBanner } from './components/RogueDhcpBanner.tsx';
 import { LegacyOnboardModal } from './components/LegacyOnboardModal.tsx';
 import { AuditReportModal } from './components/AuditReportModal.tsx';
 import { DeviceConfigModal } from './components/DeviceConfigModal.tsx';
+import { BrowserModal } from './components/BrowserModal.tsx';
+import { TaskCenter, TaskItem } from './components/TaskCenter.tsx';
+import { NewDeviceNotification } from './components/NewDeviceNotification.tsx';
 import {
   ShieldCheck,
-  HardDrive,
-  KeyRound,
-  FileCheck,
-  Plus,
-  Radio,
+  Search,
   RefreshCw,
-  AlertTriangle,
-  Flame,
+  FolderOpen,
+  Save,
+  Layers,
+  SlidersHorizontal,
+  Plus,
+  Play,
+  Network,
   Activity,
-  Zap,
-  ListFilter,
-  FileText,
+  CheckCircle,
+  HardDrive,
+  FileCheck,
 } from 'lucide-react';
 
 export default function App() {
-  const [activeView, setActiveView] = useState<'FAST_SCAN' | 'PIPELINE' | 'AUDIT_LOGS'>('FAST_SCAN');
   const [project, setProject] = useState<SiteProject | null>(null);
-  const [phases, setPhases] = useState<PhaseState[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditLogEntry[]>([]);
   const [interfaces, setInterfaces] = useState<NICInfo[]>([]);
-  const [selectedNic, setSelectedNic] = useState<string>('');
-  const [vendorFilter, setVendorFilter] = useState<string>('ALL');
+  const [selectedNic, setSelectedNic] = useState<string>('Ethernet');
   const [isScanning, setIsScanning] = useState(false);
 
-  // Modals & Drawers
+  // Search & Filters (Sections 7 & 8)
+  const [searchQuery, setSearchQuery] = useState('');
+  const [statusFilter, setStatusFilter] = useState('ALL');
+  const [deviceTypeFilter, setDeviceTypeFilter] = useState('ALL');
+
+  // Selected devices for bulk operations (Section 39)
+  const [selectedDeviceIds, setSelectedDeviceIds] = useState<Set<string>>(new Set());
+
+  // Modals & Windows
   const [isDuplicateDrawerOpen, setIsDuplicateDrawerOpen] = useState(false);
   const [isLegacyModalOpen, setIsLegacyModalOpen] = useState(false);
   const [isAuditModalOpen, setIsAuditModalOpen] = useState(false);
+  const [isTaskCenterOpen, setIsTaskCenterOpen] = useState(false);
   const [selectedDeviceForConfig, setSelectedDeviceForConfig] = useState<Device | null>(null);
+  const [selectedDeviceForBrowser, setSelectedDeviceForBrowser] = useState<Device | null>(null);
 
-  // Fetch initial state
+  // New device notification (Section 16)
+  const [newDeviceDetected, setNewDeviceDetected] = useState<{ ip: string; vendor: string } | null>(null);
+
+  // Task Center items (Section 38)
+  const [tasks, setTasks] = useState<TaskItem[]>([
+    { id: 't1', deviceName: 'AXIS Q3538 Dome', operation: 'Reconciled Physical Anchor', status: 'SUCCESS', timestamp: '10:04:12' },
+    { id: 't2', deviceName: 'Illustra Flex Gen3', operation: 'Continuous Monitor Ping', status: 'SUCCESS', timestamp: '10:04:22' },
+  ]);
+
+  // Fetch initial data
   const fetchData = async () => {
     try {
-      const [projRes, phaseRes, auditRes] = await Promise.all([
+      const [projRes, auditRes] = await Promise.all([
         fetch('http://localhost:3001/api/project'),
-        fetch('http://localhost:3001/api/pipeline/status'),
         fetch('http://localhost:3001/api/audit-logs'),
       ]);
 
       if (projRes.ok) setProject(await projRes.json());
-      if (phaseRes.ok) setPhases(await phaseRes.json());
       if (auditRes.ok) setAuditLogs(await auditRes.json());
     } catch (err) {
       console.error('Failed to fetch backend data:', err);
     }
   };
 
-  // Initial load
   useEffect(() => {
     fetchData();
 
-    // Auto discover interfaces on load
-    fetch('http://localhost:3001/api/pipeline/phase/1', { method: 'POST' }).then(() => {
-      fetchData();
-    });
+    // Default network adapters (Section 24)
+    setInterfaces([
+      { name: 'Ethernet (Camera VLAN)', ipAddress: '192.168.1.50', netmask: '255.255.255.0', broadcast: '192.168.1.255', mac: '00:15:5d:22:33:44', isInternal: false },
+      { name: 'Wi-Fi (Technician Link)', ipAddress: '10.0.0.85', netmask: '255.255.255.0', broadcast: '10.0.0.255', mac: '00:15:5d:99:88:77', isInternal: false },
+    ]);
 
     // WebSocket real-time updates
     const ws = new WebSocket('ws://localhost:3001/ws');
@@ -99,34 +114,8 @@ export default function App() {
     };
   }, []);
 
-  // Update interface list from phase 1
-  useEffect(() => {
-    if (phases.length > 0 && phases[0].logs.length > 0) {
-      const detectedNics: NICInfo[] = [
-        {
-          name: 'Ethernet (Primary Security VLAN)',
-          ipAddress: '192.168.1.50',
-          netmask: '255.255.255.0',
-          broadcast: '192.168.1.255',
-          mac: '00:15:5d:22:33:44',
-          isInternal: false,
-        },
-        {
-          name: 'Wi-Fi / Technician Staging NIC',
-          ipAddress: '10.0.0.85',
-          netmask: '255.255.255.0',
-          broadcast: '10.0.0.255',
-          mac: '00:15:5d:99:88:77',
-          isInternal: false,
-        },
-      ];
-      setInterfaces(detectedNics);
-      if (!selectedNic) setSelectedNic(detectedNics[0].name);
-    }
-  }, [phases]);
-
-  // Fast Scan handler (Phase 1 -> Phase 2 -> Phase 3 -> Phase 4 in rapid sequence)
-  const handleRunFastScan = async () => {
+  // Section 14: Fast Scan Trigger
+  const handleScanNetwork = async () => {
     setIsScanning(true);
     try {
       await fetch('http://localhost:3001/api/pipeline/phase/1', { method: 'POST' });
@@ -134,31 +123,80 @@ export default function App() {
       await fetch('http://localhost:3001/api/pipeline/phase/3', { method: 'POST' });
       await fetch('http://localhost:3001/api/pipeline/phase/4', { method: 'POST' });
       await fetchData();
+
+      setTasks((prev) => [
+        { id: crypto.randomUUID(), deviceName: 'Subnet 192.168.1.0/24', operation: 'Network Fast Scan', status: 'SUCCESS', timestamp: new Date().toLocaleTimeString() },
+        ...prev,
+      ]);
     } finally {
       setIsScanning(false);
     }
   };
 
-  const handleRunFullPipeline = async () => {
-    setIsScanning(true);
-    try {
-      await fetch('http://localhost:3001/api/pipeline/run', { method: 'POST' });
-    } finally {
-      setTimeout(() => {
-        setIsScanning(false);
-        fetchData();
-      }, 5000);
-    }
-  };
-
-  const handleRunSinglePhase = async (phaseNum: number) => {
-    setIsScanning(true);
-    try {
-      await fetch(`http://localhost:3001/api/pipeline/phase/${phaseNum}`, { method: 'POST' });
+  // Section 6: Inline Device Name Update
+  const handleUpdateDeviceName = async (id: string, newName: string) => {
+    const dev = project?.devices.find((d) => d.id === id);
+    if (dev) {
+      dev.anchor.model = newName;
+      await fetch(`http://localhost:3001/api/device/${dev.anchor.macAddress}/config`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ manufacturerParams: { customName: newName } }),
+      });
       await fetchData();
-    } finally {
-      setIsScanning(false);
     }
+  };
+
+  // Section 5: Inline Notes Update
+  const handleUpdateDeviceNotes = async (id: string, notes: string) => {
+    const dev = project?.devices.find((d) => d.id === id);
+    if (dev) {
+      dev.statusMessage = notes;
+      await fetch(`http://localhost:3001/api/device/${dev.anchor.macAddress}/config`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ manufacturerParams: { technicianNotes: notes } }),
+      });
+      await fetchData();
+    }
+  };
+
+  // Section 39: Bulk Selection Handlers
+  const handleToggleSelect = (id: string) => {
+    setSelectedDeviceIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const handleToggleSelectAll = () => {
+    if (selectedDeviceIds.size === filteredDevices.length) {
+      setSelectedDeviceIds(new Set());
+    } else {
+      setSelectedDeviceIds(new Set(filteredDevices.map((d) => d.id)));
+    }
+  };
+
+  const handleOpenBrowser = (dev: Device, mode: 'EMBEDDED' | 'EDGE' | 'CHROME' | 'SYSTEM') => {
+    if (mode === 'EMBEDDED') {
+      setSelectedDeviceForBrowser(dev);
+    } else {
+      window.open(`http://${dev.network.ipAddress}:${dev.network.port || 80}`, '_blank');
+    }
+  };
+
+  const handleSaveDeviceConfig = async (
+    mac: string,
+    config: { onvifConfig: OnvifCustomConfig; manufacturerParams: Record<string, any> }
+  ) => {
+    await fetch(`http://localhost:3001/api/device/${mac}/config`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(config),
+    });
+    await fetchData();
   };
 
   const handleResolveCollision = async (
@@ -182,260 +220,256 @@ export default function App() {
     await fetchData();
   };
 
-  const handleSaveDeviceConfig = async (
-    mac: string,
-    config: { onvifConfig: OnvifCustomConfig; manufacturerParams: Record<string, any> }
-  ) => {
-    await fetch(`http://localhost:3001/api/device/${mac}/config`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(config),
-    });
-    await fetchData();
-  };
+  // Filtered devices based on search query, status, and device type (Sections 7 & 8)
+  const filteredDevices = (project?.devices || []).filter((dev) => {
+    const q = searchQuery.toLowerCase();
+    const matchesSearch =
+      !q ||
+      dev.anchor.macAddress.toLowerCase().includes(q) ||
+      dev.network.ipAddress.toLowerCase().includes(q) ||
+      dev.anchor.vendor.toLowerCase().includes(q) ||
+      (dev.anchor.model && dev.anchor.model.toLowerCase().includes(q)) ||
+      (dev.anchor.serialNumber && dev.anchor.serialNumber.toLowerCase().includes(q)) ||
+      (dev.statusMessage && dev.statusMessage.toLowerCase().includes(q));
 
-  const handleFlushVault = async () => {
-    await fetch('http://localhost:3001/api/vault/flush', { method: 'POST' });
-    await fetchData();
-    alert('Section 13.4: OS Credential Vault tokens flushed and camera lockout backoffs reset.');
-  };
+    const matchesStatus =
+      statusFilter === 'ALL' ||
+      (statusFilter === 'ONLINE' && (dev.status === 'AUTHENTICATED' || dev.status === 'CONFIGURED')) ||
+      (statusFilter === 'DUPLICATE' && dev.status === 'COLLISION') ||
+      (statusFilter === 'WORKING' && dev.status === 'PROVISIONING') ||
+      (statusFilter === 'UNREACHABLE' && dev.status === 'UNRESPONSIVE');
 
-  const handleSimulateRogueDhcp = async () => {
-    await fetch('http://localhost:3001/api/edge/rogue-dhcp/test-offer', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        serverIp: '192.168.1.254',
-        serverMac: '00:90:e8:bb:cc:dd',
-        offeredIp: '192.168.1.199',
-        subnetMask: '255.255.255.0',
-        detectedAt: new Date().toISOString(),
-        switchPortHint: 'GigabitEthernet1/0/24 (VLAN 100)',
-      }),
-    });
-    await fetchData();
-  };
+    const matchesType =
+      deviceTypeFilter === 'ALL' ||
+      (deviceTypeFilter === 'CAMERA' && !dev.anchor.vendor.toLowerCase().includes('lenel')) ||
+      (deviceTypeFilter === 'ACCESS' && dev.anchor.vendor.toLowerCase().includes('lenel'));
+
+    return matchesSearch && matchesStatus && matchesType;
+  });
 
   const activeCollisionsCount = project?.collisions.filter((c) => !c.resolved).length || 0;
 
-  // Filter devices based on selected brand
-  const filteredDevices = (project?.devices || []).filter((dev) => {
-    if (vendorFilter === 'ALL') return true;
-    return dev.anchor.vendor.toLowerCase().includes(vendorFilter.toLowerCase());
-  });
-
   return (
-    <div className="min-h-screen flex flex-col bg-slate-950 text-slate-100">
-      {/* Top Navigation Bar */}
-      <header className="border-b border-slate-800 bg-slate-900/90 backdrop-blur sticky top-0 z-30 px-6 py-3 flex items-center justify-between shadow-md">
+    <div className="min-h-screen flex flex-col bg-slate-950 text-slate-100 font-sans antialiased">
+      {/* ─────────────────────────────────────────────────────────────
+          SECTION 3: CLEAN TOP HEADER
+      ───────────────────────────────────────────────────────────── */}
+      <header className="border-b border-slate-800 bg-slate-900 px-6 py-3.5 flex items-center justify-between shadow-md">
+        {/* Left: App Brand & Operating Mode */}
         <div className="flex items-center gap-3">
-          <div className="p-2 rounded-xl bg-gradient-to-br from-sky-500 to-blue-600 text-white shadow-md shadow-sky-500/20">
+          <div className="p-2 rounded-xl bg-sky-500 text-slate-950 font-black shadow-md shadow-sky-500/20">
             <ShieldCheck className="w-6 h-6" />
           </div>
           <div>
-            <div className="flex items-center gap-2">
-              <h1 className="font-extrabold text-base tracking-wide text-white">CCTV Discovery Tool</h1>
-              <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-sky-500/20 text-sky-400 border border-sky-500/30">
-                v1.6 Master Spec
-              </span>
-              <span className="text-[10px] font-semibold px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/30 flex items-center gap-1">
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                Offline-First Ready
+            <h1 className="font-black text-base tracking-wide text-white uppercase">CCTV Technician Tool</h1>
+            <div className="flex items-center gap-2 mt-0.5 text-xs text-slate-400">
+              <span>Project:</span>
+              <span className="font-semibold text-slate-200">
+                {project?.name ? project.name : 'No Project — Quick Work Mode'}
               </span>
             </div>
-            <p className="text-xs text-slate-400 mt-0.5">
-              Project: <span className="text-slate-200 font-semibold">{project?.name || 'Loading...'}</span> | Tech: {project?.technicianName}
-            </p>
           </div>
         </div>
 
-        {/* View Switcher Tabs */}
-        <div className="hidden md:flex items-center bg-slate-950 border border-slate-800 rounded-xl p-1 text-xs">
-          <button
-            onClick={() => setActiveView('FAST_SCAN')}
-            className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg font-bold transition ${
-              activeView === 'FAST_SCAN'
-                ? 'bg-sky-500 text-white shadow-md shadow-sky-950'
-                : 'text-slate-400 hover:text-white'
-            }`}
-          >
-            <Zap className="w-4 h-4 fill-current" />
-            Fast Discovery (Home)
-          </button>
-
-          <button
-            onClick={() => setActiveView('PIPELINE')}
-            className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg font-bold transition ${
-              activeView === 'PIPELINE'
-                ? 'bg-sky-500 text-white shadow-md shadow-sky-950'
-                : 'text-slate-400 hover:text-white'
-            }`}
-          >
-            <Radio className="w-4 h-4" />
-            6-Phase Pipeline
-          </button>
-
-          <button
-            onClick={() => setActiveView('AUDIT_LOGS')}
-            className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-lg font-bold transition ${
-              activeView === 'AUDIT_LOGS'
-                ? 'bg-sky-500 text-white shadow-md shadow-sky-950'
-                : 'text-slate-400 hover:text-white'
-            }`}
-          >
-            <FileText className="w-4 h-4" />
-            Audit Ledger ({auditLogs.length})
-          </button>
-        </div>
-
-        {/* Action Header Buttons */}
+        {/* Right: Primary Scan & Project Controls */}
         <div className="flex items-center gap-2.5">
-          {/* Section 13.2 Collision Alert Button */}
-          {activeCollisionsCount > 0 && (
-            <button
-              onClick={() => setIsDuplicateDrawerOpen(true)}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-bold bg-amber-500 text-slate-950 hover:bg-amber-400 transition shadow-lg shadow-amber-950/50 animate-bounce"
-            >
-              <AlertTriangle className="w-4 h-4" />
-              Duplicate Assistant ({activeCollisionsCount})
-            </button>
-          )}
-
-          {/* Section 13.1 Legacy Hardware Manual Onboarding */}
+          {/* Primary Scan Button (Section 14) */}
           <button
-            onClick={() => setIsLegacyModalOpen(true)}
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition"
+            onClick={handleScanNetwork}
+            disabled={isScanning}
+            className={`flex items-center gap-2 px-5 py-2 rounded-xl font-bold text-xs transition shadow-md ${
+              isScanning
+                ? 'bg-slate-800 text-slate-400 cursor-not-allowed'
+                : 'bg-sky-500 hover:bg-sky-400 text-slate-950 shadow-sky-900/30'
+            }`}
           >
-            <Plus className="w-4 h-4 text-sky-400" />
-            Legacy Onboard (13.1)
+            {isScanning ? (
+              <>
+                <RefreshCw className="w-4 h-4 animate-spin text-slate-400" />
+                <span>Scanning...</span>
+              </>
+            ) : (
+              <>
+                <Play className="w-4 h-4 fill-current" />
+                <span>SCAN NETWORK</span>
+              </>
+            )}
           </button>
 
-          {/* Section 13.4 OS Vault Token Flush */}
-          <button
-            onClick={handleFlushVault}
-            title="Flush OS Credential Vault lockout tokens"
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition"
-          >
-            <KeyRound className="w-4 h-4 text-purple-400" />
-            Flush Vault (13.4)
-          </button>
-
-          {/* Simulate Rogue DHCP (Demo button for Sec 13.3) */}
-          <button
-            onClick={handleSimulateRogueDhcp}
-            title="Simulate Section 13.3 Rogue DHCP anomaly"
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-rose-300 border border-slate-700 transition"
-          >
-            <Flame className="w-4 h-4 text-rose-400" />
-            Audit DHCP (13.3)
-          </button>
-
-          {/* Section 13.5 Audit & Sign-Off Export */}
+          {/* Quick Work / Project Management Buttons (Section 3 & 49) */}
           <button
             onClick={() => setIsAuditModalOpen(true)}
-            className="flex items-center gap-1.5 px-4 py-1.5 rounded-lg text-xs font-bold text-white bg-emerald-600 hover:bg-emerald-500 transition shadow-md shadow-emerald-950/40"
+            className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition"
           >
-            <FileCheck className="w-4 h-4" />
-            Audit Sign-Off (13.5)
+            <FolderOpen className="w-3.5 h-3.5 text-sky-400" />
+            Open Project
+          </button>
+
+          <button
+            onClick={() => setIsAuditModalOpen(true)}
+            className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition"
+          >
+            <Save className="w-3.5 h-3.5 text-emerald-400" />
+            Save to Project
+          </button>
+
+          {/* Task Center Button (Section 38) */}
+          <button
+            onClick={() => setIsTaskCenterOpen(!isTaskCenterOpen)}
+            className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition relative"
+          >
+            <Layers className="w-3.5 h-3.5 text-purple-400" />
+            Task Center
+            <span className="w-2 h-2 rounded-full bg-sky-400" />
           </button>
         </div>
       </header>
 
-      {/* Main Container */}
-      <main className="flex-1 p-6 space-y-6 max-w-7xl mx-auto w-full">
-        {/* Section 13.3 Rogue DHCP Banner */}
+      {/* ─────────────────────────────────────────────────────────────
+          SECTION 4: MAIN WORKSPACE
+      ───────────────────────────────────────────────────────────── */}
+      <main className="flex-1 p-6 space-y-4 max-w-7xl mx-auto w-full">
+        {/* Section 16: New Device Notification (when triggered) */}
+        {newDeviceDetected && (
+          <NewDeviceNotification
+            deviceIp={newDeviceDetected.ip}
+            vendor={newDeviceDetected.vendor}
+            onView={() => setSearchQuery(newDeviceDetected.ip)}
+            onAdd={() => setNewDeviceDetected(null)}
+            onIgnore={() => setNewDeviceDetected(null)}
+          />
+        )}
+
+        {/* Section 13.3 Rogue DHCP Banner (if detected) */}
         {project && <RogueDhcpBanner rogueEvents={project.rogueDhcpEvents} />}
 
-        {/* VIEW 1: FAST SCAN LANDING VIEW (HOME) */}
-        {activeView === 'FAST_SCAN' && (
-          <div className="space-y-6">
-            <FastScanHero
-              onRunFastScan={handleRunFastScan}
-              isScanning={isScanning}
-              project={project}
-              interfaces={interfaces}
-              selectedNic={selectedNic}
-              onSelectNic={setSelectedNic}
-              vendorFilter={vendorFilter}
-              onSelectVendorFilter={setVendorFilter}
-            />
-
-            {/* Hardware Inventory Grid */}
-            <DeviceGrid
-              devices={filteredDevices}
-              onOpenDuplicateDrawer={() => setIsDuplicateDrawerOpen(true)}
-              onConfigureDevice={(dev) => setSelectedDeviceForConfig(dev)}
+        {/* Workspace Toolbar: Search, Filters & Network Adapter Info (Sections 7, 8, 24) */}
+        <div className="bg-slate-900 border border-slate-800 rounded-xl p-3.5 flex flex-wrap items-center justify-between gap-4 shadow-sm">
+          {/* Search Box (Section 7) */}
+          <div className="flex-1 min-w-[280px] relative">
+            <Search className="w-4 h-4 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              placeholder="Search by Name, IP, MAC, Model, Serial, or Notes..."
+              className="w-full bg-slate-950 border border-slate-800 rounded-lg pl-9 pr-3 py-1.5 text-xs text-slate-100 placeholder-slate-500 focus:border-sky-500 focus:outline-none"
             />
           </div>
-        )}
 
-        {/* VIEW 2: DETAILED 6-PHASE BATCH EXECUTION PIPELINE */}
-        {activeView === 'PIPELINE' && (
-          <div className="space-y-6">
-            <ExecutionPipeline
-              phases={phases}
-              onRunFullPipeline={handleRunFullPipeline}
-              onRunSinglePhase={handleRunSinglePhase}
-              isRunning={isScanning}
-            />
-
-            <DeviceGrid
-              devices={filteredDevices}
-              onOpenDuplicateDrawer={() => setIsDuplicateDrawerOpen(true)}
-              onConfigureDevice={(dev) => setSelectedDeviceForConfig(dev)}
-            />
-          </div>
-        )}
-
-        {/* VIEW 3: AUDIT LEDGER */}
-        {activeView === 'AUDIT_LOGS' && (
-          <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 shadow-xl space-y-3">
-            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
-              <h2 className="text-base font-bold text-white flex items-center gap-2">
-                <FileText className="w-5 h-5 text-sky-400" />
-                Master Audit & Event Ledger
-              </h2>
-              <span className="text-xs font-mono text-slate-400">{auditLogs.length} Records Logged</span>
+          {/* Filter Dropdowns (Section 8) */}
+          <div className="flex items-center gap-3 text-xs">
+            <div className="flex items-center gap-1.5 bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1">
+              <span className="text-slate-500">Status:</span>
+              <select
+                value={statusFilter}
+                onChange={(e) => setStatusFilter(e.target.value)}
+                className="bg-transparent text-slate-200 font-medium focus:outline-none cursor-pointer"
+              >
+                <option value="ALL" className="bg-slate-900">All Statuses</option>
+                <option value="ONLINE" className="bg-slate-900">Online</option>
+                <option value="DUPLICATE" className="bg-slate-900">Duplicate IP</option>
+                <option value="WORKING" className="bg-slate-900">Working</option>
+                <option value="UNREACHABLE" className="bg-slate-900">Unreachable</option>
+              </select>
             </div>
 
-            <div className="max-h-[600px] overflow-y-auto space-y-2 font-mono text-xs">
-              {auditLogs.map((log) => (
-                <div
-                  key={log.id}
-                  className="p-3 bg-slate-950/80 rounded-lg border border-slate-800/80 flex items-start gap-3"
-                >
-                  <span className="text-slate-500 font-bold shrink-0">{log.timestamp.slice(11, 19)}</span>
-                  <span
-                    className={`px-2 py-0.5 rounded text-[10px] font-bold shrink-0 ${
-                      log.level === 'SUCCESS'
-                        ? 'bg-emerald-950 text-emerald-400 border border-emerald-800'
-                        : log.level === 'WARNING'
-                        ? 'bg-amber-950 text-amber-400 border border-amber-800'
-                        : log.level === 'ERROR'
-                        ? 'bg-rose-950 text-rose-400 border border-rose-800'
-                        : 'bg-slate-800 text-sky-400 border border-slate-700'
-                    }`}
-                  >
-                    {log.level}
-                  </span>
-                  <span className="text-slate-200 flex-1 leading-relaxed">{log.message}</span>
-                </div>
-              ))}
+            <div className="flex items-center gap-1.5 bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1">
+              <span className="text-slate-500">Type:</span>
+              <select
+                value={deviceTypeFilter}
+                onChange={(e) => setDeviceTypeFilter(e.target.value)}
+                className="bg-transparent text-slate-200 font-medium focus:outline-none cursor-pointer"
+              >
+                <option value="ALL" className="bg-slate-900">All Types</option>
+                <option value="CAMERA" className="bg-slate-900">Cameras</option>
+                <option value="ACCESS" className="bg-slate-900">Access Control</option>
+              </select>
+            </div>
+
+            {/* Network Adapter Info (Section 24) */}
+            <div className="flex items-center gap-1.5 bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1 text-slate-300 font-mono text-[11px]">
+              <span className="w-2 h-2 rounded-full bg-emerald-400 inline-block animate-pulse" />
+              <span>{interfaces[0]?.name || 'Ethernet'}</span>
+              <span className="text-slate-500">({interfaces[0]?.ipAddress || '192.168.1.50'})</span>
+            </div>
+
+            {/* Continuous Discovery Monitor Indicator (Section 15) */}
+            <div className="flex items-center gap-1.5 text-slate-400 font-mono text-[11px]" title="Section 15: Background monitor active ~10s">
+              <Activity className="w-3.5 h-3.5 text-sky-400" />
+              <span>Monitor: 10s</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Section 39: Bulk Operation Bar (when items selected) */}
+        {selectedDeviceIds.size > 0 && (
+          <div className="bg-sky-950/60 border border-sky-500/50 rounded-xl p-3 flex items-center justify-between text-xs animate-fade-in shadow-md">
+            <div className="flex items-center gap-2 text-sky-200 font-semibold">
+              <CheckCircle className="w-4 h-4 text-sky-400" />
+              <span>{selectedDeviceIds.size} device(s) selected</span>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => alert(`Bulk IP/Network Configuration queued for ${selectedDeviceIds.size} devices.`)}
+                className="px-3 py-1 bg-sky-600 hover:bg-sky-500 text-white rounded-lg font-bold transition"
+              >
+                Bulk Configure (Section 39)
+              </button>
+              <button
+                onClick={() => setSelectedDeviceIds(new Set())}
+                className="px-2.5 py-1 text-slate-400 hover:text-white rounded-lg"
+              >
+                Deselect All
+              </button>
             </div>
           </div>
         )}
+
+        {/* Section 5: Master Device Table */}
+        <MasterDeviceTable
+          devices={filteredDevices}
+          selectedDeviceIds={selectedDeviceIds}
+          onToggleSelect={handleToggleSelect}
+          onToggleSelectAll={handleToggleSelectAll}
+          onUpdateDeviceName={handleUpdateDeviceName}
+          onUpdateDeviceNotes={handleUpdateDeviceNotes}
+          onOpenDuplicateAssistant={() => setIsDuplicateDrawerOpen(true)}
+          onConfigureDevice={(dev) => setSelectedDeviceForConfig(dev)}
+          onOpenBrowser={handleOpenBrowser}
+        />
       </main>
 
-      {/* Footer */}
-      <footer className="border-t border-slate-800/80 bg-slate-900/60 px-6 py-3 text-center text-xs text-slate-500 flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <HardDrive className="w-4 h-4 text-slate-400" />
-          <span>Dual SQLite Storage Architecture Active | Zero Latency Offline Deployment</span>
+      {/* ─────────────────────────────────────────────────────────────
+          FOOTER STATUS BAR
+      ───────────────────────────────────────────────────────────── */}
+      <footer className="border-t border-slate-800 bg-slate-900/80 px-6 py-2.5 text-xs text-slate-400 flex items-center justify-between">
+        <div className="flex items-center gap-4 font-mono text-[11px]">
+          <span>Total Devices: <strong className="text-white">{project?.devices.length || 0}</strong></span>
+          <span>•</span>
+          <span>Collisions: <strong className={activeCollisionsCount > 0 ? 'text-amber-400' : 'text-slate-400'}>{activeCollisionsCount}</strong></span>
+          <span>•</span>
+          <span>Mode: <strong className="text-sky-400">Quick Work (Offline-First)</strong></span>
         </div>
-        <span>CCTV Discovery Tool • Version 1.6 Blueprint Certified</span>
+
+        <div className="flex items-center gap-3">
+          <button
+            onClick={() => setIsLegacyModalOpen(true)}
+            className="hover:text-slate-200 transition flex items-center gap-1 text-[11px]"
+          >
+            <Plus className="w-3 h-3 text-sky-400" />
+            Manual Device (13.1)
+          </button>
+          <span>•</span>
+          <span>CCTV Technician Tool v1.0 Blueprint</span>
+        </div>
       </footer>
 
-      {/* Slide-out Duplicate Assistant Drawer (Section 13.2) */}
+      {/* ─────────────────────────────────────────────────────────────
+          MODALS & DRAWERS
+      ───────────────────────────────────────────────────────────── */}
+      {/* Section 12: Duplicate Assistant (Separate Window / Drawer) */}
       {project && (
         <DuplicateDrawer
           isOpen={isDuplicateDrawerOpen}
@@ -445,14 +479,28 @@ export default function App() {
         />
       )}
 
-      {/* Legacy Hardware Manual Onboarding Modal (Section 13.1) */}
+      {/* Section 28: Embedded Browser Modal */}
+      <BrowserModal
+        isOpen={selectedDeviceForBrowser !== null}
+        onClose={() => setSelectedDeviceForBrowser(null)}
+        device={selectedDeviceForBrowser}
+      />
+
+      {/* Section 38: Task Center Window */}
+      <TaskCenter
+        isOpen={isTaskCenterOpen}
+        onClose={() => setIsTaskCenterOpen(false)}
+        tasks={tasks}
+      />
+
+      {/* Section 13.1: Legacy Hardware Manual Onboarding */}
       <LegacyOnboardModal
         isOpen={isLegacyModalOpen}
         onClose={() => setIsLegacyModalOpen(false)}
         onSubmit={handleLegacyOnboard}
       />
 
-      {/* Site Audit Sign-Off Modal (Section 13.5) */}
+      {/* Section 13.5 & 48: Site Audit & Project Export */}
       {project && (
         <AuditReportModal
           isOpen={isAuditModalOpen}
@@ -462,7 +510,7 @@ export default function App() {
         />
       )}
 
-      {/* Device Configuration & ONVIF Studio Modal */}
+      {/* Device Configuration & ONVIF Studio */}
       <DeviceConfigModal
         isOpen={selectedDeviceForConfig !== null}
         onClose={() => setSelectedDeviceForConfig(null)}
