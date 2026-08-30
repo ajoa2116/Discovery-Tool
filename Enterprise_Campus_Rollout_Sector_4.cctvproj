@@ -1,0 +1,21 @@
+﻿{
+    "id":  "2328a6df-2b36-4db5-87cf-16afb771fbda",
+    "name":  "Enterprise Campus Rollout - Sector 4",
+    "siteLocation":  "Building B \u0026 Perimeter",
+    "technicianName":  "Field Specialist (Omar Cruz)",
+    "createdAt":  "2026-08-30T13:31:41.403Z",
+    "updatedAt":  "2026-08-30T13:31:41.403Z",
+    "totalDevices":  0,
+    "devices":  [
+
+                ],
+    "collisions":  [
+
+                   ],
+    "rogueDhcpEvents":  [
+
+                        ],
+    "auditLogs":  [
+
+                  ]
+}
