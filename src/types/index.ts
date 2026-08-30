@@ -158,6 +158,18 @@ export interface Device {
   manufacturerParams?: Record<string, any>;
   reachability?: ReachabilityEvidence;
   identityConflicts?: IdentityConflict[];
+  technician?: {
+    name?: string;
+    location?: string;
+    notes?: string;
+  };
+  configuredState?: {
+    inferred: boolean | null;
+    manualOverride?: boolean | null;
+    updatedAt?: string;
+  };
+  savedStatusSnapshot?: DeviceStatus;
+  sessionVerification?: 'NOT_VERIFIED' | 'VERIFIED' | 'NOT_FOUND';
   telemetry?: {
     heartbeatIntervalMs: number;
     packetLossPct: number;
@@ -208,10 +220,12 @@ export interface RogueDHCPOffer {
 export interface SiteProject {
   id: string;
   name: string;
+  description?: string;
   siteLocation: string;
   technicianName: string;
   createdAt: string;
   updatedAt: string;
+  lastSavedAt?: string;
   totalDevices: number;
   devices: Device[];
   collisions: IPCollisionRecord[];
@@ -238,6 +252,22 @@ export interface NICInfo {
   mac: string;
   isInternal: boolean;
   interfaceIndex?: number;
+}
+
+export type WorkMode = 'QUICK_WORK' | 'PROJECT';
+
+export interface ProjectSession {
+  mode: WorkMode;
+  project: SiteProject;
+  filePath?: string;
+  dirty: boolean;
+}
+
+export interface CctvProjectBundle {
+  format: 'CCTV_DISCOVERY_PROJECT';
+  schemaVersion: 1;
+  applicationVersion: string;
+  project: SiteProject;
 }
 
 export interface ReverificationResult {

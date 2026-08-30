@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   SiteProject,
   Device,
@@ -7,6 +7,7 @@ import {
   AuditLogEntry,
   NICInfo,
   OnvifCustomConfig,
+  ProjectSession,
 } from '../types/index.ts';
 import { MasterDeviceTable } from './components/MasterDeviceTable.tsx';
 import { DuplicateDrawer } from './components/DuplicateDrawer.tsx';
@@ -44,6 +45,9 @@ import {
 
 export default function App() {
   const [project, setProject] = useState<SiteProject | null>(null);
+  const [projectSession, setProjectSession] = useState<ProjectSession | null>(null);
+  const [projectFilename, setProjectFilename] = useState('');
+  const openProjectInput = useRef<HTMLInputElement>(null);
   const [auditLogs, setAuditLogs] = useState<AuditLogEntry[]>([]);
   const [interfaces, setInterfaces] = useState<NICInfo[]>([]);
   const [isScanning, setIsScanning] = useState(false);
@@ -81,12 +85,16 @@ export default function App() {
   // Fetch initial data
   const fetchData = async () => {
     try {
-      const [projRes, auditRes] = await Promise.all([
-        fetch('http://localhost:3001/api/project'),
+      const [sessionRes, auditRes] = await Promise.all([
+        fetch('http://localhost:3001/api/project/session'),
         fetch('http://localhost:3001/api/audit-logs'),
       ]);
 
-      if (projRes.ok) setProject(await projRes.json());
+      if (sessionRes.ok) {
+        const session = await sessionRes.json() as ProjectSession;
+        setProjectSession(session);
+        setProject(session.project);
+      }
       if (auditRes.ok) setAuditLogs(await auditRes.json());
     } catch (err) {
       console.error('Failed to fetch backend data:', err);
@@ -106,6 +114,10 @@ export default function App() {
         }
         if ((data.type === 'DEVICE_DISCOVERED' || data.type === 'DEVICE_ENRICHED') && data.data?.project) {
           setProject(data.data.project);
+        }
+        if ((data.type === 'PROJECT_SESSION_CHANGED' || data.type === 'PROJECT_SAVED') && data.data?.session) {
+          setProjectSession(data.data.session);
+          setProject(data.data.session.project);
         }
         if (data.type === 'SCAN_COMPLETE' || data.type === 'SCAN_CANCELLED' || data.type === 'SCAN_FAILED') {
           setIsScanning(false);
@@ -129,6 +141,60 @@ export default function App() {
       ws.close();
     };
   }, []);
+
+  const postProjectAction = async (path: string, body: Record<string, unknown> = {}) => {
+    const response = await fetch(`http://localhost:3001${path}`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || 'Project operation failed.');
+    await fetchData();
+    return result;
+  };
+
+  const handleNewProject = async () => {
+    const name = window.prompt('Project/site name:');
+    if (!name?.trim()) return;
+    const location = window.prompt('Site location (optional):') || '';
+    await postProjectAction('/api/project/new', { name, location });
+    setProjectFilename('');
+  };
+
+  const handleCreateFromCurrent = async () => {
+    const name = window.prompt('Project/site name for these results:');
+    if (!name?.trim()) return;
+    await postProjectAction('/api/project/from-current', { name });
+    setProjectFilename('');
+  };
+
+  const handleOpenProject = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    try {
+      await postProjectAction('/api/project/open', { jsonData: await file.text() });
+      setProjectFilename(file.name);
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : String(error));
+    } finally {
+      event.target.value = '';
+    }
+  };
+
+  const handleSaveProject = async (saveAs = false) => {
+    if (projectSession?.mode !== 'PROJECT') {
+      await handleCreateFromCurrent();
+      return;
+    }
+    const result = await postProjectAction('/api/project/save-content') as { filename: string; content: string };
+    let filename = projectFilename || result.filename;
+    if (saveAs) filename = window.prompt('Save project as:', filename) || filename;
+    if (!filename.toLowerCase().endsWith('.cctvproj')) filename += '.cctvproj';
+    const url = URL.createObjectURL(new Blob([result.content], { type: 'application/json' }));
+    const anchor = document.createElement('a');
+    anchor.href = url; anchor.download = filename; anchor.click();
+    URL.revokeObjectURL(url);
+    setProjectFilename(filename);
+  };
 
   // Section 14: Fast Scan Trigger
   const handleScanNetwork = async () => {
@@ -158,11 +224,10 @@ export default function App() {
   const handleUpdateDeviceName = async (id: string, newName: string) => {
     const dev = project?.devices.find((d) => d.id === id);
     if (dev) {
-      dev.anchor.model = newName;
       await fetch(`http://localhost:3001/api/device/${encodeURIComponent(dev.id)}/config`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ manufacturerParams: { customName: newName } }),
+        body: JSON.stringify({ technician: { name: newName } }),
       });
       await fetchData();
     }
@@ -172,11 +237,10 @@ export default function App() {
   const handleUpdateDeviceNotes = async (id: string, notes: string) => {
     const dev = project?.devices.find((d) => d.id === id);
     if (dev) {
-      dev.statusMessage = notes;
       await fetch(`http://localhost:3001/api/device/${encodeURIComponent(dev.id)}/config`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ manufacturerParams: { technicianNotes: notes } }),
+        body: JSON.stringify({ technician: { notes } }),
       });
       await fetchData();
     }
@@ -269,7 +333,9 @@ export default function App() {
       dev.anchor.vendor.toLowerCase().includes(q) ||
       (dev.anchor.model && dev.anchor.model.toLowerCase().includes(q)) ||
       (dev.anchor.serialNumber && dev.anchor.serialNumber.toLowerCase().includes(q)) ||
-      (dev.statusMessage && dev.statusMessage.toLowerCase().includes(q));
+      (dev.technician?.name && dev.technician.name.toLowerCase().includes(q)) ||
+      (dev.technician?.location && dev.technician.location.toLowerCase().includes(q)) ||
+      (dev.technician?.notes && dev.technician.notes.toLowerCase().includes(q));
 
     const matchesStatus =
       statusFilter === 'ALL' ||
@@ -303,9 +369,10 @@ export default function App() {
           <div>
             <h1 className="font-black text-base tracking-wide text-white uppercase">CCTV Technician Tool</h1>
             <div className="flex items-center gap-2 mt-0.5 text-xs text-slate-400">
-              <span>Project:</span>
+              <span>{projectSession?.mode === 'PROJECT' ? 'Project:' : 'Mode:'}</span>
               <span className="font-semibold text-slate-200">
-                {project?.name ? project.name : 'No Project — Quick Work Mode'}
+                {projectSession?.mode === 'PROJECT' ? project?.name : 'Quick Work'}
+                {projectSession?.dirty ? ' • Unsaved' : ''}
               </span>
             </div>
           </div>
@@ -357,7 +424,17 @@ export default function App() {
 
           {/* Section 3 & 49: Open / Save Project */}
           <button
-            onClick={() => setIsAuditModalOpen(true)}
+            onClick={projectSession?.mode === 'QUICK_WORK' && (project?.devices.length || 0) > 0 ? handleCreateFromCurrent : handleNewProject}
+            className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition"
+            title={projectSession?.mode === 'QUICK_WORK' && (project?.devices.length || 0) > 0 ? 'Create a project from current Quick Work results' : 'Create an empty project'}
+          >
+            <Plus className="w-3.5 h-3.5 text-emerald-400" />
+            {projectSession?.mode === 'QUICK_WORK' && (project?.devices.length || 0) > 0 ? 'Keep Results' : 'New Project'}
+          </button>
+
+          <input ref={openProjectInput} type="file" accept=".cctvproj,application/json" onChange={handleOpenProject} className="hidden" />
+          <button
+            onClick={() => openProjectInput.current?.click()}
             className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition"
           >
             <FolderOpen className="w-3.5 h-3.5 text-sky-400" />
@@ -365,12 +442,33 @@ export default function App() {
           </button>
 
           <button
-            onClick={() => setIsAuditModalOpen(true)}
+            onClick={() => handleSaveProject(false).catch(error => window.alert(error.message))}
             className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition"
           >
             <Save className="w-3.5 h-3.5 text-emerald-400" />
             Save Project
           </button>
+
+          {projectSession?.mode === 'PROJECT' && (
+            <button
+              onClick={() => handleSaveProject(true).catch(error => window.alert(error.message))}
+              className="px-2 py-2 rounded-xl text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition"
+              title="Save As"
+            >
+              Save As
+            </button>
+          )}
+
+          {projectSession?.mode === 'PROJECT' && (
+            <button
+              onClick={handleScanNetwork}
+              disabled={isScanning}
+              className="px-2 py-2 rounded-xl text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-sky-300 border border-slate-700 transition disabled:opacity-50"
+              title="Reverify saved identities with a live discovery scan"
+            >
+              Reverify
+            </button>
+          )}
 
           {/* Section 38: Task Center */}
           <button
@@ -511,7 +609,7 @@ export default function App() {
           <span>•</span>
           <span>Collisions: <strong className={activeCollisionsCount > 0 ? 'text-amber-400' : 'text-slate-400'}>{activeCollisionsCount}</strong></span>
           <span>•</span>
-          <span>Mode: <strong className="text-sky-400">Quick Work (Offline-First)</strong></span>
+          <span>Mode: <strong className="text-sky-400">{projectSession?.mode === 'PROJECT' ? `Project — ${project?.name}` : 'Quick Work (Session Only)'}</strong></span>
         </div>
 
         <div className="flex items-center gap-3">

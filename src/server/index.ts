@@ -12,6 +12,8 @@ import { LegacyHardwareOnboarding } from '../core/edge_cases/legacy_hardware.ts'
 import { OnvifDriver } from '../core/drivers/onvif.ts';
 import { AvailableIpFinder } from '../core/engine/ip_finder.ts';
 import { BulkReIpEngine } from '../core/engine/bulk_reip.ts';
+import { ProjectReverificationEngine } from '../core/engine/reverification.ts';
+import { ProjectValidationError } from '../core/storage/project_db.ts';
 
 const app = express();
 const server = createServer(app);
@@ -40,6 +42,76 @@ pipelineEngine.subscribe(event => {
 // Project & Devices
 app.get('/api/project', (req, res) => {
   res.json(projectDb.getProject());
+});
+
+app.get('/api/project/session', (req, res) => {
+  res.json(projectDb.getSession());
+});
+
+app.post('/api/project/quick-work', (req, res) => {
+  const project = projectDb.startQuickWork();
+  broadcast({ type: 'PROJECT_SESSION_CHANGED', data: { session: projectDb.getSession() } });
+  res.json(project);
+});
+
+app.post('/api/project/new', (req, res) => {
+  try {
+    const project = projectDb.createNewProject(req.body.name, req.body.location, req.body.description);
+    broadcast({ type: 'PROJECT_SESSION_CHANGED', data: { session: projectDb.getSession() } });
+    res.status(201).json(project);
+  } catch (error) {
+    res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.post('/api/project/from-current', (req, res) => {
+  try {
+    const project = projectDb.createProjectFromCurrentResults(req.body.name, req.body.description);
+    broadcast({ type: 'PROJECT_SESSION_CHANGED', data: { session: projectDb.getSession() } });
+    res.status(201).json(project);
+  } catch (error) {
+    res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.post('/api/project/open', (req, res) => {
+  try {
+    const project = projectDb.importProjectJson(req.body.jsonData);
+    broadcast({ type: 'PROJECT_SESSION_CHANGED', data: { session: projectDb.getSession() } });
+    res.json(project);
+  } catch (error) {
+    res.status(error instanceof ProjectValidationError ? 400 : 500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.post('/api/project/save-content', (req, res) => {
+  try {
+    const content = projectDb.exportProjectJsonForSave();
+    broadcast({ type: 'PROJECT_SAVED', data: { session: projectDb.getSession() } });
+    res.json({ filename: `${projectDb.getProject().name.replace(/[^a-z0-9_-]+/gi, '_')}.cctvproj`, content });
+  } catch (error) {
+    res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.post('/api/project/save', async (req, res) => {
+  try {
+    const filePath = req.body.filePath ? await projectDb.saveAs(req.body.filePath) : await projectDb.saveProject();
+    broadcast({ type: 'PROJECT_SAVED', data: { session: projectDb.getSession() } });
+    res.json({ filePath, session: projectDb.getSession() });
+  } catch (error) {
+    res.status(error instanceof ProjectValidationError ? 400 : 500).json({ error: error instanceof Error ? error.message : String(error) });
+  }
+});
+
+app.post('/api/project/reverify', (req, res) => {
+  try {
+    const result = ProjectReverificationEngine.reverifyActiveProject(req.body.liveDevices || []);
+    broadcast({ type: 'PROJECT_REVERIFIED', data: { result, project: projectDb.getProject() } });
+    res.json({ result, project: projectDb.getProject() });
+  } catch (error) {
+    res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
+  }
 });
 
 app.get('/api/project/devices', (req, res) => {
@@ -140,7 +212,7 @@ app.post('/api/device/:identifier/config', (req, res) => {
   const dev = projectDb.getDeviceByIdentifier(req.params.identifier);
   if (!dev) return res.status(404).json({ error: 'Device not found' });
 
-  const { onvifConfig, manufacturerParams, networkSettings } = req.body;
+  const { onvifConfig, manufacturerParams, networkSettings, technician } = req.body;
   if (onvifConfig) dev.onvifConfig = onvifConfig;
   if (manufacturerParams) dev.manufacturerParams = { ...dev.manufacturerParams, ...manufacturerParams };
   if (networkSettings) {
@@ -148,6 +220,7 @@ app.post('/api/device/:identifier/config', (req, res) => {
     if (networkSettings.subnetMask) dev.network.subnetMask = networkSettings.subnetMask;
     if (networkSettings.gateway) dev.network.gateway = networkSettings.gateway;
   }
+  if (technician) projectDb.updateDeviceTechnicianFields(dev.id, technician);
 
   dev.lastSeenAt = new Date().toISOString();
   projectDb.upsertDevice(dev);

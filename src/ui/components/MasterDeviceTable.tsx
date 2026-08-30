@@ -50,7 +50,7 @@ export const MasterDeviceTable: React.FC<MasterDeviceTableProps> = ({
   const startEditName = (dev: Device, e: React.MouseEvent) => {
     e.stopPropagation();
     setEditingNameId(dev.id);
-    setTempName(dev.anchor.model || dev.anchor.vendor);
+    setTempName(dev.technician?.name || dev.anchor.model || dev.anchor.vendor);
   };
 
   const saveEditName = (devId: string) => {
@@ -63,7 +63,7 @@ export const MasterDeviceTable: React.FC<MasterDeviceTableProps> = ({
   const startEditNotes = (dev: Device, e: React.MouseEvent) => {
     e.stopPropagation();
     setEditingNotesId(dev.id);
-    setTempNotes(dev.statusMessage || '');
+    setTempNotes(dev.technician?.notes || '');
   };
 
   const saveEditNotes = (devId: string) => {
@@ -235,7 +235,7 @@ export const MasterDeviceTable: React.FC<MasterDeviceTableProps> = ({
                           className="group flex items-center gap-1.5 cursor-pointer hover:text-sky-300 transition"
                           title="Click to rename inline"
                         >
-                          <span>{dev.anchor.model || dev.anchor.vendor}</span>
+                          <span>{dev.technician?.name || dev.anchor.model || dev.anchor.vendor}</span>
                           <Edit2 className="w-3 h-3 text-slate-500 opacity-0 group-hover:opacity-100 transition" />
                         </div>
                       )}
@@ -307,7 +307,7 @@ export const MasterDeviceTable: React.FC<MasterDeviceTableProps> = ({
                           title="Click to add/edit note"
                         >
                           <StickyNote className="w-3 h-3 text-slate-600" />
-                          <span>{dev.statusMessage || <span className="italic text-slate-600">Add note</span>}</span>
+                          <span>{dev.technician?.notes || <span className="italic text-slate-600">Add note</span>}</span>
                         </div>
                       )}
                     </td>
