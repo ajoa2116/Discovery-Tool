@@ -62,6 +62,7 @@ function prepareLoadedDevice(device: Device): Device {
   loaded.sessionVerification = 'NOT_VERIFIED';
   delete loaded.reachability;
   delete loaded.telemetry;
+  delete loaded.diagnostics;
   return loaded;
 }
 

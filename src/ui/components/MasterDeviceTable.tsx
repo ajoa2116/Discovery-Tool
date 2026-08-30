@@ -12,6 +12,7 @@ import {
   AlertTriangle,
   StickyNote,
   Video,
+  Activity,
 } from 'lucide-react';
 
 interface MasterDeviceTableProps {
@@ -25,6 +26,7 @@ interface MasterDeviceTableProps {
   onConfigureDevice: (dev: Device) => void;
   onInspectDevice: (dev: Device) => void;
   onOpenBrowser: (dev: Device, mode: 'EMBEDDED' | 'EDGE' | 'CHROME' | 'SYSTEM') => void;
+  onDiagnose: (dev: Device) => void;
 }
 
 export const MasterDeviceTable: React.FC<MasterDeviceTableProps> = ({
@@ -38,6 +40,7 @@ export const MasterDeviceTable: React.FC<MasterDeviceTableProps> = ({
   onConfigureDevice,
   onInspectDevice,
   onOpenBrowser,
+  onDiagnose,
 }) => {
   const [editingNameId, setEditingNameId] = useState<string | null>(null);
   const [tempName, setTempName] = useState<string>('');
@@ -123,11 +126,14 @@ export const MasterDeviceTable: React.FC<MasterDeviceTableProps> = ({
           </span>
         );
       case 'UNRESPONSIVE':
+      case 'UNREACHABLE':
         return (
           <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-slate-800 text-slate-400">
-            Different Network
+            Unreachable
           </span>
         );
+      case 'OFFLINE':
+        return <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-rose-950/50 text-rose-300 border border-rose-800">Offline</span>;
       case 'ERROR':
         return (
           <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-rose-500/20 text-rose-300 border border-rose-500/30">
@@ -322,6 +328,14 @@ export const MasterDeviceTable: React.FC<MasterDeviceTableProps> = ({
                         >
                           <Video className="w-3 h-3 text-sky-400" />
                           Inspect
+                        </button>
+
+                        <button
+                          onClick={() => onDiagnose(dev)}
+                          title="Run real reachability diagnostics"
+                          className="px-2.5 py-1 rounded bg-slate-800 hover:bg-emerald-700 text-slate-300 hover:text-white transition font-medium text-[11px] flex items-center gap-1"
+                        >
+                          <Activity className="w-3 h-3 text-emerald-400" />Diagnose
                         </button>
 
                         <button

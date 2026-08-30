@@ -51,6 +51,7 @@ export default function App() {
   const [auditLogs, setAuditLogs] = useState<AuditLogEntry[]>([]);
   const [interfaces, setInterfaces] = useState<NICInfo[]>([]);
   const [isScanning, setIsScanning] = useState(false);
+  const [diagnosticRefresh, setDiagnosticRefresh] = useState<{ enabled: boolean; running: boolean; intervalMs: number }>({ enabled: false, running: false, intervalMs: 30000 });
 
   // Search & Filters (Sections 7 & 8)
   const [searchQuery, setSearchQuery] = useState('');
@@ -85,9 +86,10 @@ export default function App() {
   // Fetch initial data
   const fetchData = async () => {
     try {
-      const [sessionRes, auditRes] = await Promise.all([
+      const [sessionRes, auditRes, refreshRes] = await Promise.all([
         fetch('http://localhost:3001/api/project/session'),
         fetch('http://localhost:3001/api/audit-logs'),
+        fetch('http://localhost:3001/api/diagnostics/refresh'),
       ]);
 
       if (sessionRes.ok) {
@@ -96,6 +98,7 @@ export default function App() {
         setProject(session.project);
       }
       if (auditRes.ok) setAuditLogs(await auditRes.json());
+      if (refreshRes.ok) setDiagnosticRefresh(await refreshRes.json());
     } catch (err) {
       console.error('Failed to fetch backend data:', err);
     }
@@ -114,6 +117,11 @@ export default function App() {
         }
         if ((data.type === 'DEVICE_DISCOVERED' || data.type === 'DEVICE_ENRICHED') && data.data?.project) {
           setProject(data.data.project);
+        }
+        if (data.type === 'DEVICE_DIAGNOSTICS_UPDATED' && data.data?.project) {
+          setProject(data.data.project);
+          setSelectedDeviceForInspector(current => current?.id === data.data.device?.id ? data.data.device : current);
+          if (data.data.refresh) setDiagnosticRefresh(data.data.refresh);
         }
         if ((data.type === 'PROJECT_SESSION_CHANGED' || data.type === 'PROJECT_SAVED') && data.data?.session) {
           setProjectSession(data.data.session);
@@ -265,11 +273,21 @@ export default function App() {
   };
 
   const handleOpenBrowser = (dev: Device, mode: 'EMBEDDED' | 'EDGE' | 'CHROME' | 'SYSTEM') => {
+    const recentChecks = [...(dev.diagnostics?.checks || [])].reverse();
+    const protocol = recentChecks.some(check => check.type === 'HTTPS' && check.success) ? 'https' : 'http';
+    const port = protocol === 'https' ? 443 : dev.network.port || 80;
     if (mode === 'EMBEDDED') {
       setSelectedDeviceForBrowser(dev);
     } else {
-      window.open(`http://${dev.network.ipAddress}:${dev.network.port || 80}`, '_blank');
+      window.open(`${protocol}://${dev.network.ipAddress}:${port}`, '_blank');
     }
+  };
+
+  const handleDiagnose = async (devices: Device[]) => {
+    const response = await fetch('http://localhost:3001/api/diagnostics/run', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ deviceIds: devices.map(device => device.id) }),
+    });
+    if (!response.ok) throw new Error((await response.json()).error || 'Unable to start diagnostics.');
   };
 
   const handleSaveDeviceConfig = async (
@@ -342,7 +360,7 @@ export default function App() {
       (statusFilter === 'ONLINE' && (dev.status === 'ONLINE' || dev.status === 'AUTHENTICATED' || dev.status === 'CONFIGURED')) ||
       (statusFilter === 'DUPLICATE' && dev.status === 'COLLISION') ||
       (statusFilter === 'WORKING' && dev.status === 'PROVISIONING') ||
-      (statusFilter === 'UNREACHABLE' && (dev.status === 'UNRESPONSIVE' || dev.status === 'DIFFERENT_SUBNET'));
+      (statusFilter === 'UNREACHABLE' && (dev.status === 'UNRESPONSIVE' || dev.status === 'UNREACHABLE' || dev.status === 'OFFLINE' || dev.status === 'DIFFERENT_SUBNET'));
 
     const matchesType =
       deviceTypeFilter === 'ALL' ||
@@ -552,9 +570,9 @@ export default function App() {
             </div>
 
             {/* Continuous Discovery Monitor Indicator (Section 15) */}
-            <div className="flex items-center gap-1.5 text-slate-400 font-mono text-[11px]" title="Section 15: Background monitor active ~10s">
-              <Activity className="w-3.5 h-3.5 text-sky-400" />
-              <span>Monitor: 10s</span>
+            <div className="flex items-center gap-1.5 text-slate-400 font-mono text-[11px]" title="Lightweight diagnostic refresh; no configuration or full discovery">
+              <Activity className={`w-3.5 h-3.5 ${diagnosticRefresh.enabled ? 'text-emerald-400' : 'text-slate-600'}`} />
+              <span>Diagnostics: {diagnosticRefresh.enabled ? `${Math.round(diagnosticRefresh.intervalMs / 1000)}s${diagnosticRefresh.running ? ' (checking)' : ''}` : 'Paused'}</span>
             </div>
           </div>
         </div>
@@ -568,6 +586,12 @@ export default function App() {
             </div>
 
             <div className="flex items-center gap-2">
+              <button
+                onClick={() => handleDiagnose(selectedDevicesList).catch(error => window.alert(error.message))}
+                className="px-3.5 py-1.5 bg-emerald-700 hover:bg-emerald-600 text-white rounded-lg font-bold transition flex items-center gap-1.5"
+              >
+                <Activity className="w-3.5 h-3.5" />Diagnose Selected
+              </button>
               <button
                 onClick={() => setIsBulkReIpModalOpen(true)}
                 className="px-3.5 py-1.5 bg-sky-600 hover:bg-sky-500 text-white rounded-lg font-bold transition flex items-center gap-1.5 shadow-md shadow-sky-950"
@@ -597,6 +621,7 @@ export default function App() {
           onConfigureDevice={(dev) => setSelectedDeviceForConfig(dev)}
           onInspectDevice={(dev) => setSelectedDeviceForInspector(dev)}
           onOpenBrowser={handleOpenBrowser}
+          onDiagnose={(dev) => handleDiagnose([dev]).catch(error => window.alert(error.message))}
         />
       </main>
 
@@ -640,6 +665,7 @@ export default function App() {
         onOpenBrowserModal={(dev) => {
           setSelectedDeviceForBrowser(dev);
         }}
+        onDiagnose={(dev) => handleDiagnose([dev]).catch(error => window.alert(error.message))}
       />
 
       {/* Section 5: Bulk Re-IP Modal with Conflict Audit */}

@@ -11,7 +11,10 @@ interface BrowserModalProps {
 export const BrowserModal: React.FC<BrowserModalProps> = ({ isOpen, onClose, device }) => {
   if (!isOpen || !device) return null;
 
-  const url = `http://${device.network.ipAddress}:${device.network.port || 80}`;
+  const recentChecks = [...(device.diagnostics?.checks || [])].reverse();
+  const protocol = recentChecks.some(check => check.type === 'HTTPS' && check.success) ? 'https' : 'http';
+  const port = protocol === 'https' ? 443 : device.network.port || 80;
+  const url = `${protocol}://${device.network.ipAddress}:${port}`;
 
   return (
     <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-6">

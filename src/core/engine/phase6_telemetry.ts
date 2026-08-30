@@ -5,35 +5,28 @@ import { projectDb } from '../storage/project_db.ts';
 export class Phase6TelemetryVerification {
   /**
    * Phase 6: Telemetry Verification and Audit Export
-   * Verifies heartbeat signals, packet loss metrics, RTSP stream health, and prepares audit export.
+   * Summarizes real current-session reachability evidence. RTSP, packet loss,
+   * switch, and PoE claims remain unknown until dedicated providers exist.
    */
   public static async execute(): Promise<{ verifiedDevices: Device[]; auditSummary: Record<string, any>; logs: string[] }> {
     const logs: string[] = [];
-    logs.push('[Phase 6] Initiating post-provisioning telemetry checks & network integrity audit (Section 13.5)...');
+    logs.push('[Phase 6] Summarizing current-session diagnostic evidence...');
 
     const devices = projectDb.getDevices();
     const verifiedDevices: Device[] = [];
 
     for (const dev of devices) {
-      if (dev.status === 'COLLISION' || dev.status === 'ERROR') {
-        logs.push(`[Phase 6] [UNVERIFIED] ${dev.anchor.macAddress} in ${dev.status} state. Telemetry check bypassed.`);
-        continue;
+      delete dev.telemetry;
+      const hasPositiveEvidence = Boolean(
+        dev.reachability?.lastSuccessfulResponseAt ||
+        dev.diagnostics?.checks.some(check => check.success && !check.ambiguousIdentity)
+      );
+      if (hasPositiveEvidence) {
+        verifiedDevices.push(dev);
+        logs.push(`[Phase 6] Current reachability evidence exists for ${dev.id} at ${dev.network.ipAddress}.`);
+      } else {
+        logs.push(`[Phase 6] No current positive evidence for ${dev.id}; health, packet loss, and RTSP remain unknown.`);
       }
-
-      // Simulate telemetry response
-      const latency = Math.floor(Math.random() * 8) + 2; // 2-10ms
-      const packetLoss = 0.0;
-      const rtspActive = true;
-
-      dev.telemetry = {
-        heartbeatIntervalMs: 5000,
-        packetLossPct: packetLoss,
-        latencyMs: latency,
-        rtspStreamActive: rtspActive,
-      };
-
-      verifiedDevices.push(dev);
-      logs.push(`[Phase 6] Telemetry Nominal for ${dev.anchor.macAddress} [IP: ${dev.network.ipAddress}] - Latency: ${latency}ms, Loss: ${packetLoss}%, RTSP: ACTIVE`);
     }
 
     const auditSummary = {

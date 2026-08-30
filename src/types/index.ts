@@ -23,6 +23,8 @@ export type ProtocolType =
 
 export type DeviceStatus =
   | 'ONLINE'
+  | 'OFFLINE'
+  | 'UNREACHABLE'
   | 'DIFFERENT_SUBNET'
   | 'UNKNOWN'
   | 'DISCOVERED'
@@ -133,6 +135,46 @@ export interface ReachabilityEvidence {
   subnetClassification?: 'LOCAL' | 'DIFFERENT_SUBNET' | 'UNKNOWN';
 }
 
+export type DiagnosticCheckType = 'PING' | 'HTTP' | 'HTTPS' | 'TCP' | 'ONVIF_WS_DISCOVERY';
+export type DiagnosticErrorCategory =
+  | 'TIMEOUT'
+  | 'CONNECTION_REFUSED'
+  | 'NETWORK_UNREACHABLE'
+  | 'TLS_CERTIFICATE'
+  | 'CANCELLED'
+  | 'MALFORMED_RESPONSE'
+  | 'TRANSPORT_ERROR'
+  | 'UNKNOWN';
+
+export interface DiagnosticCheckEvidence {
+  type: DiagnosticCheckType;
+  targetIp: string;
+  port?: number;
+  protocol?: string;
+  success: boolean;
+  transportReachable?: boolean;
+  timeout?: boolean;
+  responseTimeMs?: number;
+  httpStatus?: number;
+  certificateTrusted?: boolean;
+  certificateWarning?: string;
+  errorCategory?: DiagnosticErrorCategory;
+  errorMessage?: string;
+  originatingAdapter?: { name: string; ipAddress: string; netmask: string; interfaceIndex?: number };
+  timestamp: string;
+  ambiguousIdentity?: boolean;
+}
+
+export interface DeviceDiagnosticState {
+  checks: DiagnosticCheckEvidence[];
+  lastRunStartedAt?: string;
+  lastRunCompletedAt?: string;
+  lastSuccessfulContactAt?: string;
+  lastRefreshAt?: string;
+  previouslyReachableThisSession?: boolean;
+  consecutiveFailedRefreshes?: number;
+}
+
 export interface IdentityConflict {
   detectedAt: string;
   reason: string;
@@ -157,6 +199,7 @@ export interface Device {
   onvifConfig?: OnvifCustomConfig;
   manufacturerParams?: Record<string, any>;
   reachability?: ReachabilityEvidence;
+  diagnostics?: DeviceDiagnosticState;
   identityConflicts?: IdentityConflict[];
   technician?: {
     name?: string;

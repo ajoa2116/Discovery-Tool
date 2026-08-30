@@ -14,10 +14,13 @@ import { AvailableIpFinder } from '../core/engine/ip_finder.ts';
 import { BulkReIpEngine } from '../core/engine/bulk_reip.ts';
 import { ProjectReverificationEngine } from '../core/engine/reverification.ts';
 import { ProjectValidationError } from '../core/storage/project_db.ts';
+import { DeviceDiagnosticEngine, DiagnosticRefreshMonitor } from '../core/engine/diagnostic_engine.ts';
 
 const app = express();
 const server = createServer(app);
 const wss = new WebSocketServer({ server, path: '/ws' });
+const diagnosticEngine = new DeviceDiagnosticEngine();
+const diagnosticControllers = new Map<string, AbortController>();
 
 app.use(cors());
 app.use(express.json());
@@ -31,6 +34,18 @@ const broadcast = (data: any) => {
     }
   });
 };
+
+const diagnosticMonitor = new DiagnosticRefreshMonitor(
+  diagnosticEngine,
+  () => projectDb.getDevices(),
+  device => {
+    projectDb.upsertDevice(device);
+    broadcast({ type: 'DEVICE_DIAGNOSTICS_UPDATED', data: { device, project: projectDb.getProject(), refresh: diagnosticMonitor.getState() } });
+  },
+  30_000,
+  3,
+);
+diagnosticMonitor.start();
 
 // Wire pipeline events to WebSocket clients
 pipelineEngine.subscribe(event => {
@@ -158,6 +173,41 @@ app.post('/api/discovery/start', (req, res) => {
     broadcast({ type: 'SCAN_FAILED', data: { message: error instanceof Error ? error.message : String(error) } });
   });
 });
+
+app.post('/api/diagnostics/run', async (req, res) => {
+  const ids: string[] = Array.isArray(req.body.deviceIds) ? req.body.deviceIds : [req.body.deviceId].filter(Boolean);
+  const devices = ids.map(id => projectDb.getDeviceById(id)).filter((device): device is NonNullable<typeof device> => Boolean(device));
+  if (!devices.length) return res.status(404).json({ error: 'No matching devices were found.' });
+  res.status(202).json({ started: devices.map(device => device!.id) });
+  for (const device of devices) {
+    const current = device!;
+    diagnosticControllers.get(current.id)?.abort();
+    const controller = new AbortController();
+    diagnosticControllers.set(current.id, controller);
+    const ambiguousIdentity = projectDb.getDevices().some(other => other.id !== current.id && other.network.ipAddress === current.network.ipAddress);
+    diagnosticEngine.diagnose(current, {
+      signal: controller.signal,
+      ambiguousIdentity,
+      onEvidence: (evidence, updated) => broadcast({ type: 'DIAGNOSTIC_EVIDENCE', data: { deviceId: updated.id, evidence, device: updated } }),
+    }).then(updated => {
+      projectDb.upsertDevice(updated);
+      broadcast({ type: 'DEVICE_DIAGNOSTICS_UPDATED', data: { device: updated, project: projectDb.getProject() } });
+    }).catch(error => {
+      broadcast({ type: 'DIAGNOSTIC_FAILED', data: { deviceId: current.id, message: error instanceof Error ? error.message : 'Diagnostic check failed.' } });
+    }).finally(() => diagnosticControllers.delete(current.id));
+  }
+});
+
+app.post('/api/diagnostics/cancel', (req, res) => {
+  const ids = Array.isArray(req.body.deviceIds) ? req.body.deviceIds : req.body.deviceId ? [req.body.deviceId] : [...diagnosticControllers.keys()];
+  for (const id of ids) diagnosticControllers.get(id)?.abort();
+  res.status(202).json({ cancelled: ids });
+});
+
+app.get('/api/diagnostics/refresh', (req, res) => res.json(diagnosticMonitor.getState()));
+app.post('/api/diagnostics/refresh/start', (req, res) => { diagnosticMonitor.start(); res.json(diagnosticMonitor.getState()); });
+app.post('/api/diagnostics/refresh/stop', (req, res) => { diagnosticMonitor.stop(); res.json(diagnosticMonitor.getState()); });
+app.post('/api/diagnostics/refresh/run', (req, res) => { res.status(202).json({ started: true }); void diagnosticMonitor.refreshNow(); });
 
 app.post('/api/discovery/stop', (req, res) => {
   const stopped = pipelineEngine.stopDiscovery();
