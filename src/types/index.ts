@@ -175,6 +175,32 @@ export interface DeviceDiagnosticState {
   consecutiveFailedRefreshes?: number;
 }
 
+export type BrowserPreference = 'SYSTEM' | 'EDGE' | 'CHROME' | 'EMBEDDED';
+export interface CameraAccessEndpoint {
+  url: string;
+  scheme: 'http' | 'https';
+  port?: number;
+  verified: boolean;
+  source: 'DIAGNOSTIC' | 'XADDR' | 'IP_FALLBACK';
+  certificateWarning?: string;
+}
+export interface ConnectReadiness {
+  state: 'READY' | 'DIFFERENT_SUBNET' | 'UNREACHABLE' | 'UNKNOWN' | 'AMBIGUOUS';
+  canOpenManually: boolean;
+  pairAvailable: boolean;
+  retryDiagnoseAvailable: boolean;
+  warning?: string;
+}
+export interface ConnectionHistoryEntry {
+  id: string;
+  timestamp: string;
+  mode: BrowserPreference;
+  url: string;
+  statusBeforeOpen: DeviceStatus;
+  event: 'OPEN_ATTEMPT' | 'RECHECK' | 'FIRST_LOGIN_REQUIRED';
+  result?: string;
+}
+
 export interface IdentityConflict {
   detectedAt: string;
   reason: string;
@@ -200,6 +226,8 @@ export interface Device {
   manufacturerParams?: Record<string, any>;
   reachability?: ReachabilityEvidence;
   diagnostics?: DeviceDiagnosticState;
+  connectionHistory?: ConnectionHistoryEntry[];
+  activationState?: 'UNKNOWN' | 'PASSWORD_SETUP_REQUIRED' | 'TECHNICIAN_REPORTED_COMPLETE';
   identityConflicts?: IdentityConflict[];
   technician?: {
     name?: string;

@@ -253,7 +253,7 @@ export const MasterDeviceTable: React.FC<MasterDeviceTableProps> = ({
                     {/* 3. IP Address (Hyperlink per Section 13) */}
                     <td className="py-3 px-3 font-mono" onClick={(e) => e.stopPropagation()}>
                       <button
-                        onClick={() => onOpenBrowser(dev, 'EMBEDDED')}
+                        onClick={() => onOpenBrowser(dev, 'SYSTEM')}
                         className="text-sky-400 hover:text-sky-300 font-semibold underline underline-offset-2 flex items-center gap-1"
                         title="Click to connect and open camera web interface"
                       >

@@ -284,13 +284,12 @@ export default function App() {
   };
 
   const handleOpenBrowser = (dev: Device, mode: 'EMBEDDED' | 'EDGE' | 'CHROME' | 'SYSTEM') => {
-    const recentChecks = [...(dev.diagnostics?.checks || [])].reverse();
-    const protocol = recentChecks.some(check => check.type === 'HTTPS' && check.success) ? 'https' : 'http';
-    const port = protocol === 'https' ? 443 : dev.network.port || 80;
     if (mode === 'EMBEDDED') {
       setSelectedDeviceForBrowser(dev);
     } else {
-      window.open(`${protocol}://${dev.network.ipAddress}:${port}`, '_blank');
+      fetch(`http://localhost:3001/api/connect/${encodeURIComponent(dev.id)}/open`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ preference: mode }) })
+        .then(async response => { const data = await response.json(); if (!response.ok) throw new Error(data.error); if (data.browser?.fallback) window.alert('Preferred browser was unavailable; opened with the Windows default browser.'); })
+        .catch(error => window.alert(error.message));
     }
   };
 

@@ -1,71 +1,31 @@
-import React from 'react';
-import { Device } from '../../types/index.ts';
-import { X, Globe, ExternalLink, RefreshCw, Shield, Lock } from 'lucide-react';
+import React, { useEffect, useState } from 'react';
+import { BrowserPreference, CameraAccessEndpoint, ConnectReadiness, Device } from '../../types/index.ts';
+import { AlertTriangle, ExternalLink, RefreshCw, X } from 'lucide-react';
 
-interface BrowserModalProps {
-  isOpen: boolean;
-  onClose: () => void;
-  device: Device | null;
-}
+interface Props { isOpen: boolean; onClose: () => void; device: Device | null; }
+interface SafeCredential { id: string; label: string; usernameHint: string; }
 
-export const BrowserModal: React.FC<BrowserModalProps> = ({ isOpen, onClose, device }) => {
+export const BrowserModal: React.FC<Props> = ({ isOpen, onClose, device }) => {
+  const [endpoint, setEndpoint] = useState<CameraAccessEndpoint | null>(null);
+  const [readiness, setReadiness] = useState<ConnectReadiness | null>(null);
+  const [credentials, setCredentials] = useState<SafeCredential[]>([]);
+  const [username, setUsername] = useState(''); const [password, setPassword] = useState(''); const [remember, setRemember] = useState(false); const [message, setMessage] = useState('');
+  const load = async () => { if (!device) return; const [connect, refs] = await Promise.all([fetch(`http://localhost:3001/api/connect/${encodeURIComponent(device.id)}`).then(r => r.json()), fetch(`http://localhost:3001/api/connect/${encodeURIComponent(device.id)}/credentials`).then(r => r.json())]); setEndpoint(connect.endpoint); setReadiness(connect.readiness); setCredentials(refs.references || []); };
+  useEffect(() => { if (isOpen) void load(); }, [isOpen, device?.id]);
   if (!isOpen || !device) return null;
-
-  const recentChecks = [...(device.diagnostics?.checks || [])].reverse();
-  const protocol = recentChecks.some(check => check.type === 'HTTPS' && check.success) ? 'https' : 'http';
-  const port = protocol === 'https' ? 443 : device.network.port || 80;
-  const url = `${protocol}://${device.network.ipAddress}:${port}`;
-
-  return (
-    <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-6">
-      <div className="bg-slate-900 border border-slate-700 rounded-2xl w-full max-w-5xl h-[85vh] shadow-2xl overflow-hidden flex flex-col">
-        {/* Browser Top Navigation Bar */}
-        <div className="p-3 bg-slate-950 border-b border-slate-800 flex items-center justify-between gap-4">
-          <div className="flex items-center gap-2">
-            <div className="flex gap-1.5 pl-1">
-              <span className="w-3 h-3 rounded-full bg-rose-500/80 inline-block" />
-              <span className="w-3 h-3 rounded-full bg-amber-500/80 inline-block" />
-              <span className="w-3 h-3 rounded-full bg-emerald-500/80 inline-block" />
-            </div>
-            <span className="text-xs font-bold text-slate-200 ml-2">{device.anchor.vendor} Web Interface</span>
-          </div>
-
-          {/* Address Bar */}
-          <div className="flex-1 max-w-xl bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 flex items-center gap-2 text-xs font-mono text-slate-300">
-            <Lock className="w-3.5 h-3.5 text-emerald-400" />
-            <span className="truncate">{url}</span>
-          </div>
-
-          <div className="flex items-center gap-2">
-            <a
-              href={url}
-              target="_blank"
-              rel="noreferrer"
-              className="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white text-xs flex items-center gap-1 transition"
-              title="Open in external browser"
-            >
-              <ExternalLink className="w-3.5 h-3.5" />
-              External
-            </a>
-            <button
-              onClick={onClose}
-              className="p-1.5 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition"
-            >
-              <X className="w-5 h-5" />
-            </button>
-          </div>
-        </div>
-
-        {/* Embedded Frame Workspace (Section 28) */}
-        <div className="flex-1 bg-slate-950 relative flex items-center justify-center">
-          <iframe
-            src={url}
-            title={`${device.anchor.vendor} Interface`}
-            className="w-full h-full border-0 bg-white"
-            sandbox="allow-same-origin allow-scripts allow-forms"
-          />
-        </div>
-      </div>
+  const post = async (path: string, body: unknown = {}) => { const response = await fetch(`http://localhost:3001${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); const data = await response.json(); if (!response.ok) throw new Error(data.error); return data; };
+  const openExternal = async (preference: BrowserPreference = 'SYSTEM') => { const data = await post(`/api/connect/${encodeURIComponent(device.id)}/open`, { preference }); setMessage(data.browser?.fallback ? 'Preferred browser unavailable; Windows default was used.' : 'Camera page opened externally. Return here and choose Recheck after making changes.'); };
+  const recheck = async () => { setMessage('Rechecking…'); await post(`/api/connect/${encodeURIComponent(device.id)}/recheck`); await load(); setMessage('Recheck completed using current-session evidence.'); };
+  return <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-5"><div className="bg-slate-900 border border-slate-700 rounded-2xl w-full max-w-5xl h-[85vh] flex flex-col overflow-hidden">
+    <div className="p-3 bg-slate-950 border-b border-slate-800 flex items-center justify-between"><div><strong>{device.technician?.name || device.anchor.vendor}</strong><span className="text-xs text-slate-400 ml-2">{device.technician?.location} • {device.anchor.vendor} {device.anchor.model} • {device.network.ipAddress}</span></div><button onClick={onClose}><X className="w-5 h-5" /></button></div>
+    <div className="p-3 border-b border-slate-800 space-y-2 text-xs">
+      {readiness?.warning && <div className="text-amber-300 flex gap-2"><AlertTriangle className="w-4 h-4" />{readiness.warning}</div>}
+      {endpoint?.certificateWarning && <div className="text-amber-300">HTTPS responded, but certificate trust warning: {endpoint.certificateWarning}</div>}
+      <div className="flex gap-2 items-center"><code className="flex-1 p-2 bg-slate-950 rounded">{endpoint?.url || 'Resolving…'} {endpoint && `— ${endpoint.verified ? 'Verified' : 'Unverified'} ${endpoint.source}`}</code><button onClick={() => openExternal().catch(e => setMessage(e.message))} className="px-3 py-2 bg-sky-600 rounded flex gap-1"><ExternalLink className="w-4 h-4" />Open External</button><button onClick={() => recheck().catch(e => setMessage(e.message))} className="px-3 py-2 bg-slate-700 rounded flex gap-1"><RefreshCw className="w-4 h-4" />Recheck</button></div>
+      <div className="flex gap-3 items-end"><label>Use existing credential?<select className="block mt-1 bg-slate-950 border border-slate-700 p-1.5 rounded" defaultValue="" onChange={e => e.target.value && post(`/api/connect/${encodeURIComponent(device.id)}/credentials/select`, { credentialId: e.target.value }).then(() => setMessage('Credential reference selected; no password was sent to the browser.'))}><option value="">None</option>{credentials.map(c => <option key={c.id} value={c.id}>{c.label} ({c.usernameHint})</option>)}</select></label><label>Username<input value={username} onChange={e => setUsername(e.target.value)} className="block mt-1 bg-slate-950 border border-slate-700 p-1.5 rounded" /></label><label>Password<input type="password" value={password} onChange={e => setPassword(e.target.value)} className="block mt-1 bg-slate-950 border border-slate-700 p-1.5 rounded" /></label><label className="pb-2"><input type="checkbox" checked={remember} onChange={e => setRemember(e.target.checked)} /> Remember</label><button onClick={() => post(`/api/connect/${encodeURIComponent(device.id)}/credentials`, { username, password, remember }).then(() => { setPassword(''); setMessage(remember ? 'Credential saved as an opaque backend reference.' : 'Credential was not saved or sent to the browser.'); load(); }).catch(e => setMessage(e.message))} className="px-3 py-2 bg-slate-700 rounded">Save Choice</button></div>
+      <label><input type="checkbox" checked={device.activationState === 'PASSWORD_SETUP_REQUIRED'} onChange={e => post(`/api/connect/${encodeURIComponent(device.id)}/activation`, { required: e.target.checked }).then(() => setMessage(e.target.checked ? 'Password setup marked as required; completion is not assumed.' : 'Technician reported setup complete. Run Recheck to verify access.'))} /> First login/password setup required</label>
+      {message && <p className="text-sky-300">{message}</p>}
     </div>
-  );
+    <div className="flex-1 bg-slate-950 relative"><iframe src={endpoint?.url} title="Optional embedded camera interface" className="w-full h-full border-0 bg-white" sandbox="allow-same-origin allow-scripts allow-forms" /><div className="absolute bottom-3 left-3 right-3 p-2 bg-slate-950/90 text-xs text-slate-300 rounded">Embedded access may fail due to X-Frame-Options, CSP, mixed content, legacy plugins, or authentication restrictions. Use Open External if the camera does not render; browser protections are not bypassed.</div></div>
+  </div></div>;
 };

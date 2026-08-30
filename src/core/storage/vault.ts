@@ -12,6 +12,14 @@ export interface StoredCredential {
   lockedUntil?: string;
 }
 
+export interface CredentialReference {
+  id: string;
+  label: string;
+  usernameHint: string;
+  targetVendor?: string;
+  isDefault: boolean;
+}
+
 export class OSCredentialVault {
   private credentials: Map<string, StoredCredential> = new Map();
   private maxAttemptsBeforeBackoff = 3;
@@ -67,6 +75,12 @@ export class OSCredentialVault {
 
   public getAllCredentials(): StoredCredential[] {
     return Array.from(this.credentials.values());
+  }
+
+  public getSafeReferences(vendor?: string): CredentialReference[] {
+    return this.getAllCredentials()
+      .filter(credential => !vendor || !credential.targetVendor || credential.targetVendor.toLowerCase() === vendor.toLowerCase() || credential.isDefault)
+      .map(credential => ({ id: credential.id, label: credential.label, usernameHint: credential.username ? `${credential.username.slice(0, 1)}•••` : '', targetVendor: credential.targetVendor, isDefault: credential.isDefault }));
   }
 
   public getCredentialsForVendor(vendor: string): StoredCredential[] {

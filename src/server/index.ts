@@ -16,6 +16,7 @@ import { ProjectReverificationEngine } from '../core/engine/reverification.ts';
 import { ProjectValidationError } from '../core/storage/project_db.ts';
 import { DeviceDiagnosticEngine, DiagnosticRefreshMonitor } from '../core/engine/diagnostic_engine.ts';
 import { PairService } from '../core/network/pair_service.ts';
+import { ConnectService } from '../core/connect/connect_service.ts';
 
 const app = express();
 const server = createServer(app);
@@ -23,6 +24,8 @@ const wss = new WebSocketServer({ server, path: '/ws' });
 const diagnosticEngine = new DeviceDiagnosticEngine();
 const diagnosticControllers = new Map<string, AbortController>();
 const pairService = new PairService();
+const connectService = new ConnectService();
+const connectRecheckControllers = new Map<string, AbortController>();
 
 app.use(cors());
 app.use(express.json());
@@ -242,6 +245,16 @@ app.post('/api/pair/restore', async (req, res) => {
 });
 app.post('/api/pair/cancel', (req, res) => { const pair = pairService.cancelPreparation(); broadcast({ type: 'PAIR_STATE_CHANGED', data: { pair } }); res.json(pair); });
 
+app.get('/api/connect/browsers', async (req, res) => res.json(await connectService.availableBrowsers()));
+app.get('/api/connect/:deviceId', (req, res) => { try { res.json(connectService.resolve(req.params.deviceId)); } catch (error: any) { res.status(404).json({ error: error.message, code: error.code }); } });
+app.post('/api/connect/:deviceId/open', async (req, res) => { try { res.json(await connectService.open(req.params.deviceId, req.body.preference || 'SYSTEM')); } catch (error: any) { res.status(400).json({ error: error.message, code: error.code }); } });
+app.post('/api/connect/:deviceId/recheck', async (req, res) => { const id = req.params.deviceId; connectRecheckControllers.get(id)?.abort(); const controller = new AbortController(); connectRecheckControllers.set(id, controller); try { const result = await connectService.recheck(id, controller.signal); broadcast({ type: 'DEVICE_DIAGNOSTICS_UPDATED', data: { device: result.device, project: projectDb.getProject() } }); res.json(result); } catch (error: any) { res.status(400).json({ error: error.message }); } finally { connectRecheckControllers.delete(id); } });
+app.post('/api/connect/:deviceId/recheck/cancel', (req, res) => { connectRecheckControllers.get(req.params.deviceId)?.abort(); res.status(202).json({ cancelled: true }); });
+app.post('/api/connect/:deviceId/activation', (req, res) => { try { res.json({ activationState: connectService.markFirstLogin(req.params.deviceId, req.body.required === true) }); } catch (error: any) { res.status(400).json({ error: error.message }); } });
+app.get('/api/connect/:deviceId/credentials', (req, res) => { try { res.json(connectService.safeCredentials(req.params.deviceId)); } catch (error: any) { res.status(404).json({ error: error.message }); } });
+app.post('/api/connect/:deviceId/credentials/select', (req, res) => { try { res.json(connectService.associateCredential(req.params.deviceId, String(req.body.credentialId || ''))); } catch (error: any) { res.status(400).json({ error: error.message }); } });
+app.post('/api/connect/:deviceId/credentials', (req, res) => { try { res.json(connectService.saveCredential(req.params.deviceId, req.body)); } catch (error: any) { res.status(400).json({ error: error.message }); } });
+
 app.post('/api/discovery/stop', (req, res) => {
   const stopped = pipelineEngine.stopDiscovery();
   res.status(stopped ? 202 : 409).json({
@@ -363,7 +376,7 @@ app.post('/api/edge/legacy-onboard', (req, res) => {
 
 // Section 13.4 OS Credential Vault
 app.get('/api/vault/credentials', (req, res) => {
-  res.json(osVault.getAllCredentials());
+  res.json(osVault.getSafeReferences());
 });
 
 app.post('/api/vault/flush', (req, res) => {
