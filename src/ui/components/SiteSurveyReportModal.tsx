@@ -29,7 +29,7 @@ export const SiteSurveyReportModal: React.FC<SiteSurveyReportModalProps> = ({
               <FileText className="w-5 h-5" />
             </div>
             <div>
-              <h3 className="font-bold text-white text-sm">Section 15: Customer Site Survey & Field Handover Report</h3>
+              <h3 className="font-bold text-white text-sm">Customer Site Survey and Field Handover Report</h3>
               <p className="text-[11px] text-slate-400">Formal verification document with immutable device inventory & sign-off blocks.</p>
             </div>
           </div>

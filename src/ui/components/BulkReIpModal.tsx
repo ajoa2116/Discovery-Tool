@@ -61,7 +61,7 @@ export const BulkReIpModal: React.FC<BulkReIpModalProps> = ({
               <Network className="w-5 h-5" />
             </div>
             <div>
-              <h3 className="font-bold text-white text-sm">Section 5: Bulk IP Re-IP Subsystem</h3>
+              <h3 className="font-bold text-white text-sm">Bulk Re-IP</h3>
               <p className="text-[11px] text-slate-400">
                 Sequential auto-fill and pre-flight ARP conflict audit for {selectedDevices.length} selected cameras.
               </p>

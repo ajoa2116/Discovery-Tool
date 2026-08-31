@@ -25,7 +25,7 @@ export const NewDeviceNotification: React.FC<NewDeviceNotificationProps> = ({
         <div>
           <div className="flex items-center gap-2">
             <span className="font-bold text-white uppercase tracking-wider text-[10px] bg-sky-500/30 px-2 py-0.5 rounded text-sky-300">
-              Section 16: New Device Detected
+              New Device Detected
             </span>
             <span className="font-bold text-slate-200">{vendor}</span>
           </div>

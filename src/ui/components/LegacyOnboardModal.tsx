@@ -59,7 +59,7 @@ export const LegacyOnboardModal: React.FC<LegacyOnboardModalProps> = ({ isOpen, 
               <Wrench className="w-5 h-5" />
             </div>
             <div>
-              <h3 className="font-bold text-white text-sm">Section 13.1: Legacy Hardware Manual Onboarding</h3>
+              <h3 className="font-bold text-white text-sm">Add Device Manually</h3>
               <p className="text-[11px] text-slate-400">Bypass automated scan limits using static profile templates & MAC-direct routing.</p>
             </div>
           </div>

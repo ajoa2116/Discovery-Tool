@@ -45,7 +45,7 @@ export const AvailableIpFinderModal: React.FC<AvailableIpFinderModalProps> = ({
               <Search className="w-5 h-5" />
             </div>
             <div>
-              <h3 className="font-bold text-white text-sm">Section 25: Available IP Finder</h3>
+              <h3 className="font-bold text-white text-sm">Available IPs</h3>
               <p className="text-[11px] text-slate-400">Find unassigned static IP addresses across your subnet.</p>
             </div>
           </div>

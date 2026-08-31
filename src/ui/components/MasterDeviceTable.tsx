@@ -113,7 +113,7 @@ export const MasterDeviceTable: React.FC<MasterDeviceTableProps> = ({
       case 'CONFIGURED':
         return (
           <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
-            Online (Verified)
+            Online
           </span>
         );
       case 'AUTHENTICATED':
@@ -153,13 +153,15 @@ export const MasterDeviceTable: React.FC<MasterDeviceTableProps> = ({
   };
 
   const isAllSelected = devices.length > 0 && selectedDeviceIds.size === devices.length;
+  const lastSix = (device: Device) => { const value = device.anchor.macAddress?.replace(/[^0-9a-f]/gi, '').toUpperCase(); return value && value.length === 12 ? value.slice(-6) : null; };
+  const configured = (device: Device) => device.configuredState?.manualOverride ?? device.configuredState?.inferred ?? null;
 
   return (
-    <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow-lg">
+    <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg overflow-hidden">
       <div className="overflow-x-auto">
         <table className="w-full text-left text-xs border-collapse">
           {/* Table Header per Section 5 */}
-          <thead className="bg-slate-950/90 text-slate-400 border-b border-slate-800 font-semibold uppercase tracking-wider">
+          <thead className="bg-slate-100 dark:bg-slate-950/90 text-slate-600 dark:text-slate-400 border-b border-slate-200 dark:border-slate-800 font-semibold uppercase tracking-wider">
             <tr>
               <th className="py-3 px-3 w-10 text-center">
                 <input
@@ -170,12 +172,11 @@ export const MasterDeviceTable: React.FC<MasterDeviceTableProps> = ({
                 />
               </th>
               <th className="py-3 px-3">Name</th>
-              <th className="py-3 px-3">IP Address</th>
-              <th className="py-3 px-3">MAC</th>
-              <th className="py-3 px-3">Model</th>
-              <th className="py-3 px-3">Serial</th>
               <th className="py-3 px-3">Status</th>
-              <th className="py-3 px-3">Network</th>
+              <th className="py-3 px-3">IP</th>
+              <th className="py-3 px-3">Last 6</th>
+              <th className="py-3 px-3">Configured</th>
+              <th className="py-3 px-3">Serial</th>
               <th className="py-3 px-3">Notes</th>
               <th className="py-3 px-3 text-right">Actions</th>
             </tr>
@@ -184,8 +185,8 @@ export const MasterDeviceTable: React.FC<MasterDeviceTableProps> = ({
           <tbody className="divide-y divide-slate-800/60">
             {devices.length === 0 ? (
               <tr>
-                <td colSpan={10} className="py-12 text-center text-slate-500">
-                  No devices discovered. Click <strong className="text-slate-300">SCAN NETWORK</strong> above to begin discovery.
+                <td colSpan={9} className="py-12 text-center text-slate-500">
+                  No devices discovered. Select <strong className="text-slate-700 dark:text-slate-300">Scan</strong> above to begin discovery.
                 </td>
               </tr>
             ) : (
@@ -199,12 +200,12 @@ export const MasterDeviceTable: React.FC<MasterDeviceTableProps> = ({
                   <tr
                     key={dev.id}
                     onClick={() => onInspectDevice(dev)}
-                    className={`hover:bg-slate-850/80 transition cursor-pointer ${
-                      isSelected ? 'bg-sky-950/25' : dev.status === 'COLLISION' ? 'bg-amber-950/15' : ''
+                    className={`hover:bg-slate-50 dark:hover:bg-slate-850/80 transition cursor-pointer ${
+                      isSelected ? 'bg-blue-50 dark:bg-sky-950/25' : dev.status === 'COLLISION' ? 'bg-amber-50 dark:bg-amber-950/15' : ''
                     }`}
                   >
                     {/* 1. Select Checkbox */}
-                    <td className="py-3 px-3 text-center" onClick={(e) => e.stopPropagation()}>
+                    <td className="py-2 px-3 text-center" onClick={(e) => e.stopPropagation()}>
                       <input
                         type="checkbox"
                         checked={isSelected}
@@ -214,7 +215,7 @@ export const MasterDeviceTable: React.FC<MasterDeviceTableProps> = ({
                     </td>
 
                     {/* 2. Name (Inline Editable per Section 6) */}
-                    <td className="py-3 px-3 font-medium text-slate-100">
+                    <td className="py-2 px-3 font-medium text-slate-800 dark:text-slate-100">
                       {isEditingName ? (
                         <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
                           <input
@@ -250,7 +251,10 @@ export const MasterDeviceTable: React.FC<MasterDeviceTableProps> = ({
                       )}
                     </td>
 
-                    {/* 3. IP Address (Hyperlink per Section 13) */}
+                    {/* Status remains separate from configured state. */}
+                    <td className="py-2 px-3">{getStatusBadge(dev.status)}</td>
+
+                    {/* IP opens the existing secure Connect workflow. */}
                     <td className="py-3 px-3 font-mono" onClick={(e) => e.stopPropagation()}>
                       <button
                         onClick={() => onOpenBrowser(dev, 'SYSTEM')}
@@ -262,35 +266,12 @@ export const MasterDeviceTable: React.FC<MasterDeviceTableProps> = ({
                       </button>
                     </td>
 
-                    {/* 4. MAC */}
-                    <td className="py-3 px-3 font-mono text-slate-300">
-                      {dev.anchor.macAddress || dev.anchor.onvifEndpointUuid || 'Unknown'}
-                    </td>
-
-                    {/* 5. Model */}
-                    <td className="py-3 px-3 text-slate-300">
-                      <div className="truncate max-w-[140px]" title={dev.anchor.model}>
-                        {dev.anchor.model || 'Generic Camera'}
-                      </div>
-                    </td>
-
-                    {/* 6. Serial */}
-                    <td className="py-3 px-3 font-mono text-slate-400">
-                      {dev.anchor.serialNumber || 'N/A'}
-                    </td>
-
-                    {/* 7. Status (Section 18) */}
-                    <td className="py-3 px-3">
-                      {getStatusBadge(dev.status)}
-                    </td>
-
-                    {/* 8. Network */}
-                    <td className="py-3 px-3 font-mono text-slate-400 text-[11px]">
-                      {dev.network.subnetMask}
-                    </td>
+                    <td className="py-2 px-3 font-mono text-slate-600 dark:text-slate-300">{lastSix(dev) || 'Unknown'}</td>
+                    <td className="py-2 px-3">{configured(dev)===true?<span className="text-emerald-700 dark:text-emerald-400">✓ Yes{dev.configuredState?.manualOverride!==undefined?' · Manual':''}</span>:configured(dev)===false?<span className="text-slate-600 dark:text-slate-400">No{dev.configuredState?.manualOverride!==undefined?' · Manual':''}</span>:<span className="text-slate-500">Unknown</span>}</td>
+                    <td className="py-2 px-3 font-mono text-slate-500">{dev.anchor.serialNumber || 'Unknown'}</td>
 
                     {/* 9. Notes (Inline Editable per Section 5) */}
-                    <td className="py-3 px-3 text-slate-400">
+                    <td className="py-2 px-3 text-slate-500">
                       {isEditingNotes ? (
                         <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
                           <input
@@ -322,67 +303,34 @@ export const MasterDeviceTable: React.FC<MasterDeviceTableProps> = ({
                     </td>
 
                     {/* 10. Actions (Section 31) */}
-                    <td className="py-3 px-3 text-right relative" onClick={(e) => e.stopPropagation()}>
-                      <div className="flex items-center justify-end gap-1.5">
-                        <button
-                          onClick={() => onInspectDevice(dev)}
-                          title="Inspect Live RTSP & Switch PoE Telemetry"
-                          className="px-2.5 py-1 rounded bg-slate-800 hover:bg-sky-600 text-slate-300 hover:text-white transition font-medium text-[11px] flex items-center gap-1"
-                        >
-                          <Video className="w-3 h-3 text-sky-400" />
-                          Inspect
-                        </button>
-
-                        {dev.status === 'DIFFERENT_SUBNET' && (
-                          <button
-                            onClick={() => onPair(dev)}
-                            title="Temporarily match a selected PC adapter to this camera network"
-                            className="px-2.5 py-1 rounded bg-purple-900/50 hover:bg-purple-700 text-purple-200 transition font-medium text-[11px] flex items-center gap-1"
-                          >
-                            <Network className="w-3 h-3" />Pair
-                          </button>
-                        )}
-
-                        <button
-                          onClick={() => onDiagnose(dev)}
-                          title="Run real reachability diagnostics"
-                          className="px-2.5 py-1 rounded bg-slate-800 hover:bg-emerald-700 text-slate-300 hover:text-white transition font-medium text-[11px] flex items-center gap-1"
-                        >
-                          <Activity className="w-3 h-3 text-emerald-400" />Diagnose
-                        </button>
-
-                        <button
-                          onClick={() => setOpenActionMenuId(isActionOpen ? null : dev.id)}
-                          className="p-1 rounded hover:bg-slate-800 text-slate-400 hover:text-white transition"
-                        >
-                          <MoreVertical className="w-4 h-4" />
-                        </button>
-                      </div>
+                    <td className="py-2 px-3 text-right relative" onClick={(e) => e.stopPropagation()}>
+                      <button aria-label={`Actions for ${dev.technician?.name||dev.anchor.vendor}`} onClick={() => setOpenActionMenuId(isActionOpen ? null : dev.id)} className="p-1.5 rounded hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-500"><MoreVertical className="w-4 h-4" /></button>
 
                       {/* Dropdown Action Menu (Section 31) */}
                       {isActionOpen && (
                         <div className="absolute right-3 top-10 z-30 w-48 bg-slate-950 border border-slate-700 rounded-xl shadow-2xl p-1.5 text-left text-xs space-y-1">
                           <button
                             onClick={() => {
-                              onOpenBrowser(dev, 'EMBEDDED');
+                              onOpenBrowser(dev, 'SYSTEM');
                               setOpenActionMenuId(null);
                             }}
                             className="w-full text-left px-2.5 py-1.5 rounded hover:bg-slate-800 text-slate-200 flex items-center gap-2"
                           >
-                            <Globe className="w-3.5 h-3.5 text-sky-400" />
-                            Open in Embedded Browser
+                            <Globe className="w-3.5 h-3.5 text-sky-400" />Open
                           </button>
 
                           <button
                             onClick={() => {
-                              onOpenBrowser(dev, 'EDGE');
+                              onInspectDevice(dev);
                               setOpenActionMenuId(null);
                             }}
                             className="w-full text-left px-2.5 py-1.5 rounded hover:bg-slate-800 text-slate-200 flex items-center gap-2"
                           >
-                            <ExternalLink className="w-3.5 h-3.5 text-blue-400" />
-                            Open in Microsoft Edge
+                            <Video className="w-3.5 h-3.5 text-blue-400" />Details
                           </button>
+
+                          <button onClick={()=>{onDiagnose(dev);setOpenActionMenuId(null)}} className="w-full text-left px-2.5 py-1.5 rounded hover:bg-slate-800 text-slate-200 flex items-center gap-2"><Activity className="w-3.5 h-3.5 text-emerald-400"/>Diagnose</button>
+                          {dev.status==='DIFFERENT_SUBNET'&&<button onClick={()=>{onPair(dev);setOpenActionMenuId(null)}} className="w-full text-left px-2.5 py-1.5 rounded hover:bg-slate-800 text-slate-200 flex items-center gap-2"><Network className="w-3.5 h-3.5 text-purple-400"/>Pair PC to Camera Network</button>}
 
                           <div className="border-t border-slate-800 my-1" />
 
@@ -418,7 +366,7 @@ export const MasterDeviceTable: React.FC<MasterDeviceTableProps> = ({
                             className="w-full text-left px-2.5 py-1.5 rounded hover:bg-slate-800 text-slate-200 flex items-center gap-2"
                           >
                             <Shield className="w-3.5 h-3.5 text-purple-400" />
-                            Credentials & Parameters
+                            Configure Network
                           </button>
                         </div>
                       )}

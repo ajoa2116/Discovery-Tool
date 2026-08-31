@@ -43,7 +43,11 @@ import {
   Printer,
   Hash,
   Wrench,
+  Sun,
+  Moon,
+  ChevronDown,
 } from 'lucide-react';
+import { applyTheme, persistTheme, readThemePreference, ThemePreference } from './theme.ts';
 
 export default function App() {
   const [project, setProject] = useState<SiteProject | null>(null);
@@ -78,15 +82,15 @@ export default function App() {
   const [selectedDeviceForConfig, setSelectedDeviceForConfig] = useState<Device | null>(null);
   const [selectedDeviceForBrowser, setSelectedDeviceForBrowser] = useState<Device | null>(null);
   const [selectedDeviceForInspector, setSelectedDeviceForInspector] = useState<Device | null>(null);
+  const [theme, setTheme] = useState<ThemePreference>(() => readThemePreference());
+  const [openMenu, setOpenMenu] = useState<'PROJECT' | 'TOOLS' | null>(null);
+  const menuAreaRef = useRef<HTMLDivElement>(null);
 
   // New device notification (Section 16)
   const [newDeviceDetected, setNewDeviceDetected] = useState<{ ip: string; vendor: string } | null>(null);
 
   // Task Center items (Section 38)
-  const [tasks, setTasks] = useState<TaskItem[]>([
-    { id: 't1', deviceName: 'AXIS Q3538 Dome', operation: 'Reconciled Physical Anchor', status: 'SUCCESS', timestamp: '10:04:12' },
-    { id: 't2', deviceName: 'Illustra Flex Gen3', operation: 'Continuous Monitor Ping', status: 'SUCCESS', timestamp: '10:04:22' },
-  ]);
+  const [tasks, setTasks] = useState<TaskItem[]>([]);
 
   // Fetch initial data
   const fetchData = async () => {
@@ -159,6 +163,21 @@ export default function App() {
     return () => {
       ws.close();
     };
+  }, []);
+
+  useEffect(() => {
+    const media = window.matchMedia('(prefers-color-scheme: dark)');
+    const update = () => applyTheme(theme, document.documentElement.classList, media.matches);
+    update(); persistTheme(theme);
+    media.addEventListener('change', update);
+    return () => media.removeEventListener('change', update);
+  }, [theme]);
+
+  useEffect(() => {
+    const close = (event: MouseEvent) => { if (!menuAreaRef.current?.contains(event.target as Node)) setOpenMenu(null); };
+    const escape = (event: KeyboardEvent) => { if (event.key === 'Escape') setOpenMenu(null); };
+    document.addEventListener('mousedown', close); document.addEventListener('keydown', escape);
+    return () => { document.removeEventListener('mousedown', close); document.removeEventListener('keydown', escape); };
   }, []);
 
   const postProjectAction = async (path: string, body: Record<string, unknown> = {}) => {
@@ -384,136 +403,24 @@ export default function App() {
   const activeCollisionsCount = project?.collisions.filter((c) => !c.resolved).length || 0;
 
   return (
-    <div className="min-h-screen flex flex-col bg-slate-950 text-slate-100 font-sans antialiased">
+    <div className="min-h-screen flex flex-col bg-[#f4f6f8] text-slate-800 dark:bg-slate-950 dark:text-slate-100 font-sans antialiased">
       {/* ─────────────────────────────────────────────────────────────
           ZONE 1: CLEAN TOP HEADER CONTROL (Sections 3 & 4)
       ───────────────────────────────────────────────────────────── */}
-      <header className="border-b border-slate-800 bg-slate-900 px-6 py-3 flex items-center justify-between shadow-md">
-        {/* Left: App Brand & Operating Mode */}
-        <div className="flex items-center gap-3">
-          <div className="p-2 rounded-xl bg-sky-500 text-slate-950 font-black shadow-md shadow-sky-500/20">
-            <ShieldCheck className="w-6 h-6" />
-          </div>
-          <div>
-            <h1 className="font-black text-base tracking-wide text-white uppercase">CCTV Technician Tool</h1>
-            <div className="flex items-center gap-2 mt-0.5 text-xs text-slate-400">
-              <span>{projectSession?.mode === 'PROJECT' ? 'Project:' : 'Mode:'}</span>
-              <span className="font-semibold text-slate-200">
-                {projectSession?.mode === 'PROJECT' ? project?.name : 'Quick Work'}
-                {projectSession?.dirty ? ' • Unsaved' : ''}
-              </span>
-            </div>
-          </div>
-        </div>
-
-        {/* Right: Primary Scan & Tool Controls */}
-        <div className="flex items-center gap-2">
-          {/* Section 14: Primary Fast Scan */}
-          <button
-            onClick={handleScanNetwork}
-            className={`flex items-center gap-2 px-5 py-2 rounded-xl font-bold text-xs transition shadow-md ${
-              isScanning
-                ? 'bg-rose-600 hover:bg-rose-500 text-white'
-                : 'bg-sky-500 hover:bg-sky-400 text-slate-950 shadow-sky-900/30'
-            }`}
-          >
-            {isScanning ? (
-              <>
-                <RefreshCw className="w-4 h-4 animate-spin text-slate-400" />
-                <span>STOP SCAN</span>
-              </>
-            ) : (
-              <>
-                <Play className="w-4 h-4 fill-current" />
-                <span>SCAN NETWORK</span>
-              </>
-            )}
-          </button>
-
-          {/* Section 25: Available IP Finder */}
-          <button
-            onClick={() => setIsAvailableIpFinderOpen(true)}
-            className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition"
-            title="Scan for unassigned static IP addresses"
-          >
-            <Hash className="w-3.5 h-3.5 text-emerald-400" />
-            IP Finder (25)
-          </button>
-
-          {/* Section 15: Customer Site Survey Report */}
-          <button
-            onClick={() => setIsSiteSurveyModalOpen(true)}
-            className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition"
-            title="Generate printable Customer Site Survey & Sign-Off Report"
-          >
-            <Printer className="w-3.5 h-3.5 text-indigo-400" />
-            Site Survey (15)
-          </button>
-
-          {/* Section 3 & 49: Open / Save Project */}
-          <button
-            onClick={projectSession?.mode === 'QUICK_WORK' && (project?.devices.length || 0) > 0 ? handleCreateFromCurrent : handleNewProject}
-            className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition"
-            title={projectSession?.mode === 'QUICK_WORK' && (project?.devices.length || 0) > 0 ? 'Create a project from current Quick Work results' : 'Create an empty project'}
-          >
-            <Plus className="w-3.5 h-3.5 text-emerald-400" />
-            {projectSession?.mode === 'QUICK_WORK' && (project?.devices.length || 0) > 0 ? 'Keep Results' : 'New Project'}
-          </button>
-
+      <header className="border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-4 sm:px-6 py-2 flex items-center justify-between gap-4">
+        <div className="flex items-center gap-2 min-w-0"><ShieldCheck className="w-5 h-5 text-blue-600 shrink-0"/><div className="min-w-0"><h1 className="font-bold text-sm sm:text-base text-slate-900 dark:text-white truncate">CCTV Network Assistant</h1><p className="text-[11px] text-slate-500 truncate">{projectSession?.mode==='PROJECT'?(project?.name||'Project'):'Quick Work'}{projectSession?.dirty&&<span className="text-amber-600"> • Unsaved</span>}</p></div></div>
+        <div ref={menuAreaRef} className="flex items-center gap-1.5 shrink-0">
+          <div className="relative"><button aria-haspopup="menu" aria-expanded={openMenu==='PROJECT'} onClick={()=>setOpenMenu(openMenu==='PROJECT'?null:'PROJECT')} className="ui-header-button">Project <ChevronDown className="w-3.5 h-3.5"/></button>{openMenu==='PROJECT'&&<div role="menu" className="ui-menu"><button onClick={()=>{void handleNewProject();setOpenMenu(null)}}>New Project</button>{projectSession?.mode==='QUICK_WORK'&&(project?.devices.length||0)>0&&<button onClick={()=>{void handleCreateFromCurrent();setOpenMenu(null)}}>Create Project from Results</button>}<button onClick={()=>{openProjectInput.current?.click();setOpenMenu(null)}}>Open Project</button><button onClick={()=>{void handleSaveProject(false);setOpenMenu(null)}}>Save Project</button>{projectSession?.mode==='PROJECT'&&<><button onClick={()=>{void handleSaveProject(true);setOpenMenu(null)}}>Save As</button><button onClick={()=>{void handleScanNetwork();setOpenMenu(null)}}>Reverify</button></>}</div>}</div>
+          <div className="relative"><button aria-haspopup="menu" aria-expanded={openMenu==='TOOLS'} onClick={()=>setOpenMenu(openMenu==='TOOLS'?null:'TOOLS')} className="ui-header-button">Tools <ChevronDown className="w-3.5 h-3.5"/></button>{openMenu==='TOOLS'&&<div role="menu" className="ui-menu"><button onClick={()=>{setIsAvailableIpFinderOpen(true);setOpenMenu(null)}}>Available IPs</button><button onClick={()=>{setIsLegacyModalOpen(true);setOpenMenu(null)}}>Add Device Manually</button><button onClick={()=>{setIsSiteSurveyModalOpen(true);setOpenMenu(null)}}>Site Survey Report</button></div>}</div>
+          <label className="ui-header-button"><span className="sr-only">Appearance</span>{theme==='DARK'?<Moon className="w-4 h-4"/>:<Sun className="w-4 h-4"/>}<select aria-label="Appearance" value={theme} onChange={e=>setTheme(e.target.value as ThemePreference)} className="bg-transparent outline-none"><option value="LIGHT">Light</option><option value="DARK">Dark</option><option value="SYSTEM">System</option></select></label>
           <input ref={openProjectInput} type="file" accept=".cctvproj,application/json" onChange={handleOpenProject} className="hidden" />
-          <button
-            onClick={() => openProjectInput.current?.click()}
-            className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition"
-          >
-            <FolderOpen className="w-3.5 h-3.5 text-sky-400" />
-            Open Project
-          </button>
-
-          <button
-            onClick={() => handleSaveProject(false).catch(error => window.alert(error.message))}
-            className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition"
-          >
-            <Save className="w-3.5 h-3.5 text-emerald-400" />
-            Save Project
-          </button>
-
-          {projectSession?.mode === 'PROJECT' && (
-            <button
-              onClick={() => handleSaveProject(true).catch(error => window.alert(error.message))}
-              className="px-2 py-2 rounded-xl text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition"
-              title="Save As"
-            >
-              Save As
-            </button>
-          )}
-
-          {projectSession?.mode === 'PROJECT' && (
-            <button
-              onClick={handleScanNetwork}
-              disabled={isScanning}
-              className="px-2 py-2 rounded-xl text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-sky-300 border border-slate-700 transition disabled:opacity-50"
-              title="Reverify saved identities with a live discovery scan"
-            >
-              Reverify
-            </button>
-          )}
-
-          {/* Section 38: Task Center */}
-          <button
-            onClick={() => setIsTaskCenterOpen(!isTaskCenterOpen)}
-            className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-semibold bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 transition relative"
-          >
-            <Layers className="w-3.5 h-3.5 text-purple-400" />
-            Task Center
-            <span className="w-2 h-2 rounded-full bg-sky-400" />
-          </button>
         </div>
       </header>
 
       {/* ─────────────────────────────────────────────────────────────
           ZONE 2 & 3: MAIN WORKSPACE CANVAS
       ───────────────────────────────────────────────────────────── */}
-      <main className="flex-1 p-6 space-y-4 max-w-7xl mx-auto w-full">
+      <main className="flex-1 p-3 sm:p-4 space-y-3 w-full max-w-[1900px] mx-auto">
         {/* Section 16: New Device Notification (when triggered) */}
         {newDeviceDetected && (
           <NewDeviceNotification
@@ -534,16 +441,17 @@ export default function App() {
         )}
 
         {/* Workspace Toolbar: Search, Filters & Network Adapter Info (Sections 7, 8, 24) */}
-        <div className="bg-slate-900 border border-slate-800 rounded-xl p-3 flex flex-wrap items-center justify-between gap-3 shadow-sm">
+        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg p-2 flex flex-wrap items-center gap-2">
+          <button onClick={handleScanNetwork} className={`h-9 flex items-center gap-2 px-4 rounded-md font-bold text-xs text-white ${isScanning?'bg-red-600 hover:bg-red-500':'bg-blue-600 hover:bg-blue-500'}`}>{isScanning?<><RefreshCw className="w-4 h-4 animate-spin"/>Stop</>:<><Play className="w-4 h-4 fill-current"/>{projectSession?.mode==='PROJECT'?'Reverify':'Scan'}</>}</button>
           {/* Search Box (Section 7) */}
-          <div className="flex-1 min-w-[280px] relative">
+          <div className="flex-1 min-w-[220px] relative">
             <Search className="w-4 h-4 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
             <input
               type="text"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               placeholder="Search by Name, IP, MAC, Model, Serial, or Notes..."
-              className="w-full bg-slate-950 border border-slate-800 rounded-lg pl-9 pr-3 py-1.5 text-xs text-slate-100 placeholder-slate-500 focus:border-sky-500 focus:outline-none"
+              className="w-full bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-md pl-9 pr-3 h-9 text-xs text-slate-800 dark:text-slate-100 placeholder-slate-500 focus:border-blue-500 focus:outline-none"
             />
           </div>
 
@@ -578,10 +486,8 @@ export default function App() {
             </div>
 
             {/* Network Adapter Info (Section 24) */}
-            <div className="flex items-center gap-1.5 bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1 text-slate-300 font-mono text-[11px]">
-              <span className="w-2 h-2 rounded-full bg-emerald-400 inline-block animate-pulse" />
-              <span>{interfaces[0]?.name || 'Ethernet'}</span>
-              <span className="text-slate-500">({interfaces[0]?.ipAddress || '192.168.1.50'})</span>
+            <div className="flex items-center gap-1.5 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-md px-2.5 py-1 text-slate-600 dark:text-slate-300 font-mono text-[11px]">
+              <span>{interfaces[0] ? `${interfaces[0].name} • ${interfaces[0].ipAddress}` : 'Adapter: Detecting…'}</span>
             </div>
 
             {/* Continuous Discovery Monitor Indicator (Section 15) */}
@@ -612,7 +518,7 @@ export default function App() {
                 className="px-3.5 py-1.5 bg-sky-600 hover:bg-sky-500 text-white rounded-lg font-bold transition flex items-center gap-1.5 shadow-md shadow-sky-950"
               >
                 <Network className="w-3.5 h-3.5" />
-                Bulk Re-IP (Section 5)
+                Bulk Re-IP
               </button>
               <button
                 onClick={() => setSelectedDeviceIds(new Set())}
@@ -644,26 +550,15 @@ export default function App() {
       {/* ─────────────────────────────────────────────────────────────
           ZONE 5: STATUS FOOTER
       ───────────────────────────────────────────────────────────── */}
-      <footer className="border-t border-slate-800 bg-slate-900/80 px-6 py-2.5 text-xs text-slate-400 flex items-center justify-between">
+      <footer className="border-t border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-4 py-2 text-xs text-slate-500 flex items-center justify-between">
         <div className="flex items-center gap-4 font-mono text-[11px]">
           <span>Total Devices: <strong className="text-white">{project?.devices.length || 0}</strong></span>
           <span>•</span>
           <span>Collisions: <strong className={activeCollisionsCount > 0 ? 'text-amber-400' : 'text-slate-400'}>{activeCollisionsCount}</strong></span>
-          <span>•</span>
-          <span>Mode: <strong className="text-sky-400">{projectSession?.mode === 'PROJECT' ? `Project — ${project?.name}` : 'Quick Work (Session Only)'}</strong></span>
+          <span>•</span><span>{isScanning?'Scanning…':'Ready'}</span>{projectSession?.dirty&&<><span>•</span><span className="text-amber-600">Unsaved changes</span></>}
         </div>
 
-        <div className="flex items-center gap-3">
-          <button
-            onClick={() => setIsLegacyModalOpen(true)}
-            className="hover:text-slate-200 transition flex items-center gap-1 text-[11px]"
-          >
-            <Plus className="w-3 h-3 text-sky-400" />
-            Manual Device (13.1)
-          </button>
-          <span>•</span>
-          <span>CCTV Technician Tool v1.0–v1.6 Consolidated Blueprint</span>
-        </div>
+        <span className="text-[11px]">CCTV Network Assistant</span>
       </footer>
 
       {/* ─────────────────────────────────────────────────────────────

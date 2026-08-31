@@ -79,7 +79,7 @@ export const DuplicateDrawer: React.FC<DuplicateDrawerProps> = ({
           </div>
           <div>
             <h2 className="text-base font-bold text-white flex items-center gap-2">
-              Section 13.2: Duplicate Assistant Drawer
+              Duplicate IP Assistant
               <span className="text-[10px] px-2 py-0.5 rounded-full bg-rose-500/20 text-rose-400 border border-rose-500/40">
                 {activeCollisions.length} Active Collision{activeCollisions.length > 1 ? 's' : ''}
               </span>

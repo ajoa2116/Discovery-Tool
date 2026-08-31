@@ -21,7 +21,7 @@ export const RogueDhcpBanner: React.FC<RogueDhcpBannerProps> = ({ rogueEvents })
       <div className="flex-1">
         <div className="flex items-center gap-2">
           <span className="text-xs font-bold uppercase tracking-wider px-2 py-0.5 rounded bg-rose-500 text-white">
-            Section 13.3 Critical Security Alert
+            Critical Security Alert
           </span>
           <h3 className="font-bold text-sm text-white">Rogue DHCP Server Detected on Camera VLAN</h3>
         </div>

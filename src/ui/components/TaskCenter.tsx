@@ -42,7 +42,7 @@ export const TaskCenter: React.FC<TaskCenterProps> = ({ isOpen, onClose, tasks }
             <Layers className="w-4 h-4" />
           </div>
           <div>
-            <h3 className="font-bold text-white text-xs">Section 38: Task Center</h3>
+            <h3 className="font-bold text-white text-xs">Activity</h3>
             <span className="text-[10px] text-slate-400">{tasks.length} Operations Queued/Logged</span>
           </div>
         </div>

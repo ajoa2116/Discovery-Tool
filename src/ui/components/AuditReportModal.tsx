@@ -41,7 +41,7 @@ export const AuditReportModal: React.FC<AuditReportModalProps> = ({
               <ShieldCheck className="w-5 h-5" />
             </div>
             <div>
-              <h3 className="font-bold text-white text-sm">Section 13.5: Site Audit Sign-Off & Project Export</h3>
+              <h3 className="font-bold text-white text-sm">Site Audit and Project Export</h3>
               <p className="text-[11px] text-slate-400">Formal verification report for physical security deployment compliance.</p>
             </div>
           </div>

@@ -13,7 +13,7 @@ interface DeviceInspectorDrawerProps {
 
 const checkLabel = (check: DiagnosticCheckEvidence) => check.type === 'TCP' ? `TCP ${check.port}` : check.type.replaceAll('_', ' ');
 
-export const DeviceInspectorDrawer: React.FC<DeviceInspectorDrawerProps> = ({ isOpen, onClose, device, onOpenBrowserModal, onDiagnose }) => {
+export const DeviceInspectorDrawer: React.FC<DeviceInspectorDrawerProps> = ({ isOpen, onClose, device, onOpenConfigureModal, onOpenBrowserModal, onDiagnose }) => {
   const [activeTab, setActiveTab] = useState<'DIAGNOSTICS' | 'IDENTITY'>('DIAGNOSTICS');
   if (!isOpen || !device) return null;
   const checks = [...(device.diagnostics?.checks || [])].reverse();
@@ -74,6 +74,7 @@ export const DeviceInspectorDrawer: React.FC<DeviceInspectorDrawerProps> = ({ is
 
       <div className="p-3 bg-slate-950 border-t border-slate-800 flex gap-2">
         <button onClick={() => onOpenBrowserModal(device)} className="flex-1 py-2 bg-slate-800 hover:bg-slate-700 rounded-lg flex items-center justify-center gap-1.5"><ExternalLink className="w-3.5 h-3.5 text-sky-400" />Open Camera</button>
+        <button onClick={() => onOpenConfigureModal(device)} className="flex-1 py-2 bg-slate-800 hover:bg-slate-700 rounded-lg">Configure Network</button>
         <button onClick={onClose} className="px-4 py-2 bg-slate-800 hover:bg-slate-700 rounded-lg">Close</button>
       </div>
     </div>
