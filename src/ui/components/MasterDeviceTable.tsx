@@ -14,6 +14,7 @@ import {
   Video,
   Activity,
   Network,
+  Info,
 } from 'lucide-react';
 
 interface MasterDeviceTableProps {
@@ -174,8 +175,8 @@ export const MasterDeviceTable: React.FC<MasterDeviceTableProps> = ({
               <th className="py-3 px-3">Name</th>
               <th className="py-3 px-3">Status</th>
               <th className="py-3 px-3">IP</th>
-              <th className="py-3 px-3">Last 6</th>
-              <th className="py-3 px-3">Configured</th>
+              <th className="py-2 px-3"><span className="inline-flex items-center gap-1"><span>MAC <span className="block text-[9px] font-medium normal-case tracking-normal">(Last 6)</span></span><span title="MAC (Last 6): Shows the last 6 characters of the device MAC address for quick identification. The full MAC address is shown in Device Details."><Info aria-label="MAC column information" className="w-3.5 h-3.5"/></span></span></th>
+              <th className="py-2 px-3"><span className="inline-flex items-center gap-1">Config <span title="Shows the camera's current configured state. This is separate from Online/Offline status. Technician override may change this value."><Info aria-label="Config column information" className="w-3.5 h-3.5"/></span></span></th>
               <th className="py-3 px-3">Serial</th>
               <th className="py-3 px-3">Notes</th>
               <th className="py-3 px-3 text-right">Actions</th>
@@ -186,7 +187,7 @@ export const MasterDeviceTable: React.FC<MasterDeviceTableProps> = ({
             {devices.length === 0 ? (
               <tr>
                 <td colSpan={9} className="py-12 text-center text-slate-500">
-                  No devices discovered. Select <strong className="text-slate-700 dark:text-slate-300">Scan</strong> above to begin discovery.
+                  <span className="block font-medium text-slate-700 dark:text-slate-300">No devices discovered.</span><span className="mt-1 block">Select Scan to begin discovery.</span>
                 </td>
               </tr>
             ) : (

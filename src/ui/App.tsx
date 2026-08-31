@@ -43,8 +43,8 @@ import {
   Printer,
   Hash,
   Wrench,
-  Sun,
-  Moon,
+  Settings,
+  Filter,
   ChevronDown,
 } from 'lucide-react';
 import { applyTheme, persistTheme, readThemePreference, ThemePreference } from './theme.ts';
@@ -83,7 +83,8 @@ export default function App() {
   const [selectedDeviceForBrowser, setSelectedDeviceForBrowser] = useState<Device | null>(null);
   const [selectedDeviceForInspector, setSelectedDeviceForInspector] = useState<Device | null>(null);
   const [theme, setTheme] = useState<ThemePreference>(() => readThemePreference());
-  const [openMenu, setOpenMenu] = useState<'PROJECT' | 'TOOLS' | null>(null);
+  const [openMenu, setOpenMenu] = useState<'PROJECT' | 'TOOLS' | 'SETTINGS' | 'SCAN' | null>(null);
+  const [filtersVisible, setFiltersVisible] = useState(true);
   const menuAreaRef = useRef<HTMLDivElement>(null);
 
   // New device notification (Section 16)
@@ -402,7 +403,7 @@ export default function App() {
         <div ref={menuAreaRef} className="flex items-center gap-1.5 shrink-0">
           <div className="relative"><button aria-haspopup="menu" aria-expanded={openMenu==='PROJECT'} onClick={()=>setOpenMenu(openMenu==='PROJECT'?null:'PROJECT')} className="ui-header-button">Project <ChevronDown className="w-3.5 h-3.5"/></button>{openMenu==='PROJECT'&&<div role="menu" className="ui-menu"><button onClick={()=>{void handleNewProject();setOpenMenu(null)}}>New Project</button>{projectSession?.mode==='QUICK_WORK'&&(project?.devices.length||0)>0&&<button onClick={()=>{void handleCreateFromCurrent();setOpenMenu(null)}}>Create Project from Results</button>}<button onClick={()=>{openProjectInput.current?.click();setOpenMenu(null)}}>Open Project</button><button onClick={()=>{void handleSaveProject(false);setOpenMenu(null)}}>Save Project</button>{projectSession?.mode==='PROJECT'&&<><button onClick={()=>{void handleSaveProject(true);setOpenMenu(null)}}>Save As</button><button onClick={()=>{void handleScanNetwork();setOpenMenu(null)}}>Reverify</button></>}</div>}</div>
           <div className="relative"><button aria-haspopup="menu" aria-expanded={openMenu==='TOOLS'} onClick={()=>setOpenMenu(openMenu==='TOOLS'?null:'TOOLS')} className="ui-header-button">Tools <ChevronDown className="w-3.5 h-3.5"/></button>{openMenu==='TOOLS'&&<div role="menu" className="ui-menu"><button onClick={()=>{setIsAvailableIpFinderOpen(true);setOpenMenu(null)}}>Available IPs</button><button onClick={()=>{setIsLegacyModalOpen(true);setOpenMenu(null)}}>Add Device Manually</button><button onClick={()=>{setIsSiteSurveyModalOpen(true);setOpenMenu(null)}}>Site Survey Report</button></div>}</div>
-          <label className="ui-header-button"><span className="sr-only">Appearance</span>{theme==='DARK'?<Moon className="w-4 h-4"/>:<Sun className="w-4 h-4"/>}<select aria-label="Appearance" value={theme} onChange={e=>setTheme(e.target.value as ThemePreference)} className="bg-transparent outline-none"><option value="LIGHT">Light</option><option value="DARK">Dark</option><option value="SYSTEM">System</option></select></label>
+          <div className="relative"><button aria-haspopup="menu" aria-expanded={openMenu==='SETTINGS'} onClick={()=>setOpenMenu(openMenu==='SETTINGS'?null:'SETTINGS')} className="ui-header-button"><Settings className="w-4 h-4"/>Settings <ChevronDown className="w-3.5 h-3.5"/></button>{openMenu==='SETTINGS'&&<div role="menu" aria-label="Settings" className="ui-menu"><div className="px-3 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-wider text-slate-500">Appearance</div>{(['LIGHT','DARK','SYSTEM'] as ThemePreference[]).map(option=><button key={option} role="menuitemradio" aria-checked={theme===option} onClick={()=>{setTheme(option);setOpenMenu(null)}} className="flex items-center justify-between"><span>{option[0]+option.slice(1).toLowerCase()}</span>{theme===option&&<CheckCircle className="w-3.5 h-3.5 text-blue-600"/>}</button>)}</div>}</div>
           <input ref={openProjectInput} type="file" accept=".cctvproj,application/json" onChange={handleOpenProject} className="hidden" />
         </div>
       </header>
@@ -431,8 +432,13 @@ export default function App() {
         )}
 
         {/* Workspace Toolbar: Search, Filters & Network Adapter Info (Sections 7, 8, 24) */}
-        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg p-2 flex flex-wrap items-center gap-2">
-          <button onClick={handleScanNetwork} className={`h-9 flex items-center gap-2 px-4 rounded-md font-bold text-xs text-white ${isScanning?'bg-red-600 hover:bg-red-500':'bg-blue-600 hover:bg-blue-500'}`}>{isScanning?<><RefreshCw className="w-4 h-4 animate-spin"/>Stop</>:<><Play className="w-4 h-4 fill-current"/>{projectSession?.mode==='PROJECT'?'Reverify':'Scan'}</>}</button>
+        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg p-2 space-y-2">
+          <div className="flex items-center gap-2">
+          <div className="relative flex shrink-0">
+            <button onClick={handleScanNetwork} className={`h-9 flex items-center gap-2 rounded-l-md px-4 font-bold text-xs text-white ${isScanning?'bg-red-600 hover:bg-red-500':'bg-blue-600 hover:bg-blue-500'}`}>{isScanning?<><RefreshCw className="w-4 h-4 animate-spin"/>Stop</>:<><Play className="w-4 h-4 fill-current"/>Scan</>}</button>
+            {!isScanning&&<button aria-label="Scan choices" aria-haspopup="menu" aria-expanded={openMenu==='SCAN'} onClick={()=>setOpenMenu(openMenu==='SCAN'?null:'SCAN')} className="h-9 rounded-r-md border-l border-blue-500 bg-blue-600 px-2 text-white hover:bg-blue-500"><ChevronDown className="w-4 h-4"/></button>}
+            {openMenu==='SCAN'&&!isScanning&&<div role="menu" aria-label="Scan choices" className="ui-menu left-0 right-auto top-10 min-w-64"><button onClick={()=>{void handleScanNetwork();setOpenMenu(null)}}><span className="block font-semibold">Quick Scan <span className="font-normal text-blue-600">· Default</span></span><span className="block text-[10px] text-slate-500">Fast discovery on local network</span></button><button disabled aria-disabled="true" className="cursor-not-allowed opacity-50"><span className="block font-semibold">Advanced Scan — Coming Soon</span><span className="block text-[10px] text-slate-500">Deep scan across subnets</span></button><button onClick={()=>setOpenMenu(null)}><span className="block font-semibold">Scan Options...</span><span className="block text-[10px] text-slate-500">No additional options available</span></button></div>}
+          </div>
           {/* Search Box (Section 7) */}
           <div className="flex-1 min-w-[220px] relative">
             <Search className="w-4 h-4 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
@@ -445,9 +451,12 @@ export default function App() {
             />
           </div>
 
+          <button type="button" aria-expanded={filtersVisible} onClick={()=>setFiltersVisible(value=>!value)} className="h-9 inline-flex shrink-0 items-center gap-2 rounded-md border border-slate-200 px-3 text-xs font-semibold text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800"><Filter className="w-4 h-4"/>Filters</button>
+          </div>
+
           {/* Filter Dropdowns (Section 8) */}
-          <div className="flex items-center gap-3 text-xs">
-            <div className="flex items-center gap-1.5 bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1">
+          {filtersVisible&&<div className="flex flex-wrap items-center gap-2 text-xs border-t border-slate-100 pt-2 dark:border-slate-800">
+            <div className="flex items-center gap-1.5 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-md px-2.5 py-1">
               <span className="text-slate-500">Status:</span>
               <select
                 value={statusFilter}
@@ -462,7 +471,7 @@ export default function App() {
               </select>
             </div>
 
-            <div className="flex items-center gap-1.5 bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1">
+            <div className="flex items-center gap-1.5 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-md px-2.5 py-1">
               <span className="text-slate-500">Type:</span>
               <select
                 value={deviceTypeFilter}
@@ -485,7 +494,7 @@ export default function App() {
               <Activity className={`w-3.5 h-3.5 ${diagnosticRefresh.enabled ? 'text-emerald-400' : 'text-slate-600'}`} />
               <span>Diagnostics: {diagnosticRefresh.enabled ? `${Math.round(diagnosticRefresh.intervalMs / 1000)}s${diagnosticRefresh.running ? ' (checking)' : ''}` : 'Paused'}</span>
             </div>
-          </div>
+          </div>}
         </div>
 
         {/* Section 5 & 39: Bulk Operation Bar (when items selected) */}
@@ -542,13 +551,13 @@ export default function App() {
       ───────────────────────────────────────────────────────────── */}
       <footer className="border-t border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-4 py-2 text-xs text-slate-500 flex items-center justify-between">
         <div className="flex items-center gap-4 font-mono text-[11px]">
-          <span>Total Devices: <strong className="text-white">{project?.devices.length || 0}</strong></span>
+          <span>Devices: <strong className="text-slate-800 dark:text-white">{project?.devices.length || 0}</strong></span>
           <span>•</span>
           <span>Collisions: <strong className={activeCollisionsCount > 0 ? 'text-amber-400' : 'text-slate-400'}>{activeCollisionsCount}</strong></span>
           <span>•</span><span>{isScanning?'Scanning…':'Ready'}</span>{projectSession?.dirty&&<><span>•</span><span className="text-amber-600">Unsaved changes</span></>}
         </div>
 
-        <span className="text-[11px]">CCTV Network Assistant</span>
+        <span className="text-[11px]">Monitor: {diagnosticRefresh.enabled ? `${Math.round(diagnosticRefresh.intervalMs / 1000)}s` : 'Paused'}</span>
       </footer>
 
       {/* ─────────────────────────────────────────────────────────────
