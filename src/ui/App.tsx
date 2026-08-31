@@ -15,7 +15,7 @@ import { DuplicateDrawer } from './components/DuplicateDrawer.tsx';
 import { RogueDhcpBanner } from './components/RogueDhcpBanner.tsx';
 import { LegacyOnboardModal } from './components/LegacyOnboardModal.tsx';
 import { AuditReportModal } from './components/AuditReportModal.tsx';
-import { DeviceConfigModal } from './components/DeviceConfigModal.tsx';
+import { NetworkConfigModal } from './components/NetworkConfigModal.tsx';
 import { BrowserModal } from './components/BrowserModal.tsx';
 import { TaskCenter, TaskItem } from './components/TaskCenter.tsx';
 import { NewDeviceNotification } from './components/NewDeviceNotification.tsx';
@@ -757,11 +757,10 @@ export default function App() {
       )}
 
       {/* Device Configuration & ONVIF Studio */}
-      <DeviceConfigModal
+      <NetworkConfigModal
         isOpen={selectedDeviceForConfig !== null}
         onClose={() => setSelectedDeviceForConfig(null)}
         device={selectedDeviceForConfig}
-        onSave={handleSaveDeviceConfig}
       />
     </div>
   );

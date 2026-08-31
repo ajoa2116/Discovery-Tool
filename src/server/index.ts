@@ -17,6 +17,7 @@ import { ProjectValidationError } from '../core/storage/project_db.ts';
 import { DeviceDiagnosticEngine, DiagnosticRefreshMonitor } from '../core/engine/diagnostic_engine.ts';
 import { PairService } from '../core/network/pair_service.ts';
 import { ConnectService } from '../core/connect/connect_service.ts';
+import { CameraNetworkConfigurationService } from '../core/network/camera_network_service.ts';
 
 const app = express();
 const server = createServer(app);
@@ -26,6 +27,8 @@ const diagnosticControllers = new Map<string, AbortController>();
 const pairService = new PairService();
 const connectService = new ConnectService();
 const connectRecheckControllers = new Map<string, AbortController>();
+const cameraNetworkService = new CameraNetworkConfigurationService();
+const cameraNetworkControllers = new Map<string, AbortController>();
 
 app.use(cors());
 app.use(express.json());
@@ -297,6 +300,12 @@ app.post('/api/pipeline/phase/:num', async (req, res) => {
 });
 
 // Device Configuration & ONVIF Parameter Update
+app.get('/api/device/:identifier/network/current', async (req, res) => { const controller=new AbortController();cameraNetworkControllers.set(req.params.identifier,controller);try{res.json(await cameraNetworkService.readCurrent(req.params.identifier,String(req.query.credentialId||''),controller.signal))}catch(error:any){res.status(400).json({error:error.message,code:error.code})}finally{cameraNetworkControllers.delete(req.params.identifier)}});
+app.post('/api/device/:identifier/network/candidates', async (req, res) => { const controller=new AbortController();cameraNetworkControllers.set(req.params.identifier,controller);try{res.json({candidates:await cameraNetworkService.findCandidates(req.params.identifier,Number(req.body.prefixLength),req.body.gateway,controller.signal)})}catch(error:any){res.status(400).json({error:error.message,code:error.code})}finally{cameraNetworkControllers.delete(req.params.identifier)}});
+app.post('/api/device/:identifier/network/preview', async (req, res) => { const controller=new AbortController();cameraNetworkControllers.set(req.params.identifier,controller);try{res.json(await cameraNetworkService.preview(req.params.identifier,String(req.body.credentialId||''),req.body.target,controller.signal))}catch(error:any){res.status(400).json({error:error.message,code:error.code})}finally{cameraNetworkControllers.delete(req.params.identifier)}});
+app.post('/api/device/:identifier/network/apply', async (req, res) => { try{const result=await cameraNetworkService.apply(String(req.body.planId||''),req.body.confirmed===true);broadcast({type:'DEVICE_NETWORK_CONFIG_UPDATED',data:{result,project:projectDb.getProject()}});res.json(result)}catch(error:any){res.status(400).json({error:error.message,code:error.code})} });
+app.post('/api/device/:identifier/network/cancel', (req,res)=>{cameraNetworkControllers.get(req.params.identifier)?.abort();res.status(202).json({cancelled:cameraNetworkService.cancel(req.params.identifier)})});
+
 app.get('/api/device/:identifier/config', (req, res) => {
   const dev = projectDb.getDeviceByIdentifier(req.params.identifier);
   if (!dev) return res.status(404).json({ error: 'Device not found' });
@@ -311,14 +320,9 @@ app.post('/api/device/:identifier/config', (req, res) => {
   const dev = projectDb.getDeviceByIdentifier(req.params.identifier);
   if (!dev) return res.status(404).json({ error: 'Device not found' });
 
-  const { onvifConfig, manufacturerParams, networkSettings, technician } = req.body;
+  const { onvifConfig, manufacturerParams, technician } = req.body;
   if (onvifConfig) dev.onvifConfig = onvifConfig;
   if (manufacturerParams) dev.manufacturerParams = { ...dev.manufacturerParams, ...manufacturerParams };
-  if (networkSettings) {
-    if (networkSettings.ipAddress) dev.network.ipAddress = networkSettings.ipAddress;
-    if (networkSettings.subnetMask) dev.network.subnetMask = networkSettings.subnetMask;
-    if (networkSettings.gateway) dev.network.gateway = networkSettings.gateway;
-  }
   if (technician) projectDb.updateDeviceTechnicianFields(dev.id, technician);
 
   dev.lastSeenAt = new Date().toISOString();
