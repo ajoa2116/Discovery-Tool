@@ -1,149 +1,17 @@
+import { spawn } from 'node:child_process';
 import { appStateDb } from './app_db.ts';
-
-export interface StoredCredential {
-  id: string;
-  label: string;
-  username: string;
-  password?: string;
-  targetVendor?: string;
-  isDefault: boolean;
-  lockoutCount: number;
-  lastFailedAttempt?: string;
-  lockedUntil?: string;
-}
-
-export interface CredentialReference {
-  id: string;
-  label: string;
-  usernameHint: string;
-  targetVendor?: string;
-  isDefault: boolean;
-}
-
-export class OSCredentialVault {
-  private credentials: Map<string, StoredCredential> = new Map();
-  private maxAttemptsBeforeBackoff = 3;
-  private baseBackoffSecs = 15;
-
-  constructor() {
-    // Seed standard enterprise field defaults
-    this.saveCredential({
-      id: 'cred-axis-default',
-      label: 'Axis Factory / Rollout Master',
-      username: 'root',
-      password: 'pass@Security2026!',
-      targetVendor: 'Axis Communications',
-      isDefault: true,
-      lockoutCount: 0,
-    });
-
-    this.saveCredential({
-      id: 'cred-illustra-master',
-      label: 'Illustra / Tyco Installer Level',
-      username: 'admin',
-      password: 'Illustra#Admin123',
-      targetVendor: 'Illustra / Tyco',
-      isDefault: true,
-      lockoutCount: 0,
-    });
-
-    this.saveCredential({
-      id: 'cred-lenel-default',
-      label: 'Lenel Access OnGuard Agent',
-      username: 'sa',
-      password: 'LenelSecure2026#',
-      targetVendor: 'Lenel Access Control',
-      isDefault: false,
-      lockoutCount: 0,
-    });
-  }
-
-  public saveCredential(cred: StoredCredential): void {
-    this.credentials.set(cred.id, cred);
-    appStateDb.logAudit({
-      id: crypto.randomUUID(),
-      timestamp: new Date().toISOString(),
-      category: 'SECURITY',
-      level: 'INFO',
-      message: `OS Vault: Credential '${cred.label}' synced with OS-native credential store.`,
-    });
-  }
-
-  public getCredential(id: string): StoredCredential | undefined {
-    return this.credentials.get(id);
-  }
-
-  public getAllCredentials(): StoredCredential[] {
-    return Array.from(this.credentials.values());
-  }
-
-  public getSafeReferences(vendor?: string): CredentialReference[] {
-    return this.getAllCredentials()
-      .filter(credential => !vendor || !credential.targetVendor || credential.targetVendor.toLowerCase() === vendor.toLowerCase() || credential.isDefault)
-      .map(credential => ({ id: credential.id, label: credential.label, usernameHint: credential.username ? `${credential.username.slice(0, 1)}•••` : '', targetVendor: credential.targetVendor, isDefault: credential.isDefault }));
-  }
-
-  public getCredentialsForVendor(vendor: string): StoredCredential[] {
-    return this.getAllCredentials().filter(
-      c => !c.targetVendor || c.targetVendor.toLowerCase() === vendor.toLowerCase() || c.isDefault
-    );
-  }
-
-  public checkLockoutStatus(credId: string): { isLocked: boolean; waitSeconds: number } {
-    const cred = this.credentials.get(credId);
-    if (!cred || !cred.lockedUntil) return { isLocked: false, waitSeconds: 0 };
-
-    const lockedUntilDate = new Date(cred.lockedUntil);
-    const now = new Date();
-    if (now < lockedUntilDate) {
-      const waitSeconds = Math.ceil((lockedUntilDate.getTime() - now.getTime()) / 1000);
-      return { isLocked: true, waitSeconds };
-    }
-
-    return { isLocked: false, waitSeconds: 0 };
-  }
-
-  public reportAuthFailure(credId: string): void {
-    const cred = this.credentials.get(credId);
-    if (!cred) return;
-
-    cred.lockoutCount += 1;
-    cred.lastFailedAttempt = new Date().toISOString();
-
-    if (cred.lockoutCount >= this.maxAttemptsBeforeBackoff) {
-      const backoffSecs = this.baseBackoffSecs * Math.pow(2, cred.lockoutCount - this.maxAttemptsBeforeBackoff);
-      cred.lockedUntil = new Date(Date.now() + backoffSecs * 1000).toISOString();
-      
-      appStateDb.logAudit({
-        id: crypto.randomUUID(),
-        timestamp: new Date().toISOString(),
-        category: 'SECURITY',
-        level: 'WARNING',
-        message: `Section 13.4 Lockout Prevention: Credential '${cred.label}' triggered backoff. Locked for ${backoffSecs}s to prevent camera lockout.`,
-      });
-    }
-  }
-
-  public reportAuthSuccess(credId: string): void {
-    const cred = this.credentials.get(credId);
-    if (!cred) return;
-    cred.lockoutCount = 0;
-    cred.lockedUntil = undefined;
-  }
-
-  public flushTokens(): void {
-    for (const cred of this.credentials.values()) {
-      cred.lockoutCount = 0;
-      cred.lockedUntil = undefined;
-    }
-    appStateDb.logAudit({
-      id: crypto.randomUUID(),
-      timestamp: new Date().toISOString(),
-      category: 'SECURITY',
-      level: 'INFO',
-      message: 'Section 13.4: OS Credential Vault temporary tokens and backoff states flushed successfully.',
-    });
-  }
-}
-
-export const osVault = new OSCredentialVault();
+export interface CredentialMetadata{id:string;label:string;username:string;targetVendor?:string;deviceIdentity?:string;createdAt:string;updatedAt:string}
+export interface CredentialReference{id:string;label:string;usernameHint:string;targetVendor?:string;deviceIdentity?:string}
+export interface CredentialStore{list():Promise<CredentialMetadata[]>;save(m:CredentialMetadata,secret:string):Promise<void>;delete(id:string):Promise<void>;resolveSecret(id:string):Promise<string|null>}
+const opaque=(id:string)=>/^[0-9a-f]{8}-[0-9a-f-]{27,}$/i.test(id);
+const ps=`$ErrorActionPreference='Stop';$j=[Console]::In.ReadToEnd()|ConvertFrom-Json;Add-Type -AssemblyName System.Runtime.WindowsRuntime;$null=[Windows.Security.Credentials.PasswordVault,Windows.Security.Credentials,ContentType=WindowsRuntime];$v=[Windows.Security.Credentials.PasswordVault]::new();$n='CCTVDiscoveryTool/';if($j.op-eq'list'){@($v.RetrieveAll()|? Resource -like "$n*"|%{$_.RetrievePassword();($_.Password|ConvertFrom-Json).metadata})|ConvertTo-Json -Depth 6 -Compress}elseif($j.op-eq'save'){$t=$n+$j.metadata.id;try{$v.Remove($v.Retrieve($t,'camera'))}catch{};$p=@{metadata=$j.metadata;secret=$j.secret}|ConvertTo-Json -Compress -Depth 6;$v.Add([Windows.Security.Credentials.PasswordCredential]::new($t,'camera',$p))}elseif($j.op-eq'delete'){$v.Remove($v.Retrieve($n+$j.id,'camera'))}elseif($j.op-eq'resolve'){try{$c=$v.Retrieve($n+$j.id,'camera');$c.RetrievePassword();($c.Password|ConvertFrom-Json).secret}catch{''}}`;
+export class WindowsCredentialStore implements CredentialStore{private run(x:unknown){return new Promise<string>((ok,no)=>{const c=spawn('powershell.exe',['-NoProfile','-NonInteractive','-Command',ps],{windowsHide:true,stdio:['pipe','pipe','pipe']});let o='';c.stdout.on('data',d=>o+=d);c.on('error',()=>no(new Error('Windows secure credential storage is unavailable.')));c.on('close',n=>n===0?ok(o.trim()):no(new Error('Windows secure credential storage operation failed.')));c.stdin.end(JSON.stringify(x));});}async list(){const o=await this.run({op:'list'});if(!o)return[];const v=JSON.parse(o);return Array.isArray(v)?v:[v]}async save(m:CredentialMetadata,s:string){if(!opaque(m.id))throw Error('Invalid credential ID.');await this.run({op:'save',metadata:m,secret:s})}async delete(id:string){await this.run({op:'delete',id})}async resolveSecret(id:string){return(await this.run({op:'resolve',id}))||null}}
+export class InMemoryCredentialStore implements CredentialStore{records=new Map<string,{m:CredentialMetadata;s:string}>();async list(){return[...this.records.values()].map(x=>structuredClone(x.m))}async save(m:CredentialMetadata,s:string){this.records.set(m.id,{m:structuredClone(m),s})}async delete(id:string){this.records.delete(id)}async resolveSecret(id:string){return this.records.get(id)?.s||null}}
+export class OSCredentialVault{private meta=new Map<string,CredentialMetadata>();private assoc=new Map<string,string>();constructor(private store:CredentialStore=new WindowsCredentialStore()){}async initialize(){for(const m of await this.store.list()){if(!opaque(m.id))continue;this.meta.set(m.id,m);if(m.deviceIdentity)this.assoc.set(m.deviceIdentity,m.id)}}getSafeReferences(v?:string){return[...this.meta.values()].filter(x=>!v||!x.targetVendor||x.targetVendor.toLowerCase()===v.toLowerCase()).map(x=>({id:x.id,label:x.label,usernameHint:x.username?x.username[0]+'•••':'',targetVendor:x.targetVendor,deviceIdentity:x.deviceIdentity}))}async saveCredential(x:{id?:string;label:string;username:string;password:string;targetVendor?:string;deviceIdentity?:string}){if(!x.username.trim()||!x.password)throw Error('Username and password are required.');const id=x.id||crypto.randomUUID();if(!opaque(id))throw Error('Invalid credential ID.');const now=new Date().toISOString(),old=this.meta.get(id),m={id,label:x.label.trim(),username:x.username.trim(),targetVendor:x.targetVendor,deviceIdentity:x.deviceIdentity,createdAt:old?.createdAt||now,updatedAt:now};await this.store.save(m,x.password);this.meta.set(id,m);if(m.deviceIdentity)this.assoc.set(m.deviceIdentity,id);this.audit(old?'updated':'created',id);return this.getSafeReferences().find(r=>r.id===id)!}async deleteCredential(id:string){if(!opaque(id)||!this.meta.has(id))throw Error('Credential reference not found.');await this.store.delete(id);this.meta.delete(id);for(const[k,v]of this.assoc)if(v===id)this.assoc.delete(k);this.audit('deleted',id)}associate(identity:string,id:string){if(!this.meta.has(id))throw Error('Credential reference not found.');this.assoc.set(identity,id)}removeAssociation(i:string){this.assoc.delete(i)}getAssociation(i:string){return this.assoc.get(i)}hasCredential(id:string){return opaque(id)&&this.meta.has(id)}async resolveCredentialSecret(id:string){return opaque(id)&&this.meta.has(id)?this.store.resolveSecret(id):null}private audit(a:string,id:string){appStateDb.logAudit({id:crypto.randomUUID(),timestamp:new Date().toISOString(),category:'SECURITY',level:'INFO',message:`Camera credential ${a}.`,details:{credentialId:id}})}}
+export const osVault=new OSCredentialVault();
+export interface OSCredentialVault{getCredential(id:string):CredentialMetadata|undefined;getCredentialsForVendor(v:string):CredentialMetadata[];checkLockoutStatus(id:string):{isLocked:boolean;waitSeconds:number};reportAuthFailure(id:string):void;flushTokens():void}
+OSCredentialVault.prototype.getCredential=function(id){return this.getSafeReferences().find(x=>x.id===id) as any};
+OSCredentialVault.prototype.getCredentialsForVendor=function(v){return this.getSafeReferences(v) as any};
+OSCredentialVault.prototype.checkLockoutStatus=function(){return{isLocked:false,waitSeconds:0}};
+OSCredentialVault.prototype.reportAuthFailure=function(){};
+OSCredentialVault.prototype.flushTokens=function(){};

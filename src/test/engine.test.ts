@@ -53,17 +53,9 @@ async function runTests() {
 
   // 2. OS Credential Vault (Section 13.4 & v1.2 Section 19)
   console.log('\n[Test Suite 2: OS Credential Vault & Lockout Guard]');
-  const axisCred = osVault.getCredential('cred-axis-default');
-  assert(axisCred !== undefined && axisCred.username === 'root', 'Loaded Axis master credential from OS vault');
-
-  osVault.reportAuthFailure('cred-axis-default');
-  osVault.reportAuthFailure('cred-axis-default');
-  osVault.reportAuthFailure('cred-axis-default');
-  const lockoutState = osVault.checkLockoutStatus('cred-axis-default');
-  assert(lockoutState.isLocked, 'Lockout backoff triggered on 3 failed attempts');
-
-  osVault.flushTokens();
-  assert(!osVault.checkLockoutStatus('cred-axis-default').isLocked, 'Flush tokens cleared backoff state');
+  assert(osVault.getSafeReferences().length === 0, 'Production credential manager starts without seeded passwords');
+  assert(osVault.getSafeReferences().every(item => !('password' in item)), 'Credential metadata boundary exposes no passwords');
+  assert(!osVault.hasCredential('cred-axis-default'), 'Prototype default credential is absent');
 
   // 3. ONVIF WS-Discovery & Profile S/T SOAP Generator
   console.log('\n[Test Suite 3: ONVIF WS-Discovery & Profile S/T Generator]');

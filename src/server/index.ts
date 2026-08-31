@@ -54,6 +54,7 @@ diagnosticMonitor.start();
 pairService.initializeRecovery().then(state => {
   if (state) broadcast({ type: 'PAIR_STATE_CHANGED', data: { pair: state } });
 }).catch(error => console.error('Pair recovery inspection failed:', error instanceof Error ? error.message : error));
+osVault.initialize().catch(error => console.error('Windows secure credential store unavailable:', error instanceof Error ? error.message : error));
 
 // Wire pipeline events to WebSocket clients
 pipelineEngine.subscribe(event => {
@@ -253,7 +254,9 @@ app.post('/api/connect/:deviceId/recheck/cancel', (req, res) => { connectRecheck
 app.post('/api/connect/:deviceId/activation', (req, res) => { try { res.json({ activationState: connectService.markFirstLogin(req.params.deviceId, req.body.required === true) }); } catch (error: any) { res.status(400).json({ error: error.message }); } });
 app.get('/api/connect/:deviceId/credentials', (req, res) => { try { res.json(connectService.safeCredentials(req.params.deviceId)); } catch (error: any) { res.status(404).json({ error: error.message }); } });
 app.post('/api/connect/:deviceId/credentials/select', (req, res) => { try { res.json(connectService.associateCredential(req.params.deviceId, String(req.body.credentialId || ''))); } catch (error: any) { res.status(400).json({ error: error.message }); } });
-app.post('/api/connect/:deviceId/credentials', (req, res) => { try { res.json(connectService.saveCredential(req.params.deviceId, req.body)); } catch (error: any) { res.status(400).json({ error: error.message }); } });
+app.post('/api/connect/:deviceId/credentials', async (req, res) => { try { res.json(await connectService.saveCredential(req.params.deviceId, req.body)); } catch (error: any) { res.status(400).json({ error: error.message }); } });
+app.put('/api/connect/:deviceId/credentials/:credentialId', async(req,res)=>{try{res.json(await connectService.updateCredential(req.params.deviceId,req.params.credentialId,req.body))}catch(error:any){res.status(400).json({error:error.message})}});
+app.delete('/api/connect/:deviceId/credentials/:credentialId', async(req,res)=>{try{res.json(await connectService.deleteCredential(req.params.deviceId,req.params.credentialId))}catch(error:any){res.status(400).json({error:error.message})}});
 
 app.post('/api/discovery/stop', (req, res) => {
   const stopped = pipelineEngine.stopDiscovery();
