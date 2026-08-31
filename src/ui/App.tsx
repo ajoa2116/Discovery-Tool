@@ -24,7 +24,7 @@ import { BulkReIpModal } from './components/BulkReIpModal.tsx';
 import { AvailableIpFinderModal } from './components/AvailableIpFinderModal.tsx';
 import { SiteSurveyReportModal } from './components/SiteSurveyReportModal.tsx';
 import { PairNetworkModal } from './components/PairNetworkModal.tsx';
-import { BulkReIpPlanItem } from '../core/engine/bulk_reip.ts';
+import { BulkReIpPlanItem } from '../shared/bulk_reip.ts';
 import {
   ShieldCheck,
   Search,
@@ -353,19 +353,9 @@ export default function App() {
   };
 
   const handleExecuteBulkReIp = async (plan: BulkReIpPlanItem[]) => {
-    for (const item of plan) {
-      const dev = project?.devices.find((d) => d.anchor.macAddress === item.macAddress);
-      if (dev) {
-        dev.network.ipAddress = item.targetIp;
-        dev.network.subnetMask = item.subnetMask;
-        dev.network.gateway = item.gateway;
-        dev.status = 'CONFIGURED';
-      }
-    }
-    setTasks((prev) => [
-      { id: crypto.randomUUID(), deviceName: `${plan.length} Devices`, operation: 'Bulk Re-IP Sequence Complete', status: 'SUCCESS', timestamp: new Date().toLocaleTimeString() },
-      ...prev,
-    ]);
+    const response = await fetch('http://localhost:3001/api/bulk/re-ip/execute', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ plan }) });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || 'Bulk Re-IP operation failed.');
     await fetchData();
   };
 

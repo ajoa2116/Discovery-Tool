@@ -1,15 +1,7 @@
-import { Device } from '../../types/index.ts';
 import { appStateDb } from '../storage/app_db.ts';
 import { projectDb } from '../storage/project_db.ts';
-
-export interface BulkReIpPlanItem {
-  macAddress: string;
-  currentIp: string;
-  targetIp: string;
-  subnetMask: string;
-  gateway: string;
-  isConflict: boolean;
-}
+import { BulkReIpPlanItem } from '../../shared/bulk_reip.ts';
+export type { BulkReIpPlanItem } from '../../shared/bulk_reip.ts';
 
 export class BulkReIpEngine {
   /**

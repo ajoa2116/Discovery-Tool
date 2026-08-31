@@ -1,5 +1,4 @@
 import React, { useState } from 'react';
-import { AvailableIpFinder } from '../../core/engine/ip_finder.ts';
 import { X, Search, Check, Network, Copy } from 'lucide-react';
 
 interface AvailableIpFinderModalProps {
@@ -19,13 +18,12 @@ export const AvailableIpFinderModal: React.FC<AvailableIpFinderModalProps> = ({
   const [availableIps, setAvailableIps] = useState<string[]>([]);
   const [hasScanned, setHasScanned] = useState(false);
   const [copiedIp, setCopiedIp] = useState<string | null>(null);
+  const [error, setError] = useState('');
 
   if (!isOpen) return null;
 
-  const handleScan = () => {
-    const list = AvailableIpFinder.scanAvailableIps(subnetPrefix, startRange, endRange);
-    setAvailableIps(list);
-    setHasScanned(true);
+  const handleScan = async () => {
+    try { const query = new URLSearchParams({ prefix: subnetPrefix, start: String(startRange), end: String(endRange) }); const response = await fetch(`http://localhost:3001/api/ip-finder/available?${query}`); const result = await response.json(); if (!response.ok) throw new Error(result.error || 'Unable to check addresses.'); setAvailableIps(result.available || []); setHasScanned(true); setError(''); } catch (cause) { setAvailableIps([]); setHasScanned(false); setError((cause as Error).message); }
   };
 
   const handleCopy = (ip: string) => {
@@ -87,12 +85,13 @@ export const AvailableIpFinderModal: React.FC<AvailableIpFinderModalProps> = ({
           </div>
 
           <button
-            onClick={handleScan}
+            onClick={() => void handleScan()}
             className="w-full py-2.5 bg-sky-600 hover:bg-sky-500 text-white rounded-xl font-bold transition flex items-center justify-center gap-2 shadow-md shadow-sky-950"
           >
             <Search className="w-4 h-4" />
             Scan for Unassigned IPs
           </button>
+          {error && <p className="text-rose-500">{error}</p>}
 
           {/* Results Grid */}
           {hasScanned && (

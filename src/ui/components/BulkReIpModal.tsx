@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Device } from '../../types/index.ts';
-import { BulkReIpEngine, BulkReIpPlanItem } from '../../core/engine/bulk_reip.ts';
+import { BulkReIpPlanItem } from '../../shared/bulk_reip.ts';
 import { X, Network, Play, CheckCircle, AlertTriangle, RefreshCw, ShieldAlert } from 'lucide-react';
 
 interface BulkReIpModalProps {
@@ -24,18 +24,14 @@ export const BulkReIpModal: React.FC<BulkReIpModalProps> = ({
   const [plan, setPlan] = useState<BulkReIpPlanItem[]>([]);
   const [conflictsCount, setConflictsCount] = useState(0);
   const [isExecuting, setIsExecuting] = useState(false);
+  const [planError, setPlanError] = useState('');
 
   useEffect(() => {
     if (selectedDevices.length > 0) {
-      const generated = BulkReIpEngine.generatePlan(
-        selectedDevices.flatMap((d) => d.anchor.macAddress ? [d.anchor.macAddress] : []),
-        startIp,
-        subnetMask,
-        gateway,
-        step
-      );
-      setPlan(generated.plan);
-      setConflictsCount(generated.conflictsCount);
+      const controller = new AbortController();
+      const load = async () => { try { const response = await fetch('http://localhost:3001/api/bulk/re-ip/plan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ macs: selectedDevices.flatMap(d => d.anchor.macAddress ? [d.anchor.macAddress] : []), startIp, subnetMask, gateway, step }), signal: controller.signal }); const generated = await response.json(); if (!response.ok) throw new Error(generated.error || 'Unable to prepare the plan.'); setPlan(generated.plan || []); setConflictsCount(generated.conflictsCount || 0); setPlanError(''); } catch (error) { if ((error as Error).name !== 'AbortError') { setPlan([]); setPlanError((error as Error).message); } } };
+      void load();
+      return () => controller.abort();
     }
   }, [selectedDevices, startIp, subnetMask, gateway, step]);
 
@@ -119,6 +115,7 @@ export const BulkReIpModal: React.FC<BulkReIpModalProps> = ({
           </div>
 
           {/* Pre-Flight Conflict Status Banner */}
+          {planError && <div className="p-3 border border-rose-500/40 rounded-xl text-rose-500">{planError}</div>}
           {conflictsCount > 0 ? (
             <div className="p-3 bg-amber-950/30 border border-amber-500/40 rounded-xl text-amber-200 flex items-center gap-2.5">
               <AlertTriangle className="w-5 h-5 text-amber-400 shrink-0" />
