@@ -1,203 +1,30 @@
-import React, { useState, useEffect } from 'react';
+import React,{useEffect,useState}from'react';
 import { Device } from '../../types/index.ts';
-import { BulkReIpPlanItem } from '../../shared/bulk_reip.ts';
-import { X, Network, Play, CheckCircle, AlertTriangle, RefreshCw, ShieldAlert } from 'lucide-react';
+import { BulkNetworkPlan } from '../../shared/bulk_reip.ts';
+import { X, Network, CheckCircle, AlertTriangle, RefreshCw, ShieldCheck } from 'lucide-react';
 
-interface BulkReIpModalProps {
-  isOpen: boolean;
-  onClose: () => void;
-  selectedDevices: Device[];
-  onExecuteBatch: (plan: BulkReIpPlanItem[]) => Promise<void>;
-}
+interface Props{isOpen:boolean;onClose:()=>void;selectedDevices:Device[];onProjectChanged:()=>Promise<void>}
+const api=async(path:string,options?:RequestInit)=>{const response=await fetch(`http://localhost:3001${path}`,options);const data=await response.json();if(!response.ok)throw new Error(data.error||'Bulk network operation failed.');return data};
 
-export const BulkReIpModal: React.FC<BulkReIpModalProps> = ({
-  isOpen,
-  onClose,
-  selectedDevices,
-  onExecuteBatch,
-}) => {
-  const [startIp, setStartIp] = useState('192.168.1.101');
-  const [subnetMask, setSubnetMask] = useState('255.255.255.0');
-  const [gateway, setGateway] = useState('192.168.1.1');
-  const [step, setStep] = useState(1);
-
-  const [plan, setPlan] = useState<BulkReIpPlanItem[]>([]);
-  const [conflictsCount, setConflictsCount] = useState(0);
-  const [isExecuting, setIsExecuting] = useState(false);
-  const [planError, setPlanError] = useState('');
-
-  useEffect(() => {
-    if (selectedDevices.length > 0) {
-      const controller = new AbortController();
-      const load = async () => { try { const response = await fetch('http://localhost:3001/api/bulk/re-ip/plan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ macs: selectedDevices.flatMap(d => d.anchor.macAddress ? [d.anchor.macAddress] : []), startIp, subnetMask, gateway, step }), signal: controller.signal }); const generated = await response.json(); if (!response.ok) throw new Error(generated.error || 'Unable to prepare the plan.'); setPlan(generated.plan || []); setConflictsCount(generated.conflictsCount || 0); setPlanError(''); } catch (error) { if ((error as Error).name !== 'AbortError') { setPlan([]); setPlanError((error as Error).message); } } };
-      void load();
-      return () => controller.abort();
-    }
-  }, [selectedDevices, startIp, subnetMask, gateway, step]);
-
-  if (!isOpen || selectedDevices.length === 0) return null;
-
-  const handleExecute = async () => {
-    setIsExecuting(true);
-    try {
-      await onExecuteBatch(plan);
-      onClose();
-    } finally {
-      setIsExecuting(false);
-    }
-  };
-
-  return (
-    <div className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm flex items-center justify-center p-4">
-      <div className="bg-slate-900 border border-slate-700 rounded-2xl max-w-2xl w-full shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
-        {/* Header */}
-        <div className="p-4 bg-slate-950 border-b border-slate-800 flex items-center justify-between">
-          <div className="flex items-center gap-2.5">
-            <div className="p-2 rounded-lg bg-sky-500/10 text-sky-400">
-              <Network className="w-5 h-5" />
-            </div>
-            <div>
-              <h3 className="font-bold text-white text-sm">Bulk Re-IP</h3>
-              <p className="text-[11px] text-slate-400">
-                Sequential auto-fill and pre-flight ARP conflict audit for {selectedDevices.length} selected cameras.
-              </p>
-            </div>
-          </div>
-
-          <button onClick={onClose} className="p-1 rounded-lg text-slate-400 hover:text-white hover:bg-slate-800 transition">
-            <X className="w-5 h-5" />
-          </button>
-        </div>
-
-        {/* Inputs */}
-        <div className="p-5 space-y-4 overflow-y-auto flex-1 text-xs">
-          <div className="grid grid-cols-4 gap-3 bg-slate-950 p-3.5 rounded-xl border border-slate-800">
-            <div>
-              <label className="block text-slate-400 font-semibold mb-1">Starting IP Address</label>
-              <input
-                type="text"
-                value={startIp}
-                onChange={(e) => setStartIp(e.target.value)}
-                className="w-full bg-slate-900 border border-slate-700 rounded px-2.5 py-1.5 font-mono text-emerald-400 focus:border-sky-500 focus:outline-none"
-              />
-            </div>
-
-            <div>
-              <label className="block text-slate-400 font-semibold mb-1">Subnet Mask</label>
-              <input
-                type="text"
-                value={subnetMask}
-                onChange={(e) => setSubnetMask(e.target.value)}
-                className="w-full bg-slate-900 border border-slate-700 rounded px-2.5 py-1.5 font-mono text-slate-200 focus:border-sky-500 focus:outline-none"
-              />
-            </div>
-
-            <div>
-              <label className="block text-slate-400 font-semibold mb-1">Default Gateway</label>
-              <input
-                type="text"
-                value={gateway}
-                onChange={(e) => setGateway(e.target.value)}
-                className="w-full bg-slate-900 border border-slate-700 rounded px-2.5 py-1.5 font-mono text-slate-200 focus:border-sky-500 focus:outline-none"
-              />
-            </div>
-
-            <div>
-              <label className="block text-slate-400 font-semibold mb-1">Step Increment</label>
-              <input
-                type="number"
-                min="1"
-                value={step}
-                onChange={(e) => setStep(Number(e.target.value))}
-                className="w-full bg-slate-900 border border-slate-700 rounded px-2.5 py-1.5 font-mono text-sky-400 focus:border-sky-500 focus:outline-none"
-              />
-            </div>
-          </div>
-
-          {/* Pre-Flight Conflict Status Banner */}
-          {planError && <div className="p-3 border border-rose-500/40 rounded-xl text-rose-500">{planError}</div>}
-          {conflictsCount > 0 ? (
-            <div className="p-3 bg-amber-950/30 border border-amber-500/40 rounded-xl text-amber-200 flex items-center gap-2.5">
-              <AlertTriangle className="w-5 h-5 text-amber-400 shrink-0" />
-              <span>
-                <strong>Pre-Flight Audit Warning:</strong> {conflictsCount} proposed IP(s) collide with currently active devices on this subnet. Adjust Starting IP or Step.
-              </span>
-            </div>
-          ) : (
-            <div className="p-2.5 bg-emerald-950/20 border border-emerald-500/30 rounded-xl text-emerald-300 flex items-center gap-2">
-              <CheckCircle className="w-4 h-4 text-emerald-400 shrink-0" />
-              <span>Pre-Flight Conflict Audit Passed. 0 collisions detected across proposed range.</span>
-            </div>
-          )}
-
-          {/* Planned Re-IP Mapping Table */}
-          <div>
-            <h4 className="font-semibold text-slate-400 uppercase tracking-wider text-[10px] mb-1.5">
-              Sequential Re-IP Execution Queue ({plan.length} Devices)
-            </h4>
-            <div className="bg-slate-950 border border-slate-800 rounded-xl overflow-hidden">
-              <table className="w-full text-left text-xs font-mono">
-                <thead className="bg-slate-900/80 text-slate-400 border-b border-slate-800 text-[10px]">
-                  <tr>
-                    <th className="py-2 px-3">MAC Anchor</th>
-                    <th className="py-2 px-3">Current IP</th>
-                    <th className="py-2 px-3">→ Target Static IP</th>
-                    <th className="py-2 px-3 text-right">Conflict Check</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-800/60 text-[11px]">
-                  {plan.map((item) => (
-                    <tr key={item.macAddress} className="hover:bg-slate-900/50">
-                      <td className="py-2 px-3 text-slate-300 font-bold">{item.macAddress}</td>
-                      <td className="py-2 px-3 text-slate-400">{item.currentIp}</td>
-                      <td className="py-2 px-3 text-sky-400 font-bold">{item.targetIp}</td>
-                      <td className="py-2 px-3 text-right">
-                        {item.isConflict ? (
-                          <span className="text-amber-400 font-bold">COLLISION</span>
-                        ) : (
-                          <span className="text-emerald-400">CLEAR</span>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </div>
-
-        {/* Footer */}
-        <div className="p-4 border-t border-slate-800 bg-slate-950 flex items-center justify-between">
-          <button
-            onClick={onClose}
-            className="px-4 py-2 rounded-lg text-xs font-medium text-slate-400 hover:text-white hover:bg-slate-800 transition"
-          >
-            Cancel
-          </button>
-
-          <button
-            onClick={handleExecute}
-            disabled={isExecuting || conflictsCount > 0}
-            className={`flex items-center gap-2 px-5 py-2 rounded-lg text-xs font-bold text-white transition shadow-md ${
-              isExecuting || conflictsCount > 0
-                ? 'bg-slate-800 text-slate-500 cursor-not-allowed'
-                : 'bg-emerald-600 hover:bg-emerald-500 shadow-emerald-950/50'
-            }`}
-          >
-            {isExecuting ? (
-              <>
-                <RefreshCw className="w-4 h-4 animate-spin" />
-                Executing 6-Phase Atomic Re-IP...
-              </>
-            ) : (
-              <>
-                <Play className="w-4 h-4 fill-current" />
-                Execute Atomic Batch Re-IP
-              </>
-            )}
-          </button>
-        </div>
-      </div>
+export const BulkReIpModal:React.FC<Props>=({isOpen,onClose,selectedDevices,onProjectChanged})=>{
+  const[startIp,setStartIp]=useState('192.168.1.101'),[prefix,setPrefix]=useState(24),[gateway,setGateway]=useState('192.168.1.1'),[dhcp,setDhcp]=useState(false),[plan,setPlan]=useState<BulkNetworkPlan|null>(null),[manualTargets,setManualTargets]=useState<Record<string,string>>({}),[confirmed,setConfirmed]=useState(false),[busy,setBusy]=useState(false),[error,setError]=useState('');
+  useEffect(()=>{if(!isOpen){setPlan(null);setConfirmed(false);setError('');setManualTargets({})}},[isOpen]);
+  useEffect(()=>{if(!plan||plan.state!=='EXECUTING')return;const timer=setInterval(()=>{void api(`/api/bulk/network/${plan.batchId}`).then(setPlan).catch(()=>{})},600);return()=>clearInterval(timer)},[plan?.batchId,plan?.state]);
+  if(!isOpen)return null;
+  const build=async(overrides=manualTargets)=>{setBusy(true);setError('');setConfirmed(false);try{setPlan(await api('/api/bulk/network/plan',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({deviceIds:selectedDevices.map(d=>d.id),startIp,prefixLength:prefix,gateway:gateway||undefined,dhcp,manualTargets:overrides})}))}catch(e){setError((e as Error).message)}finally{setBusy(false)}};
+  const apply=async()=>{if(!plan)return;setBusy(true);setError('');try{setPlan({...plan,state:'EXECUTING'});const result=await api(`/api/bulk/network/${plan.batchId}/apply`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({confirmed})});setPlan(result);await onProjectChanged()}catch(e){setError((e as Error).message)}finally{setBusy(false)}};
+  const cancel=async()=>{if(plan&&['READY','EXECUTING','CONFIRMED'].includes(plan.state)){await api(`/api/bulk/network/${plan.batchId}/cancel`,{method:'POST'});setPlan(await api(`/api/bulk/network/${plan.batchId}`));return}onClose()};
+  const retry=async()=>{if(!plan)return;setBusy(true);try{setPlan(await api(`/api/bulk/network/${plan.batchId}/retry`,{method:'POST'}));setConfirmed(false)}catch(e){setError((e as Error).message)}finally{setBusy(false)}};
+  const terminal=plan&&['COMPLETED','PARTIAL_FAILURE','FAILED','CANCELLED'].includes(plan.state);
+  return <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-3 backdrop-blur-sm"><div className="flex max-h-[92vh] w-full max-w-4xl flex-col overflow-hidden rounded-xl border border-slate-200 bg-white shadow-xl dark:border-slate-700 dark:bg-slate-900">
+    <div className="flex items-center justify-between border-b border-slate-200 p-4 dark:border-slate-800"><div className="flex items-center gap-2"><Network className="h-5 w-5 text-blue-600"/><div><h3 className="text-sm font-bold">Bulk Network Configuration</h3><p className="text-[11px] text-slate-500">Plan, validate, confirm, apply, and verify {selectedDevices.length} selected cameras.</p></div></div><button aria-label="Close" onClick={onClose} disabled={busy&&plan?.state==='EXECUTING'} className="rounded p-1 text-slate-500 hover:bg-slate-100 dark:hover:bg-slate-800"><X className="h-5 w-5"/></button></div>
+    <div className="flex-1 space-y-4 overflow-y-auto p-4 text-xs">
+      {!plan&&<><div className="grid gap-3 rounded-lg border border-slate-200 bg-slate-50 p-3 sm:grid-cols-4 dark:border-slate-800 dark:bg-slate-950"><label>Mode<select value={dhcp?'DHCP':'STATIC'} onChange={e=>setDhcp(e.target.value==='DHCP')} className="mt-1 w-full rounded border border-slate-300 bg-white p-2 dark:border-slate-700 dark:bg-slate-900"><option value="STATIC">Static IPv4</option><option value="DHCP">DHCP</option></select></label><label>Starting IP<input disabled={dhcp} value={startIp} onChange={e=>setStartIp(e.target.value)} className="mt-1 w-full rounded border border-slate-300 bg-white p-2 font-mono disabled:opacity-50 dark:border-slate-700 dark:bg-slate-900"/></label><label>Prefix<input type="number" min="8" max="30" value={prefix} onChange={e=>setPrefix(Number(e.target.value))} className="mt-1 w-full rounded border border-slate-300 bg-white p-2 font-mono dark:border-slate-700 dark:bg-slate-900"/></label><label>Gateway<input value={gateway} onChange={e=>setGateway(e.target.value)} className="mt-1 w-full rounded border border-slate-300 bg-white p-2 font-mono dark:border-slate-700 dark:bg-slate-900"/></label></div><p className="text-slate-500">Addresses are checked against project devices, collisions, local adapters, neighbor evidence, and bounded targeted probes. The PC adapter is never changed automatically.</p></>}
+      {error&&<div className="rounded border border-rose-300 bg-rose-50 p-3 text-rose-700 dark:border-rose-800 dark:bg-rose-950/30 dark:text-rose-300">{error}</div>}
+      {plan&&<><div className="grid grid-cols-5 gap-2">{[['Selected',plan.totalSelected],['Eligible',plan.eligibleCount],['Blocked',plan.blockedCount],['Ready',plan.readyCount],['Operations',plan.estimatedOperationCount]].map(([label,value])=><div key={label} className="rounded border border-slate-200 p-2 text-center dark:border-slate-800"><div className="text-[10px] uppercase text-slate-500">{label}</div><strong>{value}</strong></div>)}</div><div className="flex items-center gap-2 text-slate-600 dark:text-slate-300">{busy?<RefreshCw className="h-4 w-4 animate-spin"/>:<ShieldCheck className="h-4 w-4 text-blue-600"/>}<strong>Batch state: {plan.state.replaceAll('_',' ')}</strong></div>
+      <div className="overflow-x-auto rounded-lg border border-slate-200 dark:border-slate-800"><table className="w-full text-left"><thead className="bg-slate-100 text-[10px] uppercase text-slate-500 dark:bg-slate-950"><tr><th className="p-2">Name</th><th className="p-2">Current IP</th><th className="p-2">Target IP</th><th className="p-2">Prefix / Gateway</th><th className="p-2">Credential</th><th className="p-2">Validation / Result</th></tr></thead><tbody>{plan.items.map(item=><tr key={item.deviceId} className="border-t border-slate-100 dark:border-slate-800"><td className="p-2 font-medium">{item.name}</td><td className="p-2 font-mono">{item.currentIp}</td><td className="p-2"><input aria-label={`Target IP for ${item.name}`} disabled={plan.state!=='READY'||item.validation!=='READY'||dhcp} value={manualTargets[item.deviceId]??item.targetIp} onChange={e=>setManualTargets(v=>({...v,[item.deviceId]:e.target.value}))} className="w-32 rounded border border-slate-200 bg-transparent p-1 font-mono disabled:border-transparent dark:border-slate-700"/></td><td className="p-2 font-mono">/{item.targetPrefix}<br/>{item.targetGateway||'None'}</td><td className="p-2">{item.credentialLabel||'Missing'}</td><td className="p-2">{item.validation==='READY'?<span className="inline-flex items-center gap-1 text-emerald-600"><CheckCircle className="h-3.5 w-3.5"/>{item.state}</span>:<span className="inline-flex items-start gap-1 text-amber-600"><AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0"/>{item.errors.join('; ')}</span>} {item.resultMessage&&<div className="mt-1 text-[10px] text-slate-500">{item.resultMessage}</div>}</td></tr>)}</tbody></table></div>
+      {plan.state==='READY'&&<label className="flex items-start gap-2 rounded border border-blue-200 bg-blue-50 p-3 dark:border-blue-900 dark:bg-blue-950/20"><input type="checkbox" checked={confirmed} onChange={e=>setConfirmed(e.target.checked)} className="mt-0.5"/><span>I confirm this validated batch. Cameras may temporarily disappear while their network configuration is applied. Pair remains a separate technician-controlled action.</span></label>}</>}
     </div>
-  );
+    <div className="flex items-center justify-between border-t border-slate-200 p-4 dark:border-slate-800"><button onClick={cancel} className="rounded px-3 py-2 text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800">{plan?.state==='EXECUTING'?'Stop After Current Operations':'Cancel'}</button><div className="flex gap-2">{!plan&&<button disabled={busy||selectedDevices.length<2} onClick={()=>void build()} className="rounded bg-blue-600 px-4 py-2 font-bold text-white disabled:opacity-50">Build & Validate Plan</button>}{plan?.state==='READY'&&Object.keys(manualTargets).length>0&&<button disabled={busy} onClick={()=>void build()} className="rounded border border-slate-300 px-4 py-2 font-semibold dark:border-slate-700">Validate Overrides</button>}{plan?.state==='READY'&&<button disabled={busy||!confirmed||plan.readyCount===0} onClick={()=>void apply()} className="rounded bg-emerald-600 px-4 py-2 font-bold text-white disabled:opacity-50">Apply Network Changes</button>}{terminal&&plan.items.some(x=>['FAILED','NEEDS_ATTENTION'].includes(x.state))&&<button disabled={busy} onClick={()=>void retry()} className="rounded bg-blue-600 px-4 py-2 font-bold text-white disabled:opacity-50">Retry Failed</button>}{terminal&&<button onClick={onClose} className="rounded border border-slate-300 px-4 py-2 font-semibold dark:border-slate-700">Done</button>}</div></div>
+  </div></div>
 };

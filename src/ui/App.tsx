@@ -24,7 +24,6 @@ import { BulkReIpModal } from './components/BulkReIpModal.tsx';
 import { AvailableIpFinderModal } from './components/AvailableIpFinderModal.tsx';
 import { SiteSurveyReportModal } from './components/SiteSurveyReportModal.tsx';
 import { PairNetworkModal } from './components/PairNetworkModal.tsx';
-import { BulkReIpPlanItem } from '../shared/bulk_reip.ts';
 import {
   ShieldCheck,
   Search,
@@ -353,13 +352,6 @@ export default function App() {
     await fetchData();
   };
 
-  const handleExecuteBulkReIp = async (plan: BulkReIpPlanItem[]) => {
-    const response = await fetch('http://localhost:3001/api/bulk/re-ip/execute', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ plan }) });
-    const result = await response.json();
-    if (!response.ok) throw new Error(result.error || 'Bulk Re-IP operation failed.');
-    await fetchData();
-  };
-
   // Filtered devices based on search query, status, and device type (Sections 7 & 8)
   const filteredDevices = (project?.devices || []).filter((dev) => {
     const q = searchQuery.toLowerCase();
@@ -513,11 +505,12 @@ export default function App() {
                 <Activity className="w-3.5 h-3.5" />Diagnose Selected
               </button>
               <button
+                disabled={selectedDeviceIds.size < 2}
                 onClick={() => setIsBulkReIpModalOpen(true)}
-                className="px-3.5 py-1.5 bg-sky-600 hover:bg-sky-500 text-white rounded-lg font-bold transition flex items-center gap-1.5 shadow-md shadow-sky-950"
+                className="px-3.5 py-1.5 bg-sky-600 hover:bg-sky-500 disabled:bg-slate-400 disabled:cursor-not-allowed text-white rounded-lg font-bold transition flex items-center gap-1.5 shadow-md shadow-sky-950"
               >
                 <Network className="w-3.5 h-3.5" />
-                Bulk Re-IP
+                Configure Network
               </button>
               <button
                 onClick={() => setSelectedDeviceIds(new Set())}
@@ -586,12 +579,12 @@ export default function App() {
         onPairUpdated={(pair) => { setPairSession(pair); if (pair.state === 'RESTORED' || pair.state === 'CANCELLED') setPairDevice(null); fetchData(); }}
       />
 
-      {/* Section 5: Bulk Re-IP Modal with Conflict Audit */}
+      {/* Milestone 8: backend-authoritative bulk network configuration */}
       <BulkReIpModal
         isOpen={isBulkReIpModalOpen}
         onClose={() => setIsBulkReIpModalOpen(false)}
         selectedDevices={selectedDevicesList}
-        onExecuteBatch={handleExecuteBulkReIp}
+        onProjectChanged={fetchData}
       />
 
       {/* Section 25: Available IP Finder Modal */}

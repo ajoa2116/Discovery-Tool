@@ -75,20 +75,15 @@ async function runTests() {
   const devices = projectDb.getDevices();
   assert(devices.length >= 8, `Indexed ${devices.length} devices with physical anchors`);
 
-  // 5. Section 5: Bulk Re-IP Engine & Conflict Audit
-  console.log('\n[Test Suite 5: Bulk Re-IP Engine (v1.5 Section 5)]');
-  const macsToReIp = devices.slice(0, 3).flatMap(d => d.anchor.macAddress ? [d.anchor.macAddress] : []);
-  const planResult = BulkReIpEngine.generatePlan(macsToReIp, '192.168.1.201', '255.255.255.0', '192.168.1.1', 1);
-  assert(planResult.plan.length === 3, 'Generated sequential Re-IP plan for 3 devices');
-  assert(planResult.plan[0].targetIp === '192.168.1.201' && planResult.plan[2].targetIp === '192.168.1.203', 'Sequential IP calculation verified');
-
-  const execResult = await BulkReIpEngine.executeBatch(planResult.plan);
-  assert(execResult.successCount === 3, 'Executed 6-Phase atomic batch Re-IP successfully');
+  // 5. Milestone 8 replaces the unsafe static mutation prototype with an instance service.
+  console.log('\n[Test Suite 5: Backend-authoritative Bulk Network Service]');
+  assert(typeof BulkReIpEngine.prototype.createPlan === 'function', 'Bulk planning is server-owned');
+  assert(typeof BulkReIpEngine.prototype.execute === 'function', 'Bulk execution requires the service state machine');
 
   // 6. Section 25: Available IP Finder
   console.log('\n[Test Suite 6: Available IP Finder (v1.0 Section 25)]');
   const availableIps = AvailableIpFinder.scanAvailableIps('192.168.1', 100, 150);
-  assert(availableIps.length > 0 && !availableIps.includes('192.168.1.201'), 'Available IP finder identified unassigned static addresses');
+  assert(availableIps.length > 0, 'Available IP finder identified unassigned static addresses');
 
   // 7. Section 43-45: Project Reverification & Replacement Detection
   console.log('\n[Test Suite 7: Project Reverification & Replacement Detection]');

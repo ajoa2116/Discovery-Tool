@@ -1,101 +1,45 @@
+import net from 'node:net';
 import { appStateDb } from '../storage/app_db.ts';
-import { projectDb } from '../storage/project_db.ts';
-import { BulkReIpPlanItem } from '../../shared/bulk_reip.ts';
-export type { BulkReIpPlanItem } from '../../shared/bulk_reip.ts';
+import { SiteProjectDatabase, projectDb } from '../storage/project_db.ts';
+import { OSCredentialVault, osVault } from '../storage/vault.ts';
+import { CameraNetworkConfigurationService, CameraNetworkError, NetworkPreview, NetworkTarget } from '../network/camera_network_service.ts';
+import { BulkNetworkPlan, BulkNetworkPlanItem, BulkNetworkPlanRequest } from '../../shared/bulk_reip.ts';
+export type { BulkNetworkPlan, BulkNetworkPlanItem, BulkNetworkPlanRequest } from '../../shared/bulk_reip.ts';
 
-export class BulkReIpEngine {
-  /**
-   * Generates sequential IP plan (e.g. Starting at 192.168.1.101, step +1)
-   * and runs pre-flight ARP conflict audit (Section 5)
-   */
-  public static generatePlan(
-    selectedDeviceMacs: string[],
-    startIp: string,
-    subnetMask: string,
-    gateway: string,
-    step: number = 1
-  ): { plan: BulkReIpPlanItem[]; conflictsCount: number } {
-    const ipParts = startIp.split('.').map(Number);
-    const basePrefix = ipParts.slice(0, 3).join('.');
-    let currentLastOctet = ipParts[3];
+interface SingleCameraNetworkService { preview(deviceId:string,credentialId:string,target:NetworkTarget,signal?:AbortSignal):Promise<NetworkPreview>;apply(planId:string,confirmed:boolean):Promise<{state:string;verified:boolean;acknowledged:boolean;recoveryGuidance?:string}>;state?(deviceId:string):string }
+const ipInt=(ip:string)=>ip.split('.').reduce((n,p)=>(n*256)+Number(p),0)>>>0;
+const intIp=(n:number)=>[24,16,8,0].map(s=>(n>>>s)&255).join('.');
+const maskToPrefix=(mask?:string)=>{if(!mask)return undefined;const bits=mask.split('.').map(Number).map(n=>n.toString(2).padStart(8,'0')).join('');return /^1*0*$/.test(bits)?bits.replace(/0/g,'').length:undefined};
+const safeError=(error:unknown)=>error instanceof Error?error.message:'Network configuration validation failed.';
 
-    const existingDevices = projectDb.getDevices();
-    const existingIps = new Set(existingDevices.map(d => d.network.ipAddress));
-
-    const plan: BulkReIpPlanItem[] = [];
-    let conflictsCount = 0;
-
-    for (const mac of selectedDeviceMacs) {
-      const dev = projectDb.getDeviceByMac(mac);
-      if (!dev) continue;
-
-      const targetIp = `${basePrefix}.${currentLastOctet}`;
-      // Conflict check: is targetIp used by another device (excluding self)?
-      const isConflict = existingIps.has(targetIp) && dev.network.ipAddress !== targetIp;
-      if (isConflict) conflictsCount++;
-
-      plan.push({
-        macAddress: mac,
-        currentIp: dev.network.ipAddress,
-        targetIp,
-        subnetMask,
-        gateway,
-        isConflict,
-      });
-
-      currentLastOctet += step;
+export class BulkNetworkConfigurationService {
+  private batches=new Map<string,BulkNetworkPlan>();private singlePlans=new Map<string,string>();private controllers=new Map<string,AbortController>();
+  constructor(private db:SiteProjectDatabase=projectDb,private vault:OSCredentialVault=osVault,private single:SingleCameraNetworkService=new CameraNetworkConfigurationService(db,vault),private concurrency=2,private candidateLimit=256){}
+  get(batchId:string){const batch=this.batches.get(batchId);if(!batch)throw new CameraNetworkError('Bulk network plan not found.','PLAN_NOT_FOUND');const snapshot=structuredClone(batch);if(snapshot.state==='EXECUTING'&&this.single.state){for(const item of snapshot.items.filter(x=>x.state==='APPLYING')){const state=this.single.state(item.deviceId);if(state==='WAITING_FOR_DEVICE')item.state='WAITING_FOR_DEVICE';if(state==='REVERIFYING')item.state='VERIFYING'}if(snapshot.items.some(x=>['WAITING_FOR_DEVICE','VERIFYING'].includes(x.state)))snapshot.state='VERIFYING'}return snapshot}
+  async createPlan(request:BulkNetworkPlanRequest,allowSingleRetry=false){
+    if(!Array.isArray(request.deviceIds)||request.deviceIds.length<(allowSingleRetry?1:2))throw new CameraNetworkError('Select at least two cameras for bulk configuration.','SELECTION_REQUIRED');
+    if(!Number.isInteger(request.prefixLength)||request.prefixLength<8||request.prefixLength>30)throw new CameraNetworkError('Prefix length must be between 8 and 30.','INVALID_SUBNET');
+    if(!request.dhcp&&net.isIP(request.startIp)!==4)throw new CameraNetworkError('A valid starting IPv4 address is required.','INVALID_IP');if(request.gateway&&net.isIP(request.gateway)!==4)throw new CameraNetworkError('A valid gateway is required.','INVALID_GATEWAY');
+    const batchId=crypto.randomUUID(),controller=new AbortController();this.controllers.set(batchId,controller);const batch:BulkNetworkPlan={batchId,state:'PLANNING',items:[],totalSelected:request.deviceIds.length,eligibleCount:0,blockedCount:0,readyCount:0,estimatedOperationCount:0};this.batches.set(batchId,batch);
+    const uniqueIds=[...new Set(request.deviceIds)];let candidate=ipInt(request.startIp||'0.0.0.0'),searched=0;const assigned=new Set<string>();batch.state='VALIDATING';
+    for(let order=0;order<uniqueIds.length;order++){
+      const id=uniqueIds[order],device=this.db.getDeviceById(id);const item:BulkNetworkPlanItem={deviceId:id,name:device?.technician?.name||device?.anchor.model||device?.anchor.vendor||'Unknown device',currentIp:device?.network.ipAddress||'Unknown',currentPrefix:maskToPrefix(device?.network.subnetMask??undefined),currentGateway:device?.network.gateway??undefined,targetIp:'',targetPrefix:request.prefixLength,targetGateway:request.gateway,dhcp:request.dhcp===true,eligibility:'BLOCKED',validation:'BLOCKED',errors:[],order,state:'PENDING'};batch.items.push(item);
+      if(!device){item.errors.push('Device not found');continue}if(!device.anchor.macAddress&&!device.anchor.onvifEndpointUuid&&!device.anchor.serialNumber){item.errors.push('Stable device identity is required');continue}
+      if(device.status==='COLLISION'||device.identityConflicts?.length||this.db.getDevices().some(x=>x.id!==device.id&&x.network.ipAddress===device.network.ipAddress)){item.errors.push('Duplicate IP must be resolved first');continue}
+      const credentialId=this.vault.getAssociation(device.id);if(!credentialId||!this.vault.hasCredential(credentialId)){item.errors.push('A saved camera credential is required');continue}item.credentialId=credentialId;item.credentialLabel=this.vault.getCredential(credentialId)?.label;
+      const manual=request.manualTargets?.[id];let preview:NetworkPreview|undefined,lastError='',hardFailure=false;const attempts=manual||request.dhcp?1:this.candidateLimit;
+      for(let attempt=0;attempt<attempts;attempt++){if(controller.signal.aborted)throw new CameraNetworkError('Bulk planning cancelled.','CANCELLED');const targetIp=request.dhcp?device.network.ipAddress:(manual||intIp(candidate++));searched++;if(assigned.has(targetIp)){lastError='Duplicate target IP in batch';if(manual)break;continue}try{preview=await this.single.preview(device.id,credentialId,{ipAddress:targetIp,prefixLength:request.prefixLength,gateway:request.gateway,dhcp:request.dhcp===true},controller.signal);item.targetIp=targetIp;break}catch(error){lastError=safeError(error);const code=error instanceof CameraNetworkError?error.code:'';hardFailure=!['IP_CONFLICT','RESERVED_IP','NO_OP'].includes(code);if(manual||request.dhcp||hardFailure)break}}
+      if(!preview){item.errors.push(manual||hardFailure?lastError:`Not enough safe addresses were found within the bounded ${this.candidateLimit}-candidate search`);continue}assigned.add(item.targetIp);this.singlePlans.set(`${batchId}:${id}`,preview.planId);item.currentIp=preview.current.ipAddress;item.currentPrefix=preview.current.prefixLength;item.currentGateway=preview.current.gateway;item.eligibility='ELIGIBLE';item.validation='READY';
     }
-
-    return { plan, conflictsCount };
+    batch.readyCount=batch.items.filter(x=>x.validation==='READY').length;batch.eligibleCount=batch.items.filter(x=>x.eligibility==='ELIGIBLE').length;batch.blockedCount=batch.items.length-batch.readyCount;batch.estimatedOperationCount=batch.readyCount*3;batch.state=batch.readyCount?'READY':'FAILED';this.controllers.delete(batchId);this.audit(batch,'PLAN_VALIDATED',{searchedCandidates:searched});return structuredClone(batch)
   }
-
-  /**
-   * Executes the 6-Phase Atomic Re-IP batch sequence with rollback safety (Section 5 & 6)
-   */
-  public static async executeBatch(plan: BulkReIpPlanItem[]): Promise<{
-    successCount: number;
-    failedCount: number;
-    logs: string[];
-  }> {
-    const logs: string[] = [];
-    let successCount = 0;
-    let failedCount = 0;
-
-    logs.push(`[Bulk Re-IP] Starting atomic batch execution for ${plan.length} devices...`);
-
-    for (const item of plan) {
-      const dev = projectDb.getDeviceByMac(item.macAddress);
-      if (!dev) {
-        failedCount++;
-        continue;
-      }
-
-      logs.push(`[Bulk Re-IP] Re-IP Phase 1-6: Applying ${item.targetIp} to ${dev.anchor.vendor} (${dev.anchor.macAddress})...`);
-
-      // 1. Push Netmask & Gateway First
-      dev.network.subnetMask = item.subnetMask;
-      dev.network.gateway = item.gateway;
-
-      // 2. Assign Primary Static IP
-      dev.network.ipAddress = item.targetIp;
-      dev.status = 'CONFIGURED';
-      dev.statusMessage = `Re-IP Verified: Static IP set to ${item.targetIp}`;
-      dev.lastSeenAt = new Date().toISOString();
-
-      projectDb.upsertDevice(dev);
-      successCount++;
-
-      appStateDb.logAudit({
-        id: crypto.randomUUID(),
-        timestamp: new Date().toISOString(),
-        category: 'PROVISIONING',
-        level: 'SUCCESS',
-        message: `Bulk Re-IP: ${dev.anchor.macAddress} changed from ${item.currentIp} -> ${item.targetIp}`,
-        deviceId: dev.id,
-      });
-    }
-
-    logs.push(`[Bulk Re-IP] Completed. Successfully re-IP'd ${successCount}/${plan.length} devices.`);
-    return { successCount, failedCount, logs };
+  async execute(batchId:string,confirmed:boolean){
+    const batch=this.batches.get(batchId);if(!batch)throw new CameraNetworkError('Bulk network plan not found.','PLAN_NOT_FOUND');if(!confirmed)throw new CameraNetworkError('Explicit technician confirmation is required.','CONFIRMATION_REQUIRED');if(batch.state!=='READY')throw new CameraNetworkError('The batch is not ready for execution.','PLAN_NOT_READY');batch.state='CONFIRMED';batch.confirmedAt=new Date().toISOString();this.audit(batch,'TECHNICIAN_CONFIRMED');batch.state='EXECUTING';batch.startedAt=new Date().toISOString();batch.cancellationRequested=false;
+    const queue=batch.items.filter(x=>x.validation==='READY');let cursor=0;const worker=async()=>{while(cursor<queue.length){if(batch.cancellationRequested)break;const item=queue[cursor++];item.state='APPLYING';const singlePlan=this.singlePlans.get(`${batchId}:${item.deviceId}`);if(!singlePlan){item.state='FAILED';item.resultMessage='Validated single-camera plan is unavailable.';continue}try{const result=await this.single.apply(singlePlan,true);item.verified=result.verified;item.state=result.verified?'VERIFIED':'NEEDS_ATTENTION';item.resultMessage=result.verified?'Network change verified.':result.recoveryGuidance||'Camera write acknowledged but reverification is incomplete.'}catch(error){item.state='FAILED';item.resultMessage=safeError(error)}this.audit(batch,'DEVICE_RESULT',{deviceId:item.deviceId,oldIp:item.currentIp,newIp:item.targetIp,result:item.state,verified:item.verified===true})}};await Promise.all(Array.from({length:Math.min(this.concurrency,queue.length)},()=>worker()));
+    if(batch.cancellationRequested)for(const item of queue)if(item.state==='PENDING'){item.state='SKIPPED';item.resultMessage='Cancelled before this device was scheduled.'}const failed=batch.items.filter(x=>['FAILED','NEEDS_ATTENTION'].includes(x.state)).length,verified=batch.items.filter(x=>x.state==='VERIFIED').length,skipped=batch.items.filter(x=>x.state==='SKIPPED').length;batch.completedAt=new Date().toISOString();batch.state=batch.cancellationRequested?'CANCELLED':failed||skipped||batch.blockedCount?'PARTIAL_FAILURE':verified===batch.readyCount?'COMPLETED':'FAILED';this.audit(batch,'BATCH_COMPLETE',{verified,failed,skipped});return structuredClone(batch)
   }
+  cancel(batchId:string){const batch=this.batches.get(batchId);if(!batch)return false;if(['PLANNING','VALIDATING'].includes(batch.state))this.controllers.get(batchId)?.abort();if(['READY','CONFIRMED'].includes(batch.state)){batch.state='CANCELLED';for(const item of batch.items)if(item.state==='PENDING')item.state='SKIPPED'}else if(batch.state==='EXECUTING')batch.cancellationRequested=true;else return false;this.audit(batch,'CANCELLATION_REQUESTED');return true}
+  async retry(batchId:string){const old=this.batches.get(batchId);if(!old)throw new CameraNetworkError('Bulk network plan not found.','PLAN_NOT_FOUND');const retryItems=old.items.filter(x=>['FAILED','NEEDS_ATTENTION'].includes(x.state));if(!retryItems.length)throw new CameraNetworkError('No failed devices are available to retry.','NOTHING_TO_RETRY');return this.createPlan({deviceIds:retryItems.map(x=>x.deviceId),startIp:retryItems[0].targetIp,prefixLength:retryItems[0].targetPrefix,gateway:retryItems[0].targetGateway,dhcp:retryItems[0].dhcp,manualTargets:Object.fromEntries(retryItems.map(x=>[x.deviceId,x.targetIp]))},true)}
+  private audit(batch:BulkNetworkPlan,event:string,details:Record<string,unknown>={}){appStateDb.logAudit({id:crypto.randomUUID(),timestamp:new Date().toISOString(),category:'PROVISIONING',level:event==='BATCH_COMPLETE'&&batch.state==='FAILED'?'ERROR':'INFO',message:'Bulk network configuration.',details:{batchId:batch.batchId,event,...details}})}
 }
+export const BulkReIpEngine=BulkNetworkConfigurationService;

@@ -11,7 +11,7 @@ import { RogueDHCPAuditor } from '../core/edge_cases/rogue_dhcp.ts';
 import { LegacyHardwareOnboarding } from '../core/edge_cases/legacy_hardware.ts';
 import { OnvifDriver } from '../core/drivers/onvif.ts';
 import { AvailableIpFinder } from '../core/engine/ip_finder.ts';
-import { BulkReIpEngine } from '../core/engine/bulk_reip.ts';
+import { BulkNetworkConfigurationService } from '../core/engine/bulk_reip.ts';
 import { ProjectReverificationEngine } from '../core/engine/reverification.ts';
 import { ProjectValidationError } from '../core/storage/project_db.ts';
 import { DeviceDiagnosticEngine, DiagnosticRefreshMonitor } from '../core/engine/diagnostic_engine.ts';
@@ -28,6 +28,7 @@ const pairService = new PairService();
 const connectService = new ConnectService();
 const connectRecheckControllers = new Map<string, AbortController>();
 const cameraNetworkService = new CameraNetworkConfigurationService();
+const bulkNetworkService = new BulkNetworkConfigurationService(projectDb, osVault, cameraNetworkService);
 const cameraNetworkControllers = new Map<string, AbortController>();
 
 app.use(cors());
@@ -160,19 +161,12 @@ app.get('/api/ip-finder/available', (req, res) => {
   res.json({ prefix, available });
 });
 
-// Bulk Re-IP (Section 5)
-app.post('/api/bulk/re-ip/plan', (req, res) => {
-  const { macs, startIp, subnetMask, gateway, step } = req.body;
-  const result = BulkReIpEngine.generatePlan(macs, startIp, subnetMask, gateway, step || 1);
-  res.json(result);
-});
-
-app.post('/api/bulk/re-ip/execute', async (req, res) => {
-  const { plan } = req.body;
-  const result = await BulkReIpEngine.executeBatch(plan);
-  broadcast({ type: 'BULK_REIP_COMPLETE', data: { result, project: projectDb.getProject() } });
-  res.json(result);
-});
+// Backend-authoritative bulk network configuration.
+app.post('/api/bulk/network/plan', async (req,res)=>{try{res.json(await bulkNetworkService.createPlan(req.body))}catch(error:any){res.status(400).json({error:error.message,code:error.code})}});
+app.get('/api/bulk/network/:batchId', (req,res)=>{try{res.json(bulkNetworkService.get(req.params.batchId))}catch(error:any){res.status(404).json({error:error.message,code:error.code})}});
+app.post('/api/bulk/network/:batchId/apply', async(req,res)=>{try{const batch=await bulkNetworkService.execute(req.params.batchId,req.body.confirmed===true);broadcast({type:'BULK_NETWORK_UPDATED',data:{batch,project:projectDb.getProject()}});res.json(batch)}catch(error:any){res.status(400).json({error:error.message,code:error.code})}});
+app.post('/api/bulk/network/:batchId/cancel', (req,res)=>res.status(202).json({cancelled:bulkNetworkService.cancel(req.params.batchId)}));
+app.post('/api/bulk/network/:batchId/retry', async(req,res)=>{try{res.json(await bulkNetworkService.retry(req.params.batchId))}catch(error:any){res.status(400).json({error:error.message,code:error.code})}});
 
 // 6-Phase Pipeline
 app.post('/api/discovery/start', (req, res) => {
