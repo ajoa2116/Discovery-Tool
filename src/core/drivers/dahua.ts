@@ -1,45 +1,6 @@
-import { Device } from '../../types/index.ts';
-import { OnvifDriver } from './onvif.ts';
-
-export class DahuaDriver {
-  /**
-   * Dahua Technology JSON-RPC & ConfigManager CGI Protocol Driver
-   * Standard endpoints:
-   * - /cgi-bin/configManager.cgi?action=getConfig&name=Network
-   * - /cgi-bin/configManager.cgi?action=getConfig&name=Encode
-   * - /cgi-bin/configManager.cgi?action=getConfig&name=VideoInMode
-   */
-  public static async queryDahuaDevice(ip: string): Promise<Partial<Device>> {
-    return {
-      anchor: {
-        macAddress: '3c:ef:8c:12:99:44',
-        serialNumber: 'DH-IPC-WIZMIND-4410',
-        vendor: 'Dahua Technology',
-        model: 'IPC-HDBW5442E-ZE WizMind 4MP AI Dome',
-        firmwareVersion: 'V2.840.0000000.12.R.260408',
-      },
-      network: {
-        ipAddress: ip,
-        subnetMask: '255.255.255.0',
-        gateway: '192.168.1.1',
-        port: 80,
-        protocol: 'DAHUA_CGI',
-        xAddr: `http://${ip}/onvif/device_service`,
-      },
-      manufacturerParams: {
-        driverName: 'Dahua DHIP / ConfigManager CGI',
-        smartH265Plus: true,
-        wizMindTripwireAI: true,
-        smartIlluminationMode: 'SMART_DUAL_LIGHT',
-        dhSearchPort: 37810,
-        quickPickTargetExtraction: true,
-      },
-      onvifConfig: OnvifDriver.createDefaultOnvifConfig(ip),
-      status: 'AUTHENTICATED',
-    };
-  }
-
-  public static generateCgiCommandUrl(ip: string, action: string, name: string): string {
-    return `http://${ip}/cgi-bin/configManager.cgi?action=${action}&name=${name}`;
-  }
-}
+import{Device}from'../../types/index.ts';import{CameraConfigurationOperation,CameraConfigurationProposal}from'../../shared/camera_configuration.ts';import{CameraDriverError,DriverCapability,DriverHttpTransport,HttpCameraVendorDriver,boundedReverify,queryMap}from'./camera_driver.ts';
+export class DahuaDriver extends HttpCameraVendorDriver{readonly id='DAHUA_CGI'as const;readonly label='Dahua ConfigManager CGI';readonly vendorTokens=['dahua'];constructor(t?:DriverHttpTransport,m?:number){super(t,m)}capabilities():DriverCapability[]{const supported:DriverCapability[]=(['NTP','TIME_ZONE','REBOOT','ONVIF_ENABLE']as CameraConfigurationOperation[]).map(operation=>({operation,state:'SUPPORTED',detail:'Authenticated Dahua CGI endpoint'}));return[...supported,{operation:'DEVICE_NAME',state:'UNKNOWN',detail:'Model-dependent'},{operation:'PASSWORD',state:'UNSUPPORTED',detail:'Manual workflow retained'},{operation:'IDENTITY',state:'SUPPORTED',detail:'magicBox CGI'},{operation:'NETWORK',state:'UNKNOWN',detail:'CGI network fallback is not enabled until read/write reverification is integrated'}]}
+ private async get(d:Device,c:{username:string;password:string},path:string,s?:AbortSignal){return queryMap(await this.request(d,c,path,'GET',undefined,s))}
+ async inspect(d:Device,c:{username:string;password:string},s?:AbortSignal){const info=await this.get(d,c,'/cgi-bin/magicBox.cgi?action=getSystemInfo',s);const manufacturer=info.get('manufacturer')||info.get('vendor')||'Dahua';if(!/dahua/i.test(manufacturer))throw new CameraDriverError('Unexpected Dahua identity response.','AMBIGUOUS_IDENTITY');const identity={manufacturer,model:info.get('deviceType'),serial:info.get('serialNumber'),firmware:info.get('softwareVersion')};const ntp=await this.get(d,c,'/cgi-bin/configManager.cgi?action=getConfig&name=NTP',s).catch(()=>new Map<string,string>()),time=await this.get(d,c,'/cgi-bin/configManager.cgi?action=getConfig&name=General',s).catch(()=>new Map<string,string>()),onvif=await this.get(d,c,'/cgi-bin/configManager.cgi?action=getConfig&name=Onvif',s).catch(()=>new Map<string,string>());return{identity,values:{ntp:{fromDhcp:false,servers:[ntp.get('table.NTP.Address')].filter(Boolean)as string[]},timeZone:time.get('table.General.TimeZone'),onvifEnabled:onvif.get('table.Onvif.Enable')==='true'}}}
+ async apply(d:Device,c:{username:string;password:string},o:CameraConfigurationOperation,p:CameraConfigurationProposal,s?:AbortSignal){let path;if(o==='NTP')path=`/cgi-bin/configManager.cgi?action=setConfig&NTP.Address=${encodeURIComponent(p.ntp?.servers[0]||'')}`;else if(o==='TIME_ZONE')path=`/cgi-bin/configManager.cgi?action=setConfig&General.TimeZone=${encodeURIComponent(p.timeZone!)}`;else if(o==='ONVIF_ENABLE')path=`/cgi-bin/configManager.cgi?action=setConfig&Onvif.Enable=${p.enabled===true}`;else if(o==='REBOOT')path='/cgi-bin/magicBox.cgi?action=reboot';else throw new CameraDriverError('Dahua operation unsupported.','UNSUPPORTED');const body=await this.request(d,c,path,'GET',undefined,s);if(!/OK|true/i.test(body))throw new CameraDriverError('Dahua rejected the requested change.','VENDOR_ERROR',body.slice(0,200))}
+ async verify(d:Device,c:{username:string;password:string},o:CameraConfigurationOperation,p:CameraConfigurationProposal,s?:AbortSignal){if(o==='REBOOT')return boundedReverify(s,()=>this.inspect(d,c,s));const v=(await this.inspect(d,c,s)).values;return o==='NTP'?v.ntp?.servers[0]===p.ntp?.servers[0]:o==='TIME_ZONE'?v.timeZone===p.timeZone:o==='ONVIF_ENABLE'?false:false}}

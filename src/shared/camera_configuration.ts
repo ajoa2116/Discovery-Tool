@@ -1,8 +1,8 @@
 export type CameraConfigurationOperation='DEVICE_NAME'|'NTP'|'TIME_ZONE'|'ONVIF_ENABLE'|'REBOOT'|'PASSWORD';
-export type CapabilityState='SUPPORTED'|'UNSUPPORTED'|'UNKNOWN'|'REQUIRES_AUTHENTICATION'|'VENDOR_NATIVE_REQUIRED';
+export type CapabilityState='SUPPORTED'|'UNSUPPORTED'|'UNKNOWN'|'REQUIRES_AUTHENTICATION'|'VENDOR_NATIVE_REQUIRED'|'TRANSPORT_UNAVAILABLE';
 export type ConfigurationOutcome='VERIFIED'|'APPLIED_UNVERIFIED'|'UNSUPPORTED'|'AUTHENTICATION_FAILED'|'FAILED'|'NEEDS_ATTENTION';
 export interface CameraCapability{operation:CameraConfigurationOperation;state:CapabilityState;detail:string;editable:boolean}
-export interface CameraConfigurationSnapshot{deviceId:string;provider:'ONVIF'|'UNSUPPORTED';credentialId:string;credentialLabel?:string;capabilities:CameraCapability[];values:{deviceName?:string;ntp?:{fromDhcp:boolean;servers:string[]};timeZone?:string}}
+export interface CameraConfigurationSnapshot{deviceId:string;provider:string;credentialId:string;credentialLabel?:string;capabilities:CameraCapability[];values:{deviceName?:string;ntp?:{fromDhcp:boolean;servers:string[]};timeZone?:string;onvifEnabled?:boolean};providers?:Record<string,string>}
 export interface CameraConfigurationProposal{deviceName?:string;ntp?:{fromDhcp:boolean;servers:string[]};timeZone?:string;enabled?:boolean;newPassword?:string;rememberCredential?:boolean}
 export interface CameraConfigurationPreview{planId:string;deviceId:string;operation:CameraConfigurationOperation;provider:string;credentialId:string;credentialLabel?:string;current:unknown;proposed:unknown;expectedEffect:string;verificationPlan:string;strongConfirmation:boolean;createdAt:string}
 export interface CameraConfigurationResult{deviceId:string;operation:CameraConfigurationOperation;outcome:ConfigurationOutcome;verified:boolean;message:string;pairAvailable:false}

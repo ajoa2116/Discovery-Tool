@@ -66,6 +66,9 @@ export const DeviceInspectorDrawer: React.FC<DeviceInspectorDrawerProps> = ({ is
           <div><span className="text-slate-500">MAC</span><p className="text-slate-200">{device.anchor.macAddress || 'Unknown'}</p></div>
           <div><span className="text-slate-500">ONVIF UUID</span><p className="text-slate-200 break-all">{device.anchor.onvifEndpointUuid || 'Unknown'}</p></div>
           <div><span className="text-slate-500">Serial</span><p className="text-slate-200">{device.anchor.serialNumber || 'Unknown'}</p></div>
+          <div><span className="text-slate-500">Manufacturer / model</span><p className="text-slate-200">{device.anchor.vendor}{device.anchor.model ? ` — ${device.anchor.model}` : ''}</p></div>
+          <div><span className="text-slate-500">Firmware</span><p className="text-slate-200">{device.anchor.firmwareVersion || 'Unknown'}</p></div>
+          <div><span className="text-slate-500">Active driver</span><p className="text-slate-200">{String(device.manufacturerParams?.activeDriver || 'ONVIF / not yet verified')}</p></div>
           <div><span className="text-slate-500">Subnet relationship</span><p className="text-slate-200">{device.reachability?.subnetClassification || 'UNKNOWN'}</p></div>
           <div><span className="text-slate-500">Originating adapter</span><p className="text-slate-200">{adapter ? `${adapter.name} — ${adapter.ipAddress} / ${adapter.netmask}` : 'Unknown'}</p></div>
           <div><span className="text-slate-500">ONVIF discovery response</span><p className="text-slate-200">{device.reachability?.wsDiscoveryRespondedAt || 'Not observed'}</p></div>

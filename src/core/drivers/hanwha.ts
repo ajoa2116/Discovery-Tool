@@ -1,47 +1,6 @@
-import { Device } from '../../types/index.ts';
-import { OnvifDriver } from './onvif.ts';
-
-export class HanwhaSunapiDriver {
-  /**
-   * Hanwha Vision SUNAPI REST Protocol Driver
-   * Standard endpoints:
-   * - System info: /stw-cgi/system.cgi?msubmenu=deviceinfo&action=view
-   * - Video config: /stw-cgi/video.cgi?msubmenu=videoencprofile&action=view
-   * - AI analytics: /stw-cgi/ai.cgi?msubmenu=analytics&action=view
-   */
-  public static async querySunapiDevice(ip: string): Promise<Partial<Device>> {
-    return {
-      anchor: {
-        macAddress: '00:16:6c:44:55:66',
-        serialNumber: 'HNV-AI-2026-09',
-        vendor: 'Hanwha Vision',
-        model: 'XNV-8081Z 4K AI Vandal Dome',
-        firmwareVersion: 'v2.22.01_20260715',
-      },
-      network: {
-        ipAddress: ip,
-        subnetMask: '255.255.255.0',
-        gateway: '192.168.1.1',
-        port: 80,
-        protocol: 'HANWHA_SUNAPI',
-        xAddr: `http://${ip}/onvif/device_service`,
-      },
-      manufacturerParams: {
-        driverName: 'Hanwha SUNAPI 2.5',
-        aiAnalyticsEnabled: true,
-        aiObjectTypes: ['PERSON', 'VEHICLE', 'LICENSE_PLATE', 'FACE'],
-        wiseStreamLevel: 'HIGH_DYNAMIC',
-        wdrDb: 150,
-        defogEnabled: true,
-        hallwayView90Deg: false,
-      },
-      onvifConfig: OnvifDriver.createDefaultOnvifConfig(ip),
-      status: 'AUTHENTICATED',
-    };
-  }
-
-  public static generateSunapiConfigUrl(ip: string, action: string, params: Record<string, string>): string {
-    const query = new URLSearchParams(params).toString();
-    return `http://${ip}/stw-cgi/${action}?${query}`;
-  }
-}
+import{Device}from'../../types/index.ts';import{CameraConfigurationOperation,CameraConfigurationProposal}from'../../shared/camera_configuration.ts';import{CameraDriverError,DriverCapability,DriverHttpTransport,HttpCameraVendorDriver,boundedReverify,queryMap}from'./camera_driver.ts';
+export class HanwhaSunapiDriver extends HttpCameraVendorDriver{readonly id='HANWHA_SUNAPI'as const;readonly label='Hanwha SUNAPI';readonly vendorTokens=['hanwha','samsung techwin'];constructor(t?:DriverHttpTransport,m?:number){super(t,m)}capabilities():DriverCapability[]{const supported:DriverCapability[]=(['DEVICE_NAME','NTP','TIME_ZONE','REBOOT','ONVIF_ENABLE']as CameraConfigurationOperation[]).map(operation=>({operation,state:'SUPPORTED',detail:'Authenticated SUNAPI endpoint'}));return[...supported,{operation:'PASSWORD',state:'UNSUPPORTED',detail:'Manual workflow retained'},{operation:'IDENTITY',state:'SUPPORTED',detail:'SUNAPI deviceinfo'},{operation:'NETWORK',state:'UNKNOWN',detail:'Model-dependent SUNAPI network support'}]}
+ private async view(d:Device,c:{username:string;password:string},path:string,s?:AbortSignal){const map=queryMap(await this.request(d,c,path,'GET',undefined,s));if(map.get('Response.Result')&&map.get('Response.Result')!=='OK')throw new CameraDriverError('SUNAPI returned a vendor error.','VENDOR_ERROR');return map}
+ async inspect(d:Device,c:{username:string;password:string},s?:AbortSignal){const info=await this.view(d,c,'/stw-cgi/system.cgi?msubmenu=deviceinfo&action=view',s),manufacturer=info.get('DeviceInfo.Manufacturer')||'Hanwha Vision';if(!/hanwha|samsung techwin/i.test(manufacturer))throw new CameraDriverError('Unexpected SUNAPI identity.','AMBIGUOUS_IDENTITY');const time=await this.view(d,c,'/stw-cgi/system.cgi?msubmenu=date&action=view',s).catch(()=>new Map<string,string>()),ntp=await this.view(d,c,'/stw-cgi/system.cgi?msubmenu=ntp&action=view',s).catch(()=>new Map<string,string>()),onvif=await this.view(d,c,'/stw-cgi/network.cgi?msubmenu=onvif&action=view',s).catch(()=>new Map<string,string>());return{identity:{manufacturer,model:info.get('DeviceInfo.Model'),serial:info.get('DeviceInfo.SerialNumber'),firmware:info.get('DeviceInfo.FirmwareVersion'),hostname:info.get('DeviceInfo.DeviceName')},values:{deviceName:info.get('DeviceInfo.DeviceName'),ntp:{fromDhcp:false,servers:[ntp.get('NTP.Server1')].filter(Boolean)as string[]},timeZone:time.get('Date.TimeZone'),onvifEnabled:onvif.get('ONVIF.Enable')==='True'}}}
+ async apply(d:Device,c:{username:string;password:string},o:CameraConfigurationOperation,p:CameraConfigurationProposal,s?:AbortSignal){let path;if(o==='DEVICE_NAME')path=`/stw-cgi/system.cgi?msubmenu=deviceinfo&action=set&DeviceName=${encodeURIComponent(p.deviceName!)}`;else if(o==='NTP')path=`/stw-cgi/system.cgi?msubmenu=ntp&action=set&Server1=${encodeURIComponent(p.ntp?.servers[0]||'')}`;else if(o==='TIME_ZONE')path=`/stw-cgi/system.cgi?msubmenu=date&action=set&TimeZone=${encodeURIComponent(p.timeZone!)}`;else if(o==='ONVIF_ENABLE')path=`/stw-cgi/network.cgi?msubmenu=onvif&action=set&Enable=${p.enabled?'True':'False'}`;else if(o==='REBOOT')path='/stw-cgi/system.cgi?msubmenu=restart&action=control';else throw new CameraDriverError('SUNAPI operation unsupported.','UNSUPPORTED');const response=await this.request(d,c,path,'GET',undefined,s);if(!/OK|Response\.Result=OK/i.test(response))throw new CameraDriverError('SUNAPI rejected the requested change.','VENDOR_ERROR')}
+ async verify(d:Device,c:{username:string;password:string},o:CameraConfigurationOperation,p:CameraConfigurationProposal,s?:AbortSignal){if(o==='REBOOT')return boundedReverify(s,()=>this.inspect(d,c,s));const v=(await this.inspect(d,c,s)).values;return o==='DEVICE_NAME'?v.deviceName===p.deviceName:o==='NTP'?v.ntp?.servers[0]===p.ntp?.servers[0]:o==='TIME_ZONE'?v.timeZone===p.timeZone:o==='ONVIF_ENABLE'?false:false}}

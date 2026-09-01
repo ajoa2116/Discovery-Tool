@@ -1,28 +1,5 @@
-import { Device } from '../../types/index.ts';
-
-export class AxisDriver {
-  /**
-   * Axis Discovery Protocol (ADP) & VAPIX parameters inspection
-   */
-  public static async queryVapixParameters(ip: string): Promise<Partial<Device> | null> {
-    // Standard VAPIX endpoint: /axis-cgi/param.cgi?action=list&group=root.Brand,root.Network
-    return {
-      anchor: {
-        macAddress: 'ac:cc:8e:14:22:90',
-        serialNumber: 'AXIS-P3245-V-SN991',
-        vendor: 'Axis Communications',
-        model: 'AXIS P3245-V Network Camera',
-        firmwareVersion: '11.8.62',
-      },
-      network: {
-        ipAddress: ip,
-        subnetMask: '255.255.255.0',
-        gateway: '192.168.1.1',
-        port: 80,
-        protocol: 'AXIS_ADP',
-        xAddr: `http://${ip}/onvif/device_service`,
-      },
-      status: 'AUTHENTICATED',
-    };
-  }
-}
+import{Device}from'../../types/index.ts';import{CameraConfigurationOperation,CameraConfigurationProposal}from'../../shared/camera_configuration.ts';import{CameraDriverError,DriverCapability,DriverHttpTransport,HttpCameraVendorDriver,boundedReverify,queryMap}from'./camera_driver.ts';
+export class AxisDriver extends HttpCameraVendorDriver{readonly id='AXIS_VAPIX'as const;readonly label='Axis VAPIX';readonly vendorTokens=['axis communications','axis'];constructor(t?:DriverHttpTransport,m?:number){super(t,m)}capabilities():DriverCapability[]{const supported:DriverCapability[]=(['DEVICE_NAME','NTP','TIME_ZONE','REBOOT']as CameraConfigurationOperation[]).map(operation=>({operation,state:'SUPPORTED',detail:'Authenticated VAPIX endpoint'}));return[...supported,{operation:'ONVIF_ENABLE',state:'UNKNOWN',detail:'Firmware-dependent; no write is attempted'},{operation:'PASSWORD',state:'UNSUPPORTED',detail:'Manual workflow retained'},{operation:'IDENTITY',state:'SUPPORTED',detail:'VAPIX basic device info'},{operation:'NETWORK',state:'UNKNOWN',detail:'Safe read foundation only'}]}
+ async inspect(d:Device,c:{username:string;password:string},s?:AbortSignal){const basic=JSON.parse(await this.request(d,c,'/axis-cgi/basicdeviceinfo.cgi','GET',undefined,s));const data=basic?.data?.propertyList?.propList||basic?.data?.propertyList||basic?.data||{};const manufacturer=String(data.Brand||'Axis Communications');if(!/axis/i.test(manufacturer))throw new CameraDriverError('Unexpected VAPIX identity.','AMBIGUOUS_IDENTITY');const params=queryMap(await this.request(d,c,'/axis-cgi/param.cgi?action=list&group=root.Network,root.Time','GET',undefined,s).catch(()=>''));return{identity:{manufacturer:'Axis Communications',model:data.ProdNbr||data.ProductName,serial:data.SerialNumber,firmware:data.Version,hostname:params.get('root.Network.HostName')},values:{deviceName:params.get('root.Network.HostName'),ntp:{fromDhcp:false,servers:[params.get('root.Time.NTP.Server')].filter(Boolean)as string[]},timeZone:params.get('root.Time.Zone')}}}
+ async apply(d:Device,c:{username:string;password:string},o:CameraConfigurationOperation,p:CameraConfigurationProposal,s?:AbortSignal){let params;if(o==='DEVICE_NAME')params={'root.Network.HostName':p.deviceName!};else if(o==='NTP')params={'root.Time.NTP.Server':p.ntp?.servers[0]||''};else if(o==='TIME_ZONE')params={'root.Time.Zone':p.timeZone!};else if(o==='REBOOT'){await this.request(d,c,'/axis-cgi/restart.cgi','POST','',s);return}else throw new CameraDriverError('VAPIX operation unsupported.','UNSUPPORTED');const body=new URLSearchParams({action:'update',...params}).toString();await this.request(d,c,'/axis-cgi/param.cgi','POST',body,s,{'Content-Type':'application/x-www-form-urlencoded'})}
+ async verify(d:Device,c:{username:string;password:string},o:CameraConfigurationOperation,p:CameraConfigurationProposal,s?:AbortSignal){if(o==='REBOOT')return boundedReverify(s,()=>this.inspect(d,c,s));const v=(await this.inspect(d,c,s)).values;return o==='DEVICE_NAME'?v.deviceName===p.deviceName:o==='NTP'?v.ntp?.servers[0]===p.ntp?.servers[0]:o==='TIME_ZONE'?v.timeZone===p.timeZone:false}}

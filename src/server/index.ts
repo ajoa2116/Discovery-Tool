@@ -19,6 +19,7 @@ import { PairService } from '../core/network/pair_service.ts';
 import { ConnectService } from '../core/connect/connect_service.ts';
 import { CameraNetworkConfigurationService } from '../core/network/camera_network_service.ts';
 import { CameraConfigurationService } from '../core/network/camera_configuration_service.ts';
+import { PreferredCameraConfigurationProvider } from '../core/drivers/vendor_configuration_provider.ts';
 
 const app = express();
 const server = createServer(app);
@@ -29,7 +30,7 @@ const pairService = new PairService();
 const connectService = new ConnectService();
 const connectRecheckControllers = new Map<string, AbortController>();
 const cameraNetworkService = new CameraNetworkConfigurationService();
-const cameraConfigurationService = new CameraConfigurationService();
+const cameraConfigurationService = new CameraConfigurationService(projectDb,osVault,new PreferredCameraConfigurationProvider());
 const bulkNetworkService = new BulkNetworkConfigurationService(projectDb, osVault, cameraNetworkService);
 const cameraNetworkControllers = new Map<string, AbortController>();
 
