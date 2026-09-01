@@ -367,7 +367,7 @@ export const MasterDeviceTable: React.FC<MasterDeviceTableProps> = ({
                             className="w-full text-left px-2.5 py-1.5 rounded hover:bg-slate-800 text-slate-200 flex items-center gap-2"
                           >
                             <Shield className="w-3.5 h-3.5 text-purple-400" />
-                            Configure Network
+                            Device Configuration
                           </button>
                         </div>
                       )}

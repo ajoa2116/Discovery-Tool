@@ -1,0 +1,9 @@
+export type CameraConfigurationOperation='DEVICE_NAME'|'NTP'|'TIME_ZONE'|'ONVIF_ENABLE'|'REBOOT'|'PASSWORD';
+export type CapabilityState='SUPPORTED'|'UNSUPPORTED'|'UNKNOWN'|'REQUIRES_AUTHENTICATION'|'VENDOR_NATIVE_REQUIRED';
+export type ConfigurationOutcome='VERIFIED'|'APPLIED_UNVERIFIED'|'UNSUPPORTED'|'AUTHENTICATION_FAILED'|'FAILED'|'NEEDS_ATTENTION';
+export interface CameraCapability{operation:CameraConfigurationOperation;state:CapabilityState;detail:string;editable:boolean}
+export interface CameraConfigurationSnapshot{deviceId:string;provider:'ONVIF'|'UNSUPPORTED';credentialId:string;credentialLabel?:string;capabilities:CameraCapability[];values:{deviceName?:string;ntp?:{fromDhcp:boolean;servers:string[]};timeZone?:string}}
+export interface CameraConfigurationProposal{deviceName?:string;ntp?:{fromDhcp:boolean;servers:string[]};timeZone?:string;enabled?:boolean;newPassword?:string;rememberCredential?:boolean}
+export interface CameraConfigurationPreview{planId:string;deviceId:string;operation:CameraConfigurationOperation;provider:string;credentialId:string;credentialLabel?:string;current:unknown;proposed:unknown;expectedEffect:string;verificationPlan:string;strongConfirmation:boolean;createdAt:string}
+export interface CameraConfigurationResult{deviceId:string;operation:CameraConfigurationOperation;outcome:ConfigurationOutcome;verified:boolean;message:string;pairAvailable:false}
+export interface BulkCameraConfigurationPlan{batchId:string;operation:CameraConfigurationOperation;state:'READY'|'EXECUTING'|'COMPLETED'|'PARTIAL_FAILURE'|'FAILED'|'CANCELLED';items:Array<{deviceId:string;name:string;eligibility:'READY'|'BLOCKED';errors:string[];state:'PENDING'|'APPLYING'|'VERIFIED'|'FAILED'|'NEEDS_ATTENTION'|'SKIPPED';preview?:CameraConfigurationPreview;result?:CameraConfigurationResult}>;readyCount:number;blockedCount:number;confirmedAt?:string;cancellationRequested?:boolean}

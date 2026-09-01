@@ -239,6 +239,10 @@ export interface Device {
     manualOverride?: boolean | null;
     updatedAt?: string;
   };
+  configurationEvidence?: {
+    verifiedOperations: Array<'DEVICE_NAME'|'NTP'|'TIME_ZONE'|'ONVIF_ENABLE'|'REBOOT'|'PASSWORD'>;
+    updatedAt: string;
+  };
   savedStatusSnapshot?: DeviceStatus;
   sessionVerification?: 'NOT_VERIFIED' | 'VERIFIED' | 'NOT_FOUND';
   telemetry?: {

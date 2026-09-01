@@ -21,6 +21,7 @@ import { TaskCenter, TaskItem } from './components/TaskCenter.tsx';
 import { NewDeviceNotification } from './components/NewDeviceNotification.tsx';
 import { DeviceInspectorDrawer } from './components/DeviceInspectorDrawer.tsx';
 import { BulkReIpModal } from './components/BulkReIpModal.tsx';
+import { BulkDeviceConfigurationModal } from './components/BulkDeviceConfigurationModal.tsx';
 import { AvailableIpFinderModal } from './components/AvailableIpFinderModal.tsx';
 import { SiteSurveyReportModal } from './components/SiteSurveyReportModal.tsx';
 import { PairNetworkModal } from './components/PairNetworkModal.tsx';
@@ -75,6 +76,7 @@ export default function App() {
   const [isAuditModalOpen, setIsAuditModalOpen] = useState(false);
   const [isTaskCenterOpen, setIsTaskCenterOpen] = useState(false);
   const [isBulkReIpModalOpen, setIsBulkReIpModalOpen] = useState(false);
+  const [isBulkDeviceConfigOpen, setIsBulkDeviceConfigOpen] = useState(false);
   const [isAvailableIpFinderOpen, setIsAvailableIpFinderOpen] = useState(false);
   const [isSiteSurveyModalOpen, setIsSiteSurveyModalOpen] = useState(false);
 
@@ -512,6 +514,7 @@ export default function App() {
                 <Network className="w-3.5 h-3.5" />
                 Configure Network
               </button>
+              <button disabled={selectedDeviceIds.size < 2} onClick={() => setIsBulkDeviceConfigOpen(true)} className="px-3.5 py-1.5 bg-slate-700 hover:bg-slate-600 disabled:bg-slate-400 disabled:cursor-not-allowed text-white rounded-lg font-bold transition flex items-center gap-1.5"><Settings className="w-3.5 h-3.5"/>Configure Settings</button>
               <button
                 onClick={() => setSelectedDeviceIds(new Set())}
                 className="px-2.5 py-1 text-slate-400 hover:text-white rounded-lg"
@@ -649,6 +652,7 @@ export default function App() {
         onClose={() => setSelectedDeviceForConfig(null)}
         device={selectedDeviceForConfig}
       />
+      <BulkDeviceConfigurationModal isOpen={isBulkDeviceConfigOpen} onClose={() => setIsBulkDeviceConfigOpen(false)} devices={selectedDevicesList} onChanged={fetchData} />
     </div>
   );
 }

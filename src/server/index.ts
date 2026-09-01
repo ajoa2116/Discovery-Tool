@@ -18,6 +18,7 @@ import { DeviceDiagnosticEngine, DiagnosticRefreshMonitor } from '../core/engine
 import { PairService } from '../core/network/pair_service.ts';
 import { ConnectService } from '../core/connect/connect_service.ts';
 import { CameraNetworkConfigurationService } from '../core/network/camera_network_service.ts';
+import { CameraConfigurationService } from '../core/network/camera_configuration_service.ts';
 
 const app = express();
 const server = createServer(app);
@@ -28,6 +29,7 @@ const pairService = new PairService();
 const connectService = new ConnectService();
 const connectRecheckControllers = new Map<string, AbortController>();
 const cameraNetworkService = new CameraNetworkConfigurationService();
+const cameraConfigurationService = new CameraConfigurationService();
 const bulkNetworkService = new BulkNetworkConfigurationService(projectDb, osVault, cameraNetworkService);
 const cameraNetworkControllers = new Map<string, AbortController>();
 
@@ -299,6 +301,16 @@ app.post('/api/device/:identifier/network/candidates', async (req, res) => { con
 app.post('/api/device/:identifier/network/preview', async (req, res) => { const controller=new AbortController();cameraNetworkControllers.set(req.params.identifier,controller);try{res.json(await cameraNetworkService.preview(req.params.identifier,String(req.body.credentialId||''),req.body.target,controller.signal))}catch(error:any){res.status(400).json({error:error.message,code:error.code})}finally{cameraNetworkControllers.delete(req.params.identifier)}});
 app.post('/api/device/:identifier/network/apply', async (req, res) => { try{const result=await cameraNetworkService.apply(String(req.body.planId||''),req.body.confirmed===true);broadcast({type:'DEVICE_NETWORK_CONFIG_UPDATED',data:{result,project:projectDb.getProject()}});res.json(result)}catch(error:any){res.status(400).json({error:error.message,code:error.code})} });
 app.post('/api/device/:identifier/network/cancel', (req,res)=>{cameraNetworkControllers.get(req.params.identifier)?.abort();res.status(202).json({cancelled:cameraNetworkService.cancel(req.params.identifier)})});
+
+// Broader camera configuration — authenticated, previewed, confirmed, and verified server-side.
+app.get('/api/device/:identifier/configuration/capabilities',async(req,res)=>{try{res.json(await cameraConfigurationService.inspect(req.params.identifier,String(req.query.credentialId||'')))}catch(error:any){res.status(400).json({error:error.message,code:error.code})}});
+app.post('/api/device/:identifier/configuration/preview',async(req,res)=>{try{res.json(await cameraConfigurationService.preview(req.params.identifier,String(req.body.credentialId||''),req.body.operation,req.body.proposal))}catch(error:any){res.status(400).json({error:error.message,code:error.code})}});
+app.post('/api/device/:identifier/configuration/apply',async(req,res)=>{try{const result=await cameraConfigurationService.apply(String(req.body.planId||''),req.body.confirmed===true);broadcast({type:'DEVICE_CONFIG_UPDATED',data:{result,project:projectDb.getProject()}});res.json(result)}catch(error:any){res.status(400).json({error:error.message,code:error.code})}});
+app.post('/api/device/:identifier/configuration/cancel',(req,res)=>res.status(202).json({cancelled:cameraConfigurationService.cancel(String(req.body.planId||''))}));
+app.post('/api/bulk/configuration/plan',async(req,res)=>{try{res.json(await cameraConfigurationService.createBulkPlan(req.body.deviceIds||[],req.body.credentialIds||{},req.body.operation,req.body.proposal))}catch(error:any){res.status(400).json({error:error.message,code:error.code})}});
+app.post('/api/bulk/configuration/:batchId/apply',async(req,res)=>{try{const batch=await cameraConfigurationService.applyBulk(req.params.batchId,req.body.confirmed===true);broadcast({type:'BULK_DEVICE_CONFIG_UPDATED',data:{batch,project:projectDb.getProject()}});res.json(batch)}catch(error:any){res.status(400).json({error:error.message,code:error.code})}});
+app.post('/api/bulk/configuration/:batchId/cancel',(req,res)=>res.status(202).json({cancelled:cameraConfigurationService.cancelBulk(req.params.batchId)}));
+app.post('/api/bulk/configuration/:batchId/retry',async(req,res)=>{try{res.json(await cameraConfigurationService.retryBulk(req.params.batchId))}catch(error:any){res.status(400).json({error:error.message,code:error.code})}});
 
 app.get('/api/device/:identifier/config', (req, res) => {
   const dev = projectDb.getDeviceByIdentifier(req.params.identifier);
