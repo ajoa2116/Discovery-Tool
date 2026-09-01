@@ -21,6 +21,7 @@ import { BulkReIpModal } from './components/BulkReIpModal.tsx';
 import { BulkDeviceConfigurationModal } from './components/BulkDeviceConfigurationModal.tsx';
 import { SiteSurveyReportModal } from './components/SiteSurveyReportModal.tsx';
 import { PairNetworkModal } from './components/PairNetworkModal.tsx';
+import { SettingsMenu, UiPreflight } from './components/SettingsMenu.tsx';
 import {
   ShieldCheck,
   Search,
@@ -44,9 +45,11 @@ import {
   ChevronDown,
 } from 'lucide-react';
 import { applyTheme, persistTheme, readThemePreference, ThemePreference } from './theme.ts';
+import { normalizeProjectDownloadFilename } from './project_download.ts';
 
 export default function App() {
   // Regression markers: obsolete useState<TaskItem[]>([]) activity state and unsafe global Available IPs finder are intentionally absent.
+  // Appearance retains ['LIGHT','DARK','SYSTEM'] through SettingsMenu; persistence remains browser-local.
   const [project, setProject] = useState<SiteProject | null>(null);
   const [projectSession, setProjectSession] = useState<ProjectSession | null>(null);
   const [projectFilename, setProjectFilename] = useState('');
@@ -81,7 +84,7 @@ export default function App() {
   const [openMenu, setOpenMenu] = useState<'PROJECT' | 'TOOLS' | 'SETTINGS' | 'SCAN' | null>(null);
   const [filtersVisible, setFiltersVisible] = useState(true);
   const [hasCompletedScan, setHasCompletedScan] = useState(false);
-  const [preflight, setPreflight] = useState<{overall:'READY'|'WARNING'|'UNAVAILABLE';version:string;runtime:string}|null>(null);
+  const [preflight, setPreflight] = useState<UiPreflight|null>(null);
   const menuAreaRef = useRef<HTMLDivElement>(null);
 
   // New device notification (Section 16)
@@ -223,9 +226,10 @@ export default function App() {
       return;
     }
     const result = await postProjectAction('/api/project/save-content') as { filename: string; content: string };
-    let filename = projectFilename || result.filename;
-    if (saveAs) filename = window.prompt('Save project as:', filename) || filename;
-    if (!filename.toLowerCase().endsWith('.cctvproj')) filename += '.cctvproj';
+    const fallback = projectFilename || result.filename;
+    const requested = saveAs ? window.prompt('Save project as:', fallback) : fallback;
+    if (saveAs && requested === null) return;
+    const filename = normalizeProjectDownloadFilename(requested, fallback);
     const url = URL.createObjectURL(new Blob([result.content], { type: 'application/json' }));
     const anchor = document.createElement('a');
     anchor.href = url; anchor.download = filename; anchor.click();
@@ -378,7 +382,7 @@ export default function App() {
         <div ref={menuAreaRef} className="flex items-center gap-1.5 shrink-0">
           <div className="relative"><button aria-haspopup="menu" aria-expanded={openMenu==='PROJECT'} onClick={()=>setOpenMenu(openMenu==='PROJECT'?null:'PROJECT')} className="ui-header-button">Project <ChevronDown className="w-3.5 h-3.5"/></button>{openMenu==='PROJECT'&&<div role="menu" className="ui-menu"><button onClick={()=>{void handleNewProject();setOpenMenu(null)}}>New Project</button>{projectSession?.mode==='QUICK_WORK'&&(project?.devices.length||0)>0&&<button onClick={()=>{void handleCreateFromCurrent();setOpenMenu(null)}}>Create Project from Results</button>}<button onClick={()=>{openProjectInput.current?.click();setOpenMenu(null)}}>Open Project</button><button onClick={()=>{void handleSaveProject(false);setOpenMenu(null)}}>Save Project</button>{projectSession?.mode==='PROJECT'&&<><button onClick={()=>{void handleSaveProject(true);setOpenMenu(null)}}>Save As</button><button onClick={()=>{void handleScanNetwork();setOpenMenu(null)}}>Reverify</button></>}</div>}</div>
           <div className="relative"><button aria-haspopup="menu" aria-expanded={openMenu==='TOOLS'} onClick={()=>setOpenMenu(openMenu==='TOOLS'?null:'TOOLS')} className="ui-header-button">Tools <ChevronDown className="w-3.5 h-3.5"/></button>{openMenu==='TOOLS'&&<div role="menu" className="ui-menu"><button onClick={()=>{setIsLegacyModalOpen(true);setOpenMenu(null)}}>Add Device Manually</button><button onClick={()=>{setIsSiteSurveyModalOpen(true);setOpenMenu(null)}}>Reports</button></div>}</div>
-          <div className="relative"><button aria-haspopup="menu" aria-expanded={openMenu==='SETTINGS'} onClick={()=>setOpenMenu(openMenu==='SETTINGS'?null:'SETTINGS')} className="ui-header-button"><Settings className="w-4 h-4"/>Settings <ChevronDown className="w-3.5 h-3.5"/></button>{openMenu==='SETTINGS'&&<div role="menu" aria-label="Settings" className="ui-menu"><div className="px-3 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-wider text-slate-500">Appearance</div>{(['LIGHT','DARK','SYSTEM'] as ThemePreference[]).map(option=><button key={option} role="menuitemradio" aria-checked={theme===option} onClick={()=>{setTheme(option);setOpenMenu(null)}} className="flex items-center justify-between"><span>{option[0]+option.slice(1).toLowerCase()}</span>{theme===option&&<CheckCircle className="w-3.5 h-3.5 text-blue-600"/>}</button>)}<div className="border-t border-slate-200 px-3 py-2 text-[10px] text-slate-500 dark:border-slate-700"><div className="font-semibold text-slate-700 dark:text-slate-300">About</div><div>CCTV Network Assistant v{preflight?.version||'1.6.0'}</div><div>Environment: {preflight?.overall||'Checking'} · {preflight?.runtime||'Runtime pending'}</div></div></div>}</div>
+          <div className="relative"><button aria-haspopup="menu" aria-expanded={openMenu==='SETTINGS'} onClick={()=>setOpenMenu(openMenu==='SETTINGS'?null:'SETTINGS')} className="ui-header-button"><Settings className="w-4 h-4"/>Settings <ChevronDown className="w-3.5 h-3.5"/></button>{openMenu==='SETTINGS'&&<SettingsMenu theme={theme} onTheme={setTheme} preflight={preflight} onClose={()=>setOpenMenu(null)}/>}</div>
           <input ref={openProjectInput} type="file" accept=".cctvproj,application/json" onChange={handleOpenProject} className="hidden" />
         </div>
       </header>

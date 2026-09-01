@@ -379,9 +379,8 @@ app.post('/api/edge/rogue-dhcp/test-offer', (req, res) => {
 
 // Section 13.1 Legacy Hardware Onboarding
 app.post('/api/edge/legacy-onboard', (req, res) => {
-  const dev = LegacyHardwareOnboarding.onboardLegacyDevice(req.body);
-  broadcast({ type: 'DEVICE_ONBOARDED', data: { device: dev, project: projectDb.getProject() } });
-  res.json(dev);
+  try { const dev = LegacyHardwareOnboarding.onboardLegacyDevice(req.body); broadcast({ type: 'DEVICE_ONBOARDED', data: { device: dev, project: projectDb.getProject() } }); res.json(dev); }
+  catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'Manual device entry failed.' }); }
 });
 
 // Section 13.4 OS Credential Vault

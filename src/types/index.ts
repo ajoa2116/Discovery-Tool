@@ -19,7 +19,8 @@ export type ProtocolType =
   | 'OPTEX_REC'
   | 'RTSP'
   | 'HTTP_LEGACY'
-  | 'PASSIVE_SNIFF';
+  | 'PASSIVE_SNIFF'
+  | 'MANUAL';
 
 export type DeviceStatus =
   | 'ONLINE'
