@@ -72,6 +72,7 @@ export default function App() {
 
   // Modals & Drawers
   const [isDuplicateDrawerOpen, setIsDuplicateDrawerOpen] = useState(false);
+  const [selectedCollisionId, setSelectedCollisionId] = useState<string | null>(null);
   const [isLegacyModalOpen, setIsLegacyModalOpen] = useState(false);
   const [isAuditModalOpen, setIsAuditModalOpen] = useState(false);
   const [isTaskCenterOpen, setIsTaskCenterOpen] = useState(false);
@@ -333,18 +334,6 @@ export default function App() {
     await fetchData();
   };
 
-  const handleResolveCollision = async (
-    collidingIp: string,
-    resolutions: Array<{ macAddress: string; newIp: string; newSubnet: string; newGateway: string }>
-  ) => {
-    await fetch('http://localhost:3001/api/edge/resolve-collision', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ collidingIp, resolutions }),
-    });
-    await fetchData();
-  };
-
   const handleLegacyOnboard = async (payload: any) => {
     await fetch('http://localhost:3001/api/edge/legacy-onboard', {
       method: 'POST',
@@ -533,7 +522,7 @@ export default function App() {
           onToggleSelectAll={handleToggleSelectAll}
           onUpdateDeviceName={handleUpdateDeviceName}
           onUpdateDeviceNotes={handleUpdateDeviceNotes}
-          onOpenDuplicateAssistant={() => setIsDuplicateDrawerOpen(true)}
+          onOpenDuplicateAssistant={(device) => { const collision=project?.collisions.find(c=>!c.resolved&&c.ipAddress===device.network.ipAddress);setSelectedCollisionId(collision?.id||collision?.ipAddress||null);setIsDuplicateDrawerOpen(true); }}
           onConfigureDevice={(dev) => setSelectedDeviceForConfig(dev)}
           onInspectDevice={(dev) => setSelectedDeviceForInspector(dev)}
           onOpenBrowser={handleOpenBrowser}
@@ -611,7 +600,8 @@ export default function App() {
           isOpen={isDuplicateDrawerOpen}
           onClose={() => setIsDuplicateDrawerOpen(false)}
           collisions={project.collisions}
-          onResolve={handleResolveCollision}
+          selectedCollisionId={selectedCollisionId}
+          onChanged={fetchData}
         />
       )}
 

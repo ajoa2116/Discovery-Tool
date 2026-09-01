@@ -275,11 +275,17 @@ export interface PhaseState {
 }
 
 export interface IPCollisionRecord {
+  id?: string;
   ipAddress: string;
   collidingDevices: Device[];
   detectedAt: string;
   resolved: boolean;
   resolutionStrategy?: 'MANUAL_REASSIGN' | 'SEVER_LEASE' | 'ISOLATE_MAC';
+  state?: 'OPEN'|'IDENTIFIED'|'AMBIGUOUS'|'READY'|'APPLYING'|'VERIFYING'|'PARTIALLY_RESOLVED'|'RESOLVED'|'FAILED'|'NEEDS_ISOLATION'|'CANCELLED';
+  ambiguity?: 'IDENTITIES_KNOWN_RESPONSES_AMBIGUOUS'|'ONE_UNIQUELY_TARGETABLE'|'NONE_UNIQUELY_TARGETABLE'|'CLEAR';
+  deviceIds?: string[];
+  updatedAt?: string;
+  devices?: Array<{deviceId:string;identity:{macAddress:string|null;onvifEndpointUuid?:string;serialNumber?:string};targetable:boolean;targetabilityReason:string;credentialAvailable:boolean;provider?:string;state:'PENDING'|'NEEDS_ISOLATION'|'READY'|'APPLYING'|'VERIFIED'|'FAILED'|'CANCELLED';proposedIp?:string;verification?:{verified:boolean;identityMatched:boolean;originalIpRechecked:boolean;message:string;at:string}}>;
 }
 
 export interface RogueDHCPOffer {

@@ -172,7 +172,7 @@ export class SiteProjectDatabase {
   public getDeviceByMac(mac: string): Device | undefined { return this.getDevices().find(d => d.anchor.macAddress?.toLowerCase() === mac.toLowerCase()); }
   public getDeviceById(id: string): Device | undefined { return this.getDevices().find(device => device.id === id); }
   public getDeviceByIdentifier(identifier: string): Device | undefined { return this.getDeviceById(identifier) || this.getDeviceByMac(identifier); }
-  public recordCollision(collision: IPCollisionRecord): void { const existing = this.session.project.collisions.find(c => c.ipAddress === collision.ipAddress); if (existing) Object.assign(existing, { collidingDevices: collision.collidingDevices, resolved: collision.resolved }); else this.session.project.collisions.push(collision); this.markDirty(); }
+  public recordCollision(collision: IPCollisionRecord): void { const existing = this.session.project.collisions.find(c => (collision.id&&c.id===collision.id)||c.ipAddress === collision.ipAddress); if (existing) { const id=existing.id||collision.id,detectedAt=existing.detectedAt;Object.assign(existing,collision,{id,detectedAt}); } else this.session.project.collisions.push(collision); this.markDirty(); }
   public getCollisions(): IPCollisionRecord[] { return this.session.project.collisions; }
   public recordRogueDhcp(event: RogueDHCPOffer): void { this.session.project.rogueDhcpEvents.push(event); this.markDirty(); }
   public getRogueDhcpEvents(): RogueDHCPOffer[] { return this.session.project.rogueDhcpEvents; }

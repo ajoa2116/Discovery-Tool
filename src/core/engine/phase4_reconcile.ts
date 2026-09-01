@@ -37,10 +37,16 @@ export class Phase4IdentityReconciliation {
         }
 
         const collisionRecord: IPCollisionRecord = {
+          id: crypto.randomUUID(),
           ipAddress: ip,
           collidingDevices: devList,
           detectedAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
           resolved: false,
+          state: 'AMBIGUOUS',
+          ambiguity: 'NONE_UNIQUELY_TARGETABLE',
+          deviceIds: devList.map(device => device.id),
+          devices: devList.map(device=>({deviceId:device.id,identity:{macAddress:device.anchor.macAddress,onvifEndpointUuid:device.anchor.onvifEndpointUuid,serialNumber:device.anchor.serialNumber},targetable:false,targetabilityReason:'Responses on the shared IP cannot be attributed uniquely.',credentialAvailable:false,state:'NEEDS_ISOLATION'})),
           resolutionStrategy: 'MANUAL_REASSIGN',
         };
 

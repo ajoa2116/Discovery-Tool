@@ -6,7 +6,7 @@ import { pipelineEngine } from '../core/engine/pipeline.ts';
 import { projectDb } from '../core/storage/project_db.ts';
 import { appStateDb } from '../core/storage/app_db.ts';
 import { osVault } from '../core/storage/vault.ts';
-import { DuplicateAssistantDrawer } from '../core/edge_cases/duplicate_drawer.ts';
+import { DuplicateRemediationService } from '../core/edge_cases/duplicate_remediation_service.ts';
 import { RogueDHCPAuditor } from '../core/edge_cases/rogue_dhcp.ts';
 import { LegacyHardwareOnboarding } from '../core/edge_cases/legacy_hardware.ts';
 import { OnvifDriver } from '../core/drivers/onvif.ts';
@@ -30,6 +30,7 @@ const pairService = new PairService();
 const connectService = new ConnectService();
 const connectRecheckControllers = new Map<string, AbortController>();
 const cameraNetworkService = new CameraNetworkConfigurationService();
+const duplicateRemediationService = new DuplicateRemediationService(projectDb,osVault,cameraNetworkService);
 const cameraConfigurationService = new CameraConfigurationService(projectDb,osVault,new PreferredCameraConfigurationProvider());
 const bulkNetworkService = new BulkNetworkConfigurationService(projectDb, osVault, cameraNetworkService);
 const cameraNetworkControllers = new Map<string, AbortController>();
@@ -362,12 +363,14 @@ app.get('/api/edge/collisions', (req, res) => {
   res.json(projectDb.getCollisions());
 });
 
-app.post('/api/edge/resolve-collision', (req, res) => {
-  const { collidingIp, resolutions } = req.body;
-  const result = DuplicateAssistantDrawer.resolveCollision(collidingIp, resolutions);
-  broadcast({ type: 'COLLISION_RESOLVED', data: { collidingIp, project: projectDb.getProject() } });
-  res.json(result);
-});
+app.get('/api/edge/collisions/:collisionId',async(req,res)=>{try{res.json(await duplicateRemediationService.get(req.params.collisionId))}catch(error:any){res.status(404).json({error:error.message,code:error.code})}});
+app.post('/api/edge/collisions/:collisionId/candidates',async(req,res)=>{try{res.json({candidates:await duplicateRemediationService.candidates(req.params.collisionId,String(req.body.deviceId||''),Number(req.body.prefixLength),req.body.gateway)})}catch(error:any){res.status(400).json({error:error.message,code:error.code})}});
+app.post('/api/edge/collisions/:collisionId/preview',async(req,res)=>{try{res.json(await duplicateRemediationService.preview(req.params.collisionId,String(req.body.deviceId||''),String(req.body.credentialId||''),req.body.target))}catch(error:any){res.status(400).json({error:error.message,code:error.code})}});
+app.post('/api/edge/collisions/remediation/:remediationId/apply',async(req,res)=>{try{const result=await duplicateRemediationService.apply(req.params.remediationId,req.body.confirmed===true);broadcast({type:'COLLISION_REMEDIATION_UPDATED',data:{result,project:projectDb.getProject()}});res.json(result)}catch(error:any){res.status(400).json({error:error.message,code:error.code})}});
+app.post('/api/edge/collisions/remediation/:remediationId/cancel',(req,res)=>res.status(202).json({cancelled:duplicateRemediationService.cancel(req.params.remediationId)}));
+app.post('/api/edge/collisions/:collisionId/retry',async(req,res)=>{try{res.json(await duplicateRemediationService.retry(req.params.collisionId,String(req.body.deviceId||''),String(req.body.credentialId||''),req.body.target))}catch(error:any){res.status(400).json({error:error.message,code:error.code})}});
+app.post('/api/edge/collisions/:collisionId/rescan',async(req,res)=>{try{const collision=await duplicateRemediationService.afterRescan(req.params.collisionId);broadcast({type:'COLLISION_REMEDIATION_UPDATED',data:{collision,project:projectDb.getProject()}});res.json(collision)}catch(error:any){res.status(400).json({error:error.message,code:error.code})}});
+app.post('/api/edge/resolve-collision',(_req,res)=>res.status(410).json({error:'Unsafe in-memory collision resolution was removed. Use the preview, confirm, apply, and verify workflow.',code:'WORKFLOW_REQUIRED'}));
 
 // Section 13.3 Rogue DHCP Auditor
 app.get('/api/edge/rogue-dhcp', (req, res) => {

@@ -24,7 +24,7 @@ interface MasterDeviceTableProps {
   onToggleSelectAll: () => void;
   onUpdateDeviceName: (id: string, newName: string) => void;
   onUpdateDeviceNotes: (id: string, notes: string) => void;
-  onOpenDuplicateAssistant: () => void;
+  onOpenDuplicateAssistant: (device: Device) => void;
   onConfigureDevice: (dev: Device) => void;
   onInspectDevice: (dev: Device) => void;
   onOpenBrowser: (dev: Device, mode: 'EMBEDDED' | 'EDGE' | 'CHROME' | 'SYSTEM') => void;
@@ -78,7 +78,7 @@ export const MasterDeviceTable: React.FC<MasterDeviceTableProps> = ({
     setEditingNotesId(null);
   };
 
-  const getStatusBadge = (status: DeviceStatus) => {
+  const getStatusBadge = (status: DeviceStatus, dev: Device) => {
     switch (status) {
       case 'ONLINE':
         return (
@@ -103,7 +103,7 @@ export const MasterDeviceTable: React.FC<MasterDeviceTableProps> = ({
           <button
             onClick={(e) => {
               e.stopPropagation();
-              onOpenDuplicateAssistant();
+              onOpenDuplicateAssistant(dev);
             }}
             className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40 hover:bg-amber-500/30 transition animate-pulse"
           >
@@ -253,7 +253,7 @@ export const MasterDeviceTable: React.FC<MasterDeviceTableProps> = ({
                     </td>
 
                     {/* Status remains separate from configured state. */}
-                    <td className="py-2 px-3">{getStatusBadge(dev.status)}</td>
+                    <td className="py-2 px-3">{getStatusBadge(dev.status, dev)}</td>
 
                     {/* IP opens the existing secure Connect workflow. */}
                     <td className="py-3 px-3 font-mono" onClick={(e) => e.stopPropagation()}>
