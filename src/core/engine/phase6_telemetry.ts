@@ -38,18 +38,18 @@ export class Phase6TelemetryVerification {
       totalCollisions: projectDb.getCollisions().filter(c => !c.resolved).length,
       totalRogueDhcpAlerts: projectDb.getRogueDhcpEvents().length,
       auditTimestamp: new Date().toISOString(),
-      complianceStatus: verifiedDevices.length === devices.length ? 'PASS - CERTIFIED FIELD READY' : 'ACTION REQUIRED - UNRESOLVED ANOMALIES',
+      evidenceStatus: `${verifiedDevices.length}/${devices.length} device(s) have current positive reachability evidence`,
     };
 
-    logs.push(`[Phase 6] Verification completed. Compliance Status: ${auditSummary.complianceStatus}`);
+    logs.push(`[Phase 6] Verification summary: ${auditSummary.evidenceStatus}. No compliance or field-certification claim is made.`);
 
     appStateDb.logAudit({
       id: crypto.randomUUID(),
       timestamp: new Date().toISOString(),
       phase: 6,
       category: 'SYSTEM',
-      level: auditSummary.complianceStatus.startsWith('PASS') ? 'SUCCESS' : 'WARNING',
-      message: `Phase 6 Audit Sign-Off: ${auditSummary.complianceStatus} (${verifiedDevices.length}/${devices.length} verified)`,
+      level: verifiedDevices.length === devices.length && devices.length > 0 ? 'SUCCESS' : 'WARNING',
+      message: `Phase 6 evidence summary: ${verifiedDevices.length}/${devices.length} device(s) currently verified.`,
       details: auditSummary,
     });
 

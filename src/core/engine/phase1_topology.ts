@@ -33,6 +33,10 @@ export class Phase1Topology {
             isInternal: addr.internal,
           };
 
+          if (!isEligibleDiscoveryInterface(nic)) {
+            logs.push(`[Phase 1] Excluded Adapter [${name}]: internal, virtual, tunnel, or unusable IPv4 interface.`);
+            continue;
+          }
           interfaces.push(nic);
           logs.push(`[Phase 1] Identified Adapter [${name}]: IP ${nic.ipAddress} / Netmask ${nic.netmask} (Broadcast: ${nic.broadcast})`);
         }
@@ -52,4 +56,9 @@ export class Phase1Topology {
 
     return { interfaces, logs };
   }
+}
+
+export function isEligibleDiscoveryInterface(nic: NICInfo): boolean {
+  if (nic.isInternal || !/^\d{1,3}(?:\.\d{1,3}){3}$/.test(nic.ipAddress) || nic.ipAddress === '0.0.0.0') return false;
+  return !/(loopback|bluetooth|wi-?fi direct|virtual|hyper-v|vmware|virtualbox|vpn|tunnel|tap|wireguard|teredo|isatap)/i.test(nic.name);
 }

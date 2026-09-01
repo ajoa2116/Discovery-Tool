@@ -19,6 +19,7 @@ import {
 
 interface MasterDeviceTableProps {
   devices: Device[];
+  hasCompletedScan?: boolean;
   selectedDeviceIds: Set<string>;
   onToggleSelect: (id: string) => void;
   onToggleSelectAll: () => void;
@@ -34,6 +35,7 @@ interface MasterDeviceTableProps {
 
 export const MasterDeviceTable: React.FC<MasterDeviceTableProps> = ({
   devices,
+  hasCompletedScan = false,
   selectedDeviceIds,
   onToggleSelect,
   onToggleSelectAll,
@@ -187,7 +189,7 @@ export const MasterDeviceTable: React.FC<MasterDeviceTableProps> = ({
             {devices.length === 0 ? (
               <tr>
                 <td colSpan={9} className="py-12 text-center text-slate-500">
-                  <span className="block font-medium text-slate-700 dark:text-slate-300">No devices discovered.</span><span className="mt-1 block">Select Scan to begin discovery.</span>
+                  <span className="block font-medium text-slate-700 dark:text-slate-300">{hasCompletedScan ? 'No devices found.' : 'No devices discovered.'}</span><span className="mt-1 block">{hasCompletedScan ? 'Select Scan to scan again.' : 'Select Scan to begin discovery.'}</span>
                 </td>
               </tr>
             ) : (

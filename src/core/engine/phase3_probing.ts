@@ -30,7 +30,12 @@ export class Phase3ActiveProbing {
     const result = await transport.discover(eligible, {
       signal: options.signal,
       timeoutMs: options.timeoutMs,
-      onDevice: (device, isNew) => {
+      onDevice: (device) => {
+        const isNew = !projectDb.getDevices().some(existing => existing.id === device.id || Boolean(
+          (device.anchor.macAddress && existing.anchor.macAddress?.toLowerCase() === device.anchor.macAddress.toLowerCase()) ||
+          (device.anchor.onvifEndpointUuid && existing.anchor.onvifEndpointUuid?.toLowerCase() === device.anchor.onvifEndpointUuid.toLowerCase()) ||
+          (device.anchor.serialNumber && existing.anchor.serialNumber?.toLowerCase() === device.anchor.serialNumber.toLowerCase())
+        ));
         const stored = projectDb.upsertDevice(device);
         options.onDevice?.(stored, isNew);
         const enrichmentKey = stored.anchor.onvifEndpointUuid || stored.anchor.macAddress || stored.id;
@@ -58,6 +63,7 @@ export class Phase3ActiveProbing {
     logs.push(result.cancelled
       ? `[Phase 3] Discovery cancelled after retaining ${result.devices.length} discovered device(s).`
       : `[Phase 3] Discovery timeout completed with ${result.devices.length} unique ONVIF device(s).`);
+    if (!result.cancelled && result.devices.length === 0) logs.push('[Phase 3] No ONVIF responses received. Verify the camera is connected to a reachable network and that ONVIF/WS-Discovery is enabled. Interface warnings above may identify binding, multicast-send, adapter, or permission failures; zero responses alone do not prove a firewall cause.');
 
     appStateDb.logAudit({
       id: crypto.randomUUID(),

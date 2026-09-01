@@ -19,13 +19,13 @@ export class RogueDHCPAuditor {
         timestamp: new Date().toISOString(),
         category: 'SECURITY',
         level: 'ERROR',
-        message: `Section 13.3 ROGUE DHCP DETECTED: Server IP ${offer.serverIp} (MAC: ${offer.serverMac}) offering lease ${offer.offeredIp} on isolated camera VLAN!`,
+        message: `Unapproved DHCP offer observed from ${offer.serverIp} (${offer.serverMac}) for ${offer.offeredIp}.`,
         details: offer,
       });
 
       return {
         isRogue: true,
-        recommendation: `CRITICAL: Unauthorized DHCP server at ${offer.serverIp}. Isolate switch port ${offer.switchPortHint || 'Uplink'} immediately to prevent lease hijacking.`,
+        recommendation: `Review the DHCP server at ${offer.serverIp} and isolate the affected test network segment if the offer is unexpected. No switch-port location has been inferred.`,
       };
     }
 

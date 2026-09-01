@@ -7,10 +7,8 @@ import { projectDb } from '../core/storage/project_db.ts';
 import { appStateDb } from '../core/storage/app_db.ts';
 import { osVault } from '../core/storage/vault.ts';
 import { DuplicateRemediationService } from '../core/edge_cases/duplicate_remediation_service.ts';
-import { RogueDHCPAuditor } from '../core/edge_cases/rogue_dhcp.ts';
 import { LegacyHardwareOnboarding } from '../core/edge_cases/legacy_hardware.ts';
 import { OnvifDriver } from '../core/drivers/onvif.ts';
-import { AvailableIpFinder } from '../core/engine/ip_finder.ts';
 import { BulkNetworkConfigurationService } from '../core/engine/bulk_reip.ts';
 import { ProjectReverificationEngine } from '../core/engine/reverification.ts';
 import { ProjectValidationError } from '../core/storage/project_db.ts';
@@ -21,6 +19,7 @@ import { CameraNetworkConfigurationService } from '../core/network/camera_networ
 import { CameraConfigurationService } from '../core/network/camera_configuration_service.ts';
 import { PreferredCameraConfigurationProvider } from '../core/drivers/vendor_configuration_provider.ts';
 import { ReportService } from '../core/reporting/report_service.ts';
+import { ShutdownCoordinator, WindowsPreflightService } from '../core/readiness/field_readiness.ts';
 
 const app = express();
 const server = createServer(app);
@@ -36,6 +35,9 @@ const cameraConfigurationService = new CameraConfigurationService(projectDb,osVa
 const bulkNetworkService = new BulkNetworkConfigurationService(projectDb, osVault, cameraNetworkService);
 const cameraNetworkControllers = new Map<string, AbortController>();
 const reportService = new ReportService();
+const preflightService = new WindowsPreflightService({ portAvailable: async port => port === 3001 && server.listening });
+let preflightCache: { expiresAt: number; value: Awaited<ReturnType<WindowsPreflightService['run']>> } | null = null;
+const getPreflight = async () => { if (preflightCache && preflightCache.expiresAt > Date.now()) return preflightCache.value; const value = await preflightService.run(); preflightCache = { expiresAt: Date.now() + 60_000, value }; return value; };
 
 app.use(cors());
 app.use(express.json());
@@ -160,11 +162,7 @@ app.get('/api/project/export', (req, res) => {
 
 // Available IP Finder (Section 25)
 app.get('/api/ip-finder/available', (req, res) => {
-  const prefix = (req.query.prefix as string) || '192.168.1';
-  const start = parseInt((req.query.start as string) || '100');
-  const end = parseInt((req.query.end as string) || '240');
-  const available = AvailableIpFinder.scanAvailableIps(prefix, start, end);
-  res.json({ prefix, available });
+  res.status(410).json({ error: 'The legacy global IP finder is unavailable because absence from the project is not proof that an address is free. Use a configuration preview with live candidate validation.' });
 });
 
 // Backend-authoritative bulk network configuration.
@@ -277,30 +275,26 @@ app.get('/api/discovery/status', (req, res) => {
   res.json({ running: pipelineEngine.getIsRunning(), phases: pipelineEngine.getStates().slice(0, 4) });
 });
 
+app.get('/api/system/about', (_req, res) => res.json({ application: 'CCTV Network Assistant', version: '1.6.0', runtime: process.version, platform: process.platform }));
+app.get('/api/system/preflight', async (_req, res) => { try { res.json(await getPreflight()); } catch { res.status(500).json({ error: 'Application readiness checks could not be completed.' }); } });
+app.get('/api/system/support-bundle', async (_req, res) => {
+  try {
+    const preflight = await getPreflight();
+    const bundle = { format: 'CCTV_SAFE_SUPPORT_BUNDLE', schemaVersion: 1, generatedAt: new Date().toISOString(), preflight, discovery: { running: pipelineEngine.getIsRunning(), phases: pipelineEngine.getStates().slice(0, 4) }, diagnostics: diagnosticMonitor.getState(), pair: pairService.getStatus() ? { state: pairService.getStatus()!.state, recoveryAvailable: pairService.getStatus()!.recoveryAvailable, errorCode: pairService.getStatus()!.errorCode } : null, recentEvents: appStateDb.getAuditLogs().filter(entry => entry.category !== 'SECURITY' && !/(password|credential|authorization|digest|token|cookie|secret)/i.test(entry.message)).slice(0, 100).map(({ timestamp, category, level, message }) => ({ timestamp, category, level, message })) };
+    res.setHeader('Content-Disposition', 'attachment; filename="CCTV_Safe_Support_Bundle.json"'); res.json(bundle);
+  } catch { res.status(500).json({ error: 'The safe support bundle could not be generated.' }); }
+});
+
 app.get('/api/pipeline/status', (req, res) => {
   res.json(pipelineEngine.getStates());
 });
 
 app.post('/api/pipeline/run', async (req, res) => {
-  res.json({ message: '6-Phase batch execution sequence started.' });
-  pipelineEngine.runFullPipeline().catch(console.error);
+  res.status(410).json({ error: 'The legacy automatic pipeline is unavailable. Use Quick Scan and explicit reviewed configuration workflows.' });
 });
 
 app.post('/api/pipeline/phase/:num', async (req, res) => {
-  const phaseNum = parseInt(req.params.num);
-  try {
-    if (phaseNum === 1) await pipelineEngine.runPhase1();
-    else if (phaseNum === 2) await pipelineEngine.runPhase2();
-    else if (phaseNum === 3) await pipelineEngine.runPhase3();
-    else if (phaseNum === 4) await pipelineEngine.runPhase4();
-    else if (phaseNum === 5) await pipelineEngine.runPhase5();
-    else if (phaseNum === 6) await pipelineEngine.runPhase6();
-    else return res.status(400).json({ error: 'Invalid phase number' });
-    
-    res.json({ message: `Phase ${phaseNum} completed.` });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
+  res.status(410).json({ error: 'Direct legacy phase execution is unavailable. Use the supported Quick Scan workflow.' });
 });
 
 // Device Configuration & ONVIF Parameter Update
@@ -357,11 +351,7 @@ app.post('/api/device/:identifier/config', (req, res) => {
 
 // PTZ Move Command
 app.post('/api/device/:identifier/ptz', (req, res) => {
-  const dev = projectDb.getDeviceByIdentifier(req.params.identifier);
-  if (!dev) return res.status(404).json({ error: 'Device not found' });
-  const { pan, tilt, zoom } = req.body;
-  const envelope = OnvifDriver.createPtzContinuousMoveEnvelope(pan || 0, tilt || 0, zoom || 0);
-  res.json({ success: true, deviceId: dev.id, message: `PTZ Velocity (${pan}, ${tilt}, ${zoom}) dispatched`, soapEnvelope: envelope });
+  res.status(501).json({ error: 'PTZ control is not implemented; no camera command was sent.', code: 'UNSUPPORTED' });
 });
 
 // Section 13.2 Duplicate Assistant Drawer
@@ -384,10 +374,7 @@ app.get('/api/edge/rogue-dhcp', (req, res) => {
 });
 
 app.post('/api/edge/rogue-dhcp/test-offer', (req, res) => {
-  const offer = req.body;
-  const result = RogueDHCPAuditor.inspectDHCPOffer(offer);
-  broadcast({ type: 'ROGUE_DHCP_ALERT', data: { offer, result } });
-  res.json(result);
+  res.status(410).json({ error: 'Development DHCP-offer injection is not available in the production server.' });
 });
 
 // Section 13.1 Legacy Hardware Onboarding
@@ -416,3 +403,16 @@ const PORT = 3001;
 server.listen(PORT, () => {
   console.log(`[CCTV Discovery Server v1.6] running on http://localhost:${PORT}`);
 });
+
+const activeControllers = function* () { yield* diagnosticControllers.values(); yield* connectRecheckControllers.values(); yield* cameraNetworkControllers.values(); };
+const shutdown = new ShutdownCoordinator(
+  pipelineEngine,
+  diagnosticMonitor,
+  { [Symbol.iterator]: activeControllers },
+  () => new Promise(resolve => { for (const client of wss.clients) client.terminate(); wss.close(() => resolve()); }),
+  () => new Promise(resolve => server.close(() => resolve())),
+);
+let terminating = false;
+const terminate = (signal: string) => { if (terminating) return; terminating = true; console.info(`[Shutdown] ${signal}: stopping discovery, diagnostics, sockets, and HTTP service.`); void shutdown.shutdown().finally(() => { console.info('[Shutdown] Complete. Pair recovery state was preserved.'); process.exitCode = 0; }); };
+process.once('SIGINT', () => terminate('SIGINT'));
+process.once('SIGTERM', () => terminate('SIGTERM'));

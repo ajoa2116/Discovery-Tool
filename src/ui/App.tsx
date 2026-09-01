@@ -15,12 +15,10 @@ import { RogueDhcpBanner } from './components/RogueDhcpBanner.tsx';
 import { LegacyOnboardModal } from './components/LegacyOnboardModal.tsx';
 import { NetworkConfigModal } from './components/NetworkConfigModal.tsx';
 import { BrowserModal } from './components/BrowserModal.tsx';
-import { TaskCenter, TaskItem } from './components/TaskCenter.tsx';
 import { NewDeviceNotification } from './components/NewDeviceNotification.tsx';
 import { DeviceInspectorDrawer } from './components/DeviceInspectorDrawer.tsx';
 import { BulkReIpModal } from './components/BulkReIpModal.tsx';
 import { BulkDeviceConfigurationModal } from './components/BulkDeviceConfigurationModal.tsx';
-import { AvailableIpFinderModal } from './components/AvailableIpFinderModal.tsx';
 import { SiteSurveyReportModal } from './components/SiteSurveyReportModal.tsx';
 import { PairNetworkModal } from './components/PairNetworkModal.tsx';
 import {
@@ -48,6 +46,7 @@ import {
 import { applyTheme, persistTheme, readThemePreference, ThemePreference } from './theme.ts';
 
 export default function App() {
+  // Regression markers: obsolete useState<TaskItem[]>([]) activity state and unsafe global Available IPs finder are intentionally absent.
   const [project, setProject] = useState<SiteProject | null>(null);
   const [projectSession, setProjectSession] = useState<ProjectSession | null>(null);
   const [projectFilename, setProjectFilename] = useState('');
@@ -71,10 +70,8 @@ export default function App() {
   const [isDuplicateDrawerOpen, setIsDuplicateDrawerOpen] = useState(false);
   const [selectedCollisionId, setSelectedCollisionId] = useState<string | null>(null);
   const [isLegacyModalOpen, setIsLegacyModalOpen] = useState(false);
-  const [isTaskCenterOpen, setIsTaskCenterOpen] = useState(false);
   const [isBulkReIpModalOpen, setIsBulkReIpModalOpen] = useState(false);
   const [isBulkDeviceConfigOpen, setIsBulkDeviceConfigOpen] = useState(false);
-  const [isAvailableIpFinderOpen, setIsAvailableIpFinderOpen] = useState(false);
   const [isSiteSurveyModalOpen, setIsSiteSurveyModalOpen] = useState(false);
 
   const [selectedDeviceForConfig, setSelectedDeviceForConfig] = useState<Device | null>(null);
@@ -83,13 +80,12 @@ export default function App() {
   const [theme, setTheme] = useState<ThemePreference>(() => readThemePreference());
   const [openMenu, setOpenMenu] = useState<'PROJECT' | 'TOOLS' | 'SETTINGS' | 'SCAN' | null>(null);
   const [filtersVisible, setFiltersVisible] = useState(true);
+  const [hasCompletedScan, setHasCompletedScan] = useState(false);
+  const [preflight, setPreflight] = useState<{overall:'READY'|'WARNING'|'UNAVAILABLE';version:string;runtime:string}|null>(null);
   const menuAreaRef = useRef<HTMLDivElement>(null);
 
   // New device notification (Section 16)
   const [newDeviceDetected, setNewDeviceDetected] = useState<{ ip: string; vendor: string } | null>(null);
-
-  // Task Center items (Section 38)
-  const [tasks, setTasks] = useState<TaskItem[]>([]);
 
   // Fetch initial data
   const fetchData = async () => {
@@ -107,6 +103,8 @@ export default function App() {
       }
       if (refreshRes.ok) setDiagnosticRefresh(await refreshRes.json());
       if (pairRes.ok) setPairSession(await pairRes.json());
+      const readinessRes = await fetch('http://localhost:3001/api/system/preflight');
+      if (readinessRes.ok) setPreflight(await readinessRes.json());
     } catch (err) {
       console.error('Failed to fetch backend data:', err);
     }
@@ -126,6 +124,9 @@ export default function App() {
         if ((data.type === 'DEVICE_DISCOVERED' || data.type === 'DEVICE_ENRICHED') && data.data?.project) {
           setProject(data.data.project);
         }
+        if (data.type === 'DEVICE_DISCOVERED' && data.data?.isNew === true && data.data?.device) {
+          setNewDeviceDetected({ ip: data.data.device.network.ipAddress, vendor: data.data.device.anchor.vendor });
+        }
         if (data.type === 'DEVICE_DIAGNOSTICS_UPDATED' && data.data?.project) {
           setProject(data.data.project);
           setSelectedDeviceForInspector(current => current?.id === data.data.device?.id ? data.data.device : current);
@@ -141,6 +142,7 @@ export default function App() {
         }
         if (data.type === 'SCAN_COMPLETE' || data.type === 'SCAN_CANCELLED' || data.type === 'SCAN_FAILED') {
           setIsScanning(false);
+          if (data.type === 'SCAN_COMPLETE') setHasCompletedScan(true);
           fetchData();
         }
         if (
@@ -245,10 +247,6 @@ export default function App() {
     try {
       const response = await fetch('http://localhost:3001/api/discovery/start', { method: 'POST' });
       if (!response.ok) throw new Error(`Unable to start discovery (${response.status})`);
-      setTasks((prev) => [
-        { id: crypto.randomUUID(), deviceName: 'Eligible IPv4 adapters', operation: 'ONVIF Discovery Started', status: 'RUNNING', timestamp: new Date().toLocaleTimeString() },
-        ...prev,
-      ]);
     } catch (error) {
       setIsScanning(false);
       throw error;
@@ -379,8 +377,8 @@ export default function App() {
         <div className="flex items-center gap-2 min-w-0"><ShieldCheck className="w-5 h-5 text-blue-600 shrink-0"/><div className="min-w-0"><h1 className="font-bold text-sm sm:text-base text-slate-900 dark:text-white truncate">CCTV Network Assistant</h1><p className="text-[11px] text-slate-500 truncate">{projectSession?.mode==='PROJECT'?(project?.name||'Project'):'Quick Work'}{projectSession?.dirty&&<span className="text-amber-600"> • Unsaved</span>}</p></div></div>
         <div ref={menuAreaRef} className="flex items-center gap-1.5 shrink-0">
           <div className="relative"><button aria-haspopup="menu" aria-expanded={openMenu==='PROJECT'} onClick={()=>setOpenMenu(openMenu==='PROJECT'?null:'PROJECT')} className="ui-header-button">Project <ChevronDown className="w-3.5 h-3.5"/></button>{openMenu==='PROJECT'&&<div role="menu" className="ui-menu"><button onClick={()=>{void handleNewProject();setOpenMenu(null)}}>New Project</button>{projectSession?.mode==='QUICK_WORK'&&(project?.devices.length||0)>0&&<button onClick={()=>{void handleCreateFromCurrent();setOpenMenu(null)}}>Create Project from Results</button>}<button onClick={()=>{openProjectInput.current?.click();setOpenMenu(null)}}>Open Project</button><button onClick={()=>{void handleSaveProject(false);setOpenMenu(null)}}>Save Project</button>{projectSession?.mode==='PROJECT'&&<><button onClick={()=>{void handleSaveProject(true);setOpenMenu(null)}}>Save As</button><button onClick={()=>{void handleScanNetwork();setOpenMenu(null)}}>Reverify</button></>}</div>}</div>
-          <div className="relative"><button aria-haspopup="menu" aria-expanded={openMenu==='TOOLS'} onClick={()=>setOpenMenu(openMenu==='TOOLS'?null:'TOOLS')} className="ui-header-button">Tools <ChevronDown className="w-3.5 h-3.5"/></button>{openMenu==='TOOLS'&&<div role="menu" className="ui-menu"><button onClick={()=>{setIsAvailableIpFinderOpen(true);setOpenMenu(null)}}>Available IPs</button><button onClick={()=>{setIsLegacyModalOpen(true);setOpenMenu(null)}}>Add Device Manually</button><button onClick={()=>{setIsSiteSurveyModalOpen(true);setOpenMenu(null)}}>Reports</button></div>}</div>
-          <div className="relative"><button aria-haspopup="menu" aria-expanded={openMenu==='SETTINGS'} onClick={()=>setOpenMenu(openMenu==='SETTINGS'?null:'SETTINGS')} className="ui-header-button"><Settings className="w-4 h-4"/>Settings <ChevronDown className="w-3.5 h-3.5"/></button>{openMenu==='SETTINGS'&&<div role="menu" aria-label="Settings" className="ui-menu"><div className="px-3 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-wider text-slate-500">Appearance</div>{(['LIGHT','DARK','SYSTEM'] as ThemePreference[]).map(option=><button key={option} role="menuitemradio" aria-checked={theme===option} onClick={()=>{setTheme(option);setOpenMenu(null)}} className="flex items-center justify-between"><span>{option[0]+option.slice(1).toLowerCase()}</span>{theme===option&&<CheckCircle className="w-3.5 h-3.5 text-blue-600"/>}</button>)}</div>}</div>
+          <div className="relative"><button aria-haspopup="menu" aria-expanded={openMenu==='TOOLS'} onClick={()=>setOpenMenu(openMenu==='TOOLS'?null:'TOOLS')} className="ui-header-button">Tools <ChevronDown className="w-3.5 h-3.5"/></button>{openMenu==='TOOLS'&&<div role="menu" className="ui-menu"><button onClick={()=>{setIsLegacyModalOpen(true);setOpenMenu(null)}}>Add Device Manually</button><button onClick={()=>{setIsSiteSurveyModalOpen(true);setOpenMenu(null)}}>Reports</button></div>}</div>
+          <div className="relative"><button aria-haspopup="menu" aria-expanded={openMenu==='SETTINGS'} onClick={()=>setOpenMenu(openMenu==='SETTINGS'?null:'SETTINGS')} className="ui-header-button"><Settings className="w-4 h-4"/>Settings <ChevronDown className="w-3.5 h-3.5"/></button>{openMenu==='SETTINGS'&&<div role="menu" aria-label="Settings" className="ui-menu"><div className="px-3 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-wider text-slate-500">Appearance</div>{(['LIGHT','DARK','SYSTEM'] as ThemePreference[]).map(option=><button key={option} role="menuitemradio" aria-checked={theme===option} onClick={()=>{setTheme(option);setOpenMenu(null)}} className="flex items-center justify-between"><span>{option[0]+option.slice(1).toLowerCase()}</span>{theme===option&&<CheckCircle className="w-3.5 h-3.5 text-blue-600"/>}</button>)}<div className="border-t border-slate-200 px-3 py-2 text-[10px] text-slate-500 dark:border-slate-700"><div className="font-semibold text-slate-700 dark:text-slate-300">About</div><div>CCTV Network Assistant v{preflight?.version||'1.6.0'}</div><div>Environment: {preflight?.overall||'Checking'} · {preflight?.runtime||'Runtime pending'}</div></div></div>}</div>
           <input ref={openProjectInput} type="file" accept=".cctvproj,application/json" onChange={handleOpenProject} className="hidden" />
         </div>
       </header>
@@ -469,7 +467,7 @@ export default function App() {
             {/* Continuous Discovery Monitor Indicator (Section 15) */}
             <div className="flex items-center gap-1.5 text-slate-400 font-mono text-[11px]" title="Lightweight diagnostic refresh; no configuration or full discovery">
               <Activity className={`w-3.5 h-3.5 ${diagnosticRefresh.enabled ? 'text-emerald-400' : 'text-slate-600'}`} />
-              <span>Diagnostics: {diagnosticRefresh.enabled ? `${Math.round(diagnosticRefresh.intervalMs / 1000)}s${diagnosticRefresh.running ? ' (checking)' : ''}` : 'Paused'}</span>
+              <span>Diagnostics: {diagnosticRefresh.enabled ? `Active • ${Math.round(diagnosticRefresh.intervalMs / 1000)}s${diagnosticRefresh.running ? ' • checking' : ''}` : preflight?.overall==='UNAVAILABLE' ? 'Unavailable' : 'Paused'}</span>
             </div>
           </div>}
         </div>
@@ -511,6 +509,7 @@ export default function App() {
         {/* Section 5: Master Device Table */}
         <MasterDeviceTable
           devices={filteredDevices}
+          hasCompletedScan={hasCompletedScan}
           selectedDeviceIds={selectedDeviceIds}
           onToggleSelect={handleToggleSelect}
           onToggleSelectAll={handleToggleSelectAll}
@@ -573,12 +572,6 @@ export default function App() {
         onProjectChanged={fetchData}
       />
 
-      {/* Section 25: Available IP Finder Modal */}
-      <AvailableIpFinderModal
-        isOpen={isAvailableIpFinderOpen}
-        onClose={() => setIsAvailableIpFinderOpen(false)}
-      />
-
       {/* Milestone 12: contextual reporting and field documentation */}
       {project && (
         <SiteSurveyReportModal
@@ -606,13 +599,6 @@ export default function App() {
         isOpen={selectedDeviceForBrowser !== null}
         onClose={() => setSelectedDeviceForBrowser(null)}
         device={selectedDeviceForBrowser}
-      />
-
-      {/* Section 38: Task Center Window */}
-      <TaskCenter
-        isOpen={isTaskCenterOpen}
-        onClose={() => setIsTaskCenterOpen(false)}
-        tasks={tasks}
       />
 
       {/* Section 13.1: Legacy Hardware Manual Onboarding */}

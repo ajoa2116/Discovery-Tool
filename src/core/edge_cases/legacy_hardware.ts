@@ -17,7 +17,7 @@ export interface LegacyOnboardingPayload {
 export class LegacyHardwareOnboarding {
   /**
    * Section 13.1: Unresponsive Legacy Hardware & Manual Onboarding
-   * Deploys static profile templates and forces direct MAC-level routing to bypass automated discovery limits.
+   * Records technician-supplied network evidence without claiming live verification or configuration.
    */
   public static onboardLegacyDevice(payload: LegacyOnboardingPayload): Device {
     const dev: Device = {
@@ -25,8 +25,7 @@ export class LegacyHardwareOnboarding {
       anchor: {
         macAddress: payload.macAddress,
         vendor: payload.vendor || appStateDb.resolveVendor(payload.macAddress),
-        model: payload.model || 'Legacy Analog-to-IP Encoder / Camera',
-        firmwareVersion: 'Legacy Firmware (Manual Mode)',
+        model: payload.model || undefined,
       },
       network: {
         ipAddress: payload.staticIp,
@@ -35,17 +34,12 @@ export class LegacyHardwareOnboarding {
         port: payload.httpPort || 80,
         protocol: 'HTTP_LEGACY',
       },
-      status: 'AUTHENTICATED',
-      statusMessage: 'Manually onboarded via Section 13.1 direct MAC routing template',
+      status: 'UNKNOWN',
+      statusMessage: 'Manually entered; current reachability and identity are not verified.',
       discoveredPhase: 1,
       firstSeenAt: new Date().toISOString(),
       lastSeenAt: new Date().toISOString(),
-      customStaticProfile: {
-        assignedIp: payload.staticIp,
-        assignedSubnet: payload.subnetMask,
-        assignedGateway: payload.gateway,
-        appliedCredentialsId: payload.credentialId,
-      },
+      sessionVerification: 'NOT_VERIFIED',
     };
 
     projectDb.upsertDevice(dev);
@@ -55,7 +49,7 @@ export class LegacyHardwareOnboarding {
       timestamp: new Date().toISOString(),
       category: 'EDGE_CASE',
       level: 'INFO',
-      message: `Section 13.1 Legacy Hardware: Manual onboarding executed for MAC ${payload.macAddress} -> Bound to ${payload.staticIp}`,
+      message: `Manual device record created for MAC ${payload.macAddress} at technician-supplied address ${payload.staticIp}; not live-verified.`,
       deviceId: dev.id,
     });
 

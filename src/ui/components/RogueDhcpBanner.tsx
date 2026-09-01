@@ -28,7 +28,7 @@ export const RogueDhcpBanner: React.FC<RogueDhcpBannerProps> = ({ rogueEvents })
 
         <p className="text-xs text-rose-200/90 mt-1 leading-relaxed">
           Unauthorized DHCP server broadcasting offers: Server IP <span className="font-mono font-bold text-white">{latest.serverIp}</span> (MAC: <span className="font-mono text-white">{latest.serverMac}</span>).
-          Offering lease <span className="font-mono text-white">{latest.offeredIp}</span>. Immediate switch port isolation recommended.
+          Offering lease <span className="font-mono text-white">{latest.offeredIp}</span>. Review and isolate the affected test network segment if unexpected.
         </p>
       </div>
     </div>
