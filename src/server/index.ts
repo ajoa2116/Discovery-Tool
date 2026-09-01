@@ -20,6 +20,7 @@ import { ConnectService } from '../core/connect/connect_service.ts';
 import { CameraNetworkConfigurationService } from '../core/network/camera_network_service.ts';
 import { CameraConfigurationService } from '../core/network/camera_configuration_service.ts';
 import { PreferredCameraConfigurationProvider } from '../core/drivers/vendor_configuration_provider.ts';
+import { ReportService } from '../core/reporting/report_service.ts';
 
 const app = express();
 const server = createServer(app);
@@ -34,6 +35,7 @@ const duplicateRemediationService = new DuplicateRemediationService(projectDb,os
 const cameraConfigurationService = new CameraConfigurationService(projectDb,osVault,new PreferredCameraConfigurationProvider());
 const bulkNetworkService = new BulkNetworkConfigurationService(projectDb, osVault, cameraNetworkService);
 const cameraNetworkControllers = new Map<string, AbortController>();
+const reportService = new ReportService();
 
 app.use(cors());
 app.use(express.json());
@@ -183,6 +185,10 @@ app.post('/api/discovery/start', (req, res) => {
     broadcast({ type: 'SCAN_FAILED', data: { message: error instanceof Error ? error.message : String(error) } });
   });
 });
+
+// Read-only technician reporting. Native PDF is deterministic; JSON is a safe report, not a project bundle.
+app.post('/api/reports/preview',(req,res)=>{try{res.json(reportService.build(projectDb.getSession(),appStateDb.getAuditLogs(),req.body))}catch(error:any){res.status(400).json({error:error.message})}});
+app.post('/api/reports/export/:format',(req,res)=>{try{const model=reportService.build(projectDb.getSession(),appStateDb.getAuditLogs(),req.body),format=String(req.params.format).toLowerCase();if(format==='pdf'){const data=reportService.pdf(model);res.setHeader('Content-Type','application/pdf');res.setHeader('Content-Disposition',`attachment; filename="${reportService.filename(model,'pdf')}"`);return res.send(data)}if(format==='csv'){res.setHeader('Content-Type','text/csv; charset=utf-8');res.setHeader('Content-Disposition',`attachment; filename="${reportService.filename(model,'csv')}"`);return res.send(reportService.csv(model))}if(format==='json'){res.setHeader('Content-Type','application/json');res.setHeader('Content-Disposition',`attachment; filename="${reportService.filename(model,'json')}"`);return res.send(reportService.json(model))}res.status(400).json({error:'Supported report formats are PDF, CSV, and JSON.'})}catch(error:any){res.status(400).json({error:error.message})}});
 
 app.post('/api/diagnostics/run', async (req, res) => {
   const ids: string[] = Array.isArray(req.body.deviceIds) ? req.body.deviceIds : [req.body.deviceId].filter(Boolean);

@@ -4,7 +4,6 @@ import {
   Device,
   IPCollisionRecord,
   RogueDHCPOffer,
-  AuditLogEntry,
   NICInfo,
   OnvifCustomConfig,
   ProjectSession,
@@ -14,7 +13,6 @@ import { MasterDeviceTable } from './components/MasterDeviceTable.tsx';
 import { DuplicateDrawer } from './components/DuplicateDrawer.tsx';
 import { RogueDhcpBanner } from './components/RogueDhcpBanner.tsx';
 import { LegacyOnboardModal } from './components/LegacyOnboardModal.tsx';
-import { AuditReportModal } from './components/AuditReportModal.tsx';
 import { NetworkConfigModal } from './components/NetworkConfigModal.tsx';
 import { BrowserModal } from './components/BrowserModal.tsx';
 import { TaskCenter, TaskItem } from './components/TaskCenter.tsx';
@@ -54,7 +52,6 @@ export default function App() {
   const [projectSession, setProjectSession] = useState<ProjectSession | null>(null);
   const [projectFilename, setProjectFilename] = useState('');
   const openProjectInput = useRef<HTMLInputElement>(null);
-  const [auditLogs, setAuditLogs] = useState<AuditLogEntry[]>([]);
   const [interfaces, setInterfaces] = useState<NICInfo[]>([]);
   const [isScanning, setIsScanning] = useState(false);
   const [diagnosticRefresh, setDiagnosticRefresh] = useState<{ enabled: boolean; running: boolean; intervalMs: number }>({ enabled: false, running: false, intervalMs: 30000 });
@@ -74,7 +71,6 @@ export default function App() {
   const [isDuplicateDrawerOpen, setIsDuplicateDrawerOpen] = useState(false);
   const [selectedCollisionId, setSelectedCollisionId] = useState<string | null>(null);
   const [isLegacyModalOpen, setIsLegacyModalOpen] = useState(false);
-  const [isAuditModalOpen, setIsAuditModalOpen] = useState(false);
   const [isTaskCenterOpen, setIsTaskCenterOpen] = useState(false);
   const [isBulkReIpModalOpen, setIsBulkReIpModalOpen] = useState(false);
   const [isBulkDeviceConfigOpen, setIsBulkDeviceConfigOpen] = useState(false);
@@ -98,9 +94,8 @@ export default function App() {
   // Fetch initial data
   const fetchData = async () => {
     try {
-      const [sessionRes, auditRes, refreshRes, pairRes] = await Promise.all([
+      const [sessionRes, refreshRes, pairRes] = await Promise.all([
         fetch('http://localhost:3001/api/project/session'),
-        fetch('http://localhost:3001/api/audit-logs'),
         fetch('http://localhost:3001/api/diagnostics/refresh'),
         fetch('http://localhost:3001/api/pair/status'),
       ]);
@@ -110,7 +105,6 @@ export default function App() {
         setProjectSession(session);
         setProject(session.project);
       }
-      if (auditRes.ok) setAuditLogs(await auditRes.json());
       if (refreshRes.ok) setDiagnosticRefresh(await refreshRes.json());
       if (pairRes.ok) setPairSession(await pairRes.json());
     } catch (err) {
@@ -385,7 +379,7 @@ export default function App() {
         <div className="flex items-center gap-2 min-w-0"><ShieldCheck className="w-5 h-5 text-blue-600 shrink-0"/><div className="min-w-0"><h1 className="font-bold text-sm sm:text-base text-slate-900 dark:text-white truncate">CCTV Network Assistant</h1><p className="text-[11px] text-slate-500 truncate">{projectSession?.mode==='PROJECT'?(project?.name||'Project'):'Quick Work'}{projectSession?.dirty&&<span className="text-amber-600"> • Unsaved</span>}</p></div></div>
         <div ref={menuAreaRef} className="flex items-center gap-1.5 shrink-0">
           <div className="relative"><button aria-haspopup="menu" aria-expanded={openMenu==='PROJECT'} onClick={()=>setOpenMenu(openMenu==='PROJECT'?null:'PROJECT')} className="ui-header-button">Project <ChevronDown className="w-3.5 h-3.5"/></button>{openMenu==='PROJECT'&&<div role="menu" className="ui-menu"><button onClick={()=>{void handleNewProject();setOpenMenu(null)}}>New Project</button>{projectSession?.mode==='QUICK_WORK'&&(project?.devices.length||0)>0&&<button onClick={()=>{void handleCreateFromCurrent();setOpenMenu(null)}}>Create Project from Results</button>}<button onClick={()=>{openProjectInput.current?.click();setOpenMenu(null)}}>Open Project</button><button onClick={()=>{void handleSaveProject(false);setOpenMenu(null)}}>Save Project</button>{projectSession?.mode==='PROJECT'&&<><button onClick={()=>{void handleSaveProject(true);setOpenMenu(null)}}>Save As</button><button onClick={()=>{void handleScanNetwork();setOpenMenu(null)}}>Reverify</button></>}</div>}</div>
-          <div className="relative"><button aria-haspopup="menu" aria-expanded={openMenu==='TOOLS'} onClick={()=>setOpenMenu(openMenu==='TOOLS'?null:'TOOLS')} className="ui-header-button">Tools <ChevronDown className="w-3.5 h-3.5"/></button>{openMenu==='TOOLS'&&<div role="menu" className="ui-menu"><button onClick={()=>{setIsAvailableIpFinderOpen(true);setOpenMenu(null)}}>Available IPs</button><button onClick={()=>{setIsLegacyModalOpen(true);setOpenMenu(null)}}>Add Device Manually</button><button onClick={()=>{setIsSiteSurveyModalOpen(true);setOpenMenu(null)}}>Site Survey Report</button></div>}</div>
+          <div className="relative"><button aria-haspopup="menu" aria-expanded={openMenu==='TOOLS'} onClick={()=>setOpenMenu(openMenu==='TOOLS'?null:'TOOLS')} className="ui-header-button">Tools <ChevronDown className="w-3.5 h-3.5"/></button>{openMenu==='TOOLS'&&<div role="menu" className="ui-menu"><button onClick={()=>{setIsAvailableIpFinderOpen(true);setOpenMenu(null)}}>Available IPs</button><button onClick={()=>{setIsLegacyModalOpen(true);setOpenMenu(null)}}>Add Device Manually</button><button onClick={()=>{setIsSiteSurveyModalOpen(true);setOpenMenu(null)}}>Reports</button></div>}</div>
           <div className="relative"><button aria-haspopup="menu" aria-expanded={openMenu==='SETTINGS'} onClick={()=>setOpenMenu(openMenu==='SETTINGS'?null:'SETTINGS')} className="ui-header-button"><Settings className="w-4 h-4"/>Settings <ChevronDown className="w-3.5 h-3.5"/></button>{openMenu==='SETTINGS'&&<div role="menu" aria-label="Settings" className="ui-menu"><div className="px-3 pb-1 pt-2 text-[10px] font-semibold uppercase tracking-wider text-slate-500">Appearance</div>{(['LIGHT','DARK','SYSTEM'] as ThemePreference[]).map(option=><button key={option} role="menuitemradio" aria-checked={theme===option} onClick={()=>{setTheme(option);setOpenMenu(null)}} className="flex items-center justify-between"><span>{option[0]+option.slice(1).toLowerCase()}</span>{theme===option&&<CheckCircle className="w-3.5 h-3.5 text-blue-600"/>}</button>)}</div>}</div>
           <input ref={openProjectInput} type="file" accept=".cctvproj,application/json" onChange={handleOpenProject} className="hidden" />
         </div>
@@ -585,12 +579,14 @@ export default function App() {
         onClose={() => setIsAvailableIpFinderOpen(false)}
       />
 
-      {/* Section 15: Customer Site Survey & Sign-Off Report */}
+      {/* Milestone 12: contextual reporting and field documentation */}
       {project && (
         <SiteSurveyReportModal
           isOpen={isSiteSurveyModalOpen}
           onClose={() => setIsSiteSurveyModalOpen(false)}
           project={project}
+          selectedDeviceIds={[...selectedDeviceIds]}
+          filteredDeviceIds={filteredDevices.map(device=>device.id)}
         />
       )}
 
@@ -625,16 +621,6 @@ export default function App() {
         onClose={() => setIsLegacyModalOpen(false)}
         onSubmit={handleLegacyOnboard}
       />
-
-      {/* Section 13.5 & 48: Site Audit & Project Export */}
-      {project && (
-        <AuditReportModal
-          isOpen={isAuditModalOpen}
-          onClose={() => setIsAuditModalOpen(false)}
-          project={project}
-          auditLogs={auditLogs}
-        />
-      )}
 
       {/* Device Configuration & ONVIF Studio */}
       <NetworkConfigModal
