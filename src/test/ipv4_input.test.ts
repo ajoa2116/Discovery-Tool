@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { AdvancedScanPlanner } from '../core/engine/advanced_scan.ts';
 import { emptyAdvancedScanRequest } from '../shared/advanced_scan.ts';
-import { acceptsOctet, canonicalIPv4, nextOctetForKey, parseIPv4Paste, shouldAdvanceOctet, splitIPv4 } from '../ui/components/IPv4Input.tsx';
+import { acceptsOctet, canonicalIPv4, nextOctetForKey, parseIPv4Paste, shouldAdvanceOctet, splitIPv4, validPrefix } from '../ui/components/IPv4Input.tsx';
 
 let passed = 0;
 let failed = 0;
@@ -20,6 +20,8 @@ const pasted = parseIPv4Paste('192.168.145.45');
 assert(pasted?.octets.join('|') === '192|168|145|45', 'complete IPv4 paste populates four octets');
 const cidr = parseIPv4Paste('192.168.145.0/24');
 assert(cidr?.octets.join('.') === '192.168.145.0' && cidr.prefix === '24', 'CIDR paste separates IPv4 octets and prefix');
+assert(validPrefix('16', 16, 32) && validPrefix('32', 16, 32), 'CIDR boundary prefixes /16 and /32 are accepted');
+assert(!validPrefix('15', 16, 32) && !validPrefix('33', 16, 32) && !validPrefix('', 16, 32), 'CIDR prefixes below /16, above /32, and incomplete are rejected');
 assert(canonicalIPv4(['192', '168', '145', '045']) === '192.168.145.45', 'complete output is canonical IPv4');
 assert(canonicalIPv4(['192', '168', '', '45']) === null, 'incomplete editing is retained without being treated as a complete address');
 
@@ -38,6 +40,7 @@ assert(!new AdvancedScanPlanner().plan(request, []).valid, 'authoritative planne
 const component = readFileSync('src/ui/components/IPv4Input.tsx', 'utf8');
 const modal = readFileSync('src/ui/components/AdvancedScanModal.tsx', 'utf8');
 assert(component.includes('onPaste={paste}') && component.includes("event.key") && component.includes("inputMode=\"numeric\""), 'reusable control wires paste, keyboard navigation, and numeric mobile input');
+assert(component.includes('placeholder="24"') && component.includes('prefixTouched && !prefixValid'), 'CIDR prefix has a distinct visible entry area and defers its error until blur');
 assert(modal.includes('assistFrom={row.first}') && modal.includes('incompleteTarget'), 'Advanced Scan uses Start-prefix assistance and blocks incomplete target submission without backend churn');
 
 console.log(`\nIPv4 input summary: ${passed} passed, ${failed} failed`);

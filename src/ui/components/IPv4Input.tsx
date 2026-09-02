@@ -34,6 +34,10 @@ export function shouldAdvanceOctet(value: string): boolean {
   return value.length === 3 || (value.length === 2 && Number(value) > 25);
 }
 
+export function validPrefix(value: string, minimum = 0, maximum = 32): boolean {
+  return /^\d{1,2}$/.test(value) && Number(value) >= minimum && Number(value) <= maximum;
+}
+
 interface IPv4InputProps {
   label: string;
   value: string;
@@ -50,8 +54,10 @@ export const IPv4Input: React.FC<IPv4InputProps> = ({
   label, value, onChange, assistFrom, prefix, onPrefixChange, prefixMin = 0, prefixMax = 32, onValidityChange,
 }) => {
   const [octets, setOctets] = useState<IPv4Octets>(() => splitIPv4(value));
-  const [touched, setTouched] = useState(false);
+  const [addressTouched, setAddressTouched] = useState(false);
+  const [prefixTouched, setPrefixTouched] = useState(false);
   const inputs = useRef<Array<HTMLInputElement | null>>([]);
+  const prefixInput = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     if (value && value !== canonicalIPv4(octets)) setOctets(splitIPv4(value));
@@ -65,7 +71,7 @@ export const IPv4Input: React.FC<IPv4InputProps> = ({
     setOctets([a, b, c, '']);
   }, [assistFrom, value]);
 
-  const prefixValid = prefix === undefined || (/^\d{1,2}$/.test(prefix) && Number(prefix) >= prefixMin && Number(prefix) <= prefixMax);
+  const prefixValid = prefix === undefined || validPrefix(prefix, prefixMin, prefixMax);
   const addressValid = canonicalIPv4(octets) !== null;
   useEffect(() => onValidityChange?.(addressValid && prefixValid), [addressValid, prefixValid, onValidityChange]);
 
@@ -85,7 +91,7 @@ export const IPv4Input: React.FC<IPv4InputProps> = ({
 
   return <div className="min-w-0">
     <span className="mb-1 block text-[10px] font-semibold text-slate-500">{label}</span>
-    <div role="group" aria-label={label} className={`flex min-w-[220px] items-center rounded border bg-white px-2 font-mono text-xs dark:bg-slate-950 ${touched && (!addressValid || !prefixValid) ? 'border-rose-500' : 'border-slate-300 dark:border-slate-700'}`}>
+    <div role="group" aria-label={label} className={`flex min-w-[220px] items-center rounded border bg-white px-2 font-mono text-xs dark:bg-slate-950 ${(addressTouched && !addressValid) || (prefixTouched && !prefixValid) ? 'border-rose-500' : 'border-slate-300 dark:border-slate-700'}`}>
       {octets.map((part, index) => <React.Fragment key={index}>
         {index > 0 && <span aria-hidden="true" className="text-slate-400">.</span>}
         <input
@@ -95,7 +101,7 @@ export const IPv4Input: React.FC<IPv4InputProps> = ({
           pattern="[0-9]*"
           value={part}
           onPaste={paste}
-          onBlur={() => setTouched(true)}
+          onBlur={() => setAddressTouched(true)}
           onChange={event => {
             const nextValue = event.target.value.replace(/\D/g, '');
             if (!acceptsOctet(nextValue)) return;
@@ -106,7 +112,8 @@ export const IPv4Input: React.FC<IPv4InputProps> = ({
           }}
           onKeyDown={event => {
             const nextIndex = nextOctetForKey(index, event.key, part);
-            if (nextIndex !== index) { event.preventDefault(); inputs.current[nextIndex]?.focus(); }
+            if (index === 3 && prefix !== undefined && (event.key === '.' || event.key === '/')) { event.preventDefault(); prefixInput.current?.focus(); }
+            else if (nextIndex !== index) { event.preventDefault(); inputs.current[nextIndex]?.focus(); }
           }}
           className="w-9 bg-transparent py-2 text-center outline-none"
         />
@@ -114,19 +121,22 @@ export const IPv4Input: React.FC<IPv4InputProps> = ({
       {prefix !== undefined && <>
         <span aria-hidden="true" className="px-1 text-slate-400">/</span>
         <input
+          ref={prefixInput}
           aria-label={`${label} prefix`}
           inputMode="numeric"
+          placeholder="24"
           value={prefix}
-          onBlur={() => setTouched(true)}
+          onBlur={() => setPrefixTouched(true)}
+          onKeyDown={event => { if (event.key === 'Backspace' && prefix === '') inputs.current[3]?.focus(); }}
           onChange={event => {
             const next = event.target.value.replace(/\D/g, '').slice(0, 2);
             if (next === '' || Number(next) <= 32) onPrefixChange?.(next);
           }}
-          className="w-8 bg-transparent py-2 text-center outline-none"
+          className="my-1 w-10 rounded border border-slate-300 bg-slate-50 py-1 text-center outline-none focus:border-blue-500 dark:border-slate-600 dark:bg-slate-800"
         />
       </>}
     </div>
-    {touched && !addressValid && <span className="mt-1 block text-[10px] text-rose-600">Enter all four octets from 0 to 255.</span>}
-    {touched && addressValid && !prefixValid && <span className="mt-1 block text-[10px] text-rose-600">Prefix must be /{prefixMin} through /{prefixMax}.</span>}
+    {addressTouched && !addressValid && <span className="mt-1 block text-[10px] text-rose-600">Enter all four octets from 0 to 255.</span>}
+    {prefixTouched && !prefixValid && <span className="mt-1 block text-[10px] text-rose-600">Prefix must be /{prefixMin} through /{prefixMax}.</span>}
   </div>;
 };
