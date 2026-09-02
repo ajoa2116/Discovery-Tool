@@ -3,6 +3,7 @@ import { appStateDb } from '../storage/app_db.ts';
 import { projectDb } from '../storage/project_db.ts';
 import { NodeOnvifWsDiscoveryTransport, OnvifDiscoveryTransport } from '../drivers/ws_discovery_transport.ts';
 import { DeviceEnricher, WindowsDeviceEnricher } from './device_enrichment.ts';
+import { LocalHostIdentity } from '../network/local_host_identity.ts';
 
 export interface ActiveProbeOptions {
   signal?: AbortSignal;
@@ -17,6 +18,7 @@ export class Phase3ActiveProbing {
     transport: OnvifDiscoveryTransport = new NodeOnvifWsDiscoveryTransport(),
     enricher: DeviceEnricher = new WindowsDeviceEnricher(),
     options: ActiveProbeOptions = {},
+    localHost: LocalHostIdentity = LocalHostIdentity.fromInterfaces(interfaces),
   ): Promise<{
     probedDevices: Device[];
     logs: string[];
@@ -31,6 +33,10 @@ export class Phase3ActiveProbing {
       signal: options.signal,
       timeoutMs: options.timeoutMs,
       onDevice: (device) => {
+        if (!localHost.isRemoteDevice(device)) {
+          logs.push(`[Phase 3] Ignored local-host response at ${device.network.ipAddress}.`);
+          return;
+        }
         const isNew = !projectDb.getDevices().some(existing => existing.id === device.id || Boolean(
           (device.anchor.macAddress && existing.anchor.macAddress?.toLowerCase() === device.anchor.macAddress.toLowerCase()) ||
           (device.anchor.onvifEndpointUuid && existing.anchor.onvifEndpointUuid?.toLowerCase() === device.anchor.onvifEndpointUuid.toLowerCase()) ||

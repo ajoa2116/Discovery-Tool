@@ -8,6 +8,7 @@ import { Phase6TelemetryVerification } from './phase6_telemetry.ts';
 import { projectDb } from '../storage/project_db.ts';
 import { NodeOnvifWsDiscoveryTransport, OnvifDiscoveryTransport } from '../drivers/ws_discovery_transport.ts';
 import { DeviceEnricher, WindowsDeviceEnricher } from './device_enrichment.ts';
+import { LocalHostIdentity } from '../network/local_host_identity.ts';
 
 export type PipelineEventCallback = (event: {
   type: 'PHASE_START' | 'PHASE_PROGRESS' | 'PHASE_COMPLETE' | 'PIPELINE_COMPLETE' | 'DEVICE_DISCOVERED' | 'DEVICE_ENRICHED' | 'SCAN_COMPLETE' | 'SCAN_CANCELLED' | 'LOG';
@@ -83,6 +84,7 @@ export class BatchExecutionPipeline {
 
   private isRunning = false;
   private currentInterfaces: NICInfo[] = [];
+  private localHost = LocalHostIdentity.fromAddresses([]);
   private callbacks: PipelineEventCallback[] = [];
   private abortController: AbortController | null = null;
   private readonly passiveDiscovery: PassiveDiscoveryProvider;
@@ -211,6 +213,7 @@ export class BatchExecutionPipeline {
 
     const result = await Phase1Topology.execute();
     this.currentInterfaces = result.interfaces;
+    this.localHost = LocalHostIdentity.fromInterfaces(result.interfaces);
     phase.logs.push(...result.logs);
     phase.progressPct = 100;
     phase.status = 'COMPLETED';
@@ -225,6 +228,8 @@ export class BatchExecutionPipeline {
     this.emit({ type: 'PHASE_START', phaseNumber: 2 });
 
     const result = await Phase2PassiveListener.execute(this.currentInterfaces, this.passiveDiscovery, signal);
+    const localHost = LocalHostIdentity.fromAddresses([...this.localHost.values(), ...this.currentInterfaces.map(value => value.ipAddress)]);
+    result.devices = result.devices.filter(device => localHost.isRemoteDevice(device));
     for (const device of result.devices) projectDb.upsertDevice(device);
     phase.logs.push(...result.logs);
     phase.devicesFoundCount = result.devices.length;
@@ -253,7 +258,7 @@ export class BatchExecutionPipeline {
         phaseNumber: 3,
         data: { device, changedFields, project: projectDb.getProject() },
       }),
-    });
+    }, LocalHostIdentity.fromAddresses([...this.localHost.values(), ...this.currentInterfaces.map(value => value.ipAddress)]));
     phase.logs.push(...result.logs);
     phase.devicesFoundCount = result.probedDevices.length;
     phase.progressPct = 100;

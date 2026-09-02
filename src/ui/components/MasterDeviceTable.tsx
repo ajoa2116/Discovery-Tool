@@ -16,6 +16,7 @@ import {
   Network,
   Info,
 } from 'lucide-react';
+import { FloatingDeviceActionsMenu } from './FloatingDeviceActionsMenu.tsx';
 
 interface MasterDeviceTableProps {
   devices: Device[];
@@ -54,10 +55,10 @@ export const MasterDeviceTable: React.FC<MasterDeviceTableProps> = ({
   const [editingNotesId, setEditingNotesId] = useState<string | null>(null);
   const [tempNotes, setTempNotes] = useState<string>('');
 
-  const [openActionMenuId, setOpenActionMenuId] = useState<string | null>(null);
+  const [openActionMenu, setOpenActionMenu] = useState<{ device: Device; anchor: DOMRect } | null>(null);
 
-  const startEditName = (dev: Device, e: React.MouseEvent) => {
-    e.stopPropagation();
+  const startEditName = (dev: Device, e?: React.MouseEvent) => {
+    e?.stopPropagation();
     setEditingNameId(dev.id);
     setTempName(dev.technician?.name || dev.anchor.model || dev.anchor.vendor);
   };
@@ -69,8 +70,8 @@ export const MasterDeviceTable: React.FC<MasterDeviceTableProps> = ({
     setEditingNameId(null);
   };
 
-  const startEditNotes = (dev: Device, e: React.MouseEvent) => {
-    e.stopPropagation();
+  const startEditNotes = (dev: Device, e?: React.MouseEvent) => {
+    e?.stopPropagation();
     setEditingNotesId(dev.id);
     setTempNotes(dev.technician?.notes || '');
   };
@@ -197,7 +198,7 @@ export const MasterDeviceTable: React.FC<MasterDeviceTableProps> = ({
                 const isSelected = selectedDeviceIds.has(dev.id);
                 const isEditingName = editingNameId === dev.id;
                 const isEditingNotes = editingNotesId === dev.id;
-                const isActionOpen = openActionMenuId === dev.id;
+                const isActionOpen = openActionMenu?.device.id === dev.id;
 
                 return (
                   <tr
@@ -307,72 +308,9 @@ export const MasterDeviceTable: React.FC<MasterDeviceTableProps> = ({
 
                     {/* 10. Actions (Section 31) */}
                     <td className="py-2 px-3 text-right relative" onClick={(e) => e.stopPropagation()}>
-                      <button aria-label={`Actions for ${dev.technician?.name||dev.anchor.vendor}`} onClick={() => setOpenActionMenuId(isActionOpen ? null : dev.id)} className="p-1.5 rounded hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-500"><MoreVertical className="w-4 h-4" /></button>
+                      <button aria-label={`Actions for ${dev.technician?.name||dev.anchor.vendor}`} aria-haspopup="menu" aria-expanded={isActionOpen} onClick={(event) => setOpenActionMenu(isActionOpen ? null : { device: dev, anchor: event.currentTarget.getBoundingClientRect() })} className="p-1.5 rounded hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-500"><MoreVertical className="w-4 h-4" /></button>
 
                       {/* Dropdown Action Menu (Section 31) */}
-                      {isActionOpen && (
-                        <div className="absolute right-3 top-10 z-30 w-48 bg-slate-950 border border-slate-700 rounded-xl shadow-2xl p-1.5 text-left text-xs space-y-1">
-                          <button
-                            onClick={() => {
-                              onOpenBrowser(dev, 'SYSTEM');
-                              setOpenActionMenuId(null);
-                            }}
-                            className="w-full text-left px-2.5 py-1.5 rounded hover:bg-slate-800 text-slate-200 flex items-center gap-2"
-                          >
-                            <Globe className="w-3.5 h-3.5 text-sky-400" />Open
-                          </button>
-
-                          <button
-                            onClick={() => {
-                              onInspectDevice(dev);
-                              setOpenActionMenuId(null);
-                            }}
-                            className="w-full text-left px-2.5 py-1.5 rounded hover:bg-slate-800 text-slate-200 flex items-center gap-2"
-                          >
-                            <Video className="w-3.5 h-3.5 text-blue-400" />Details
-                          </button>
-
-                          <button onClick={()=>{onDiagnose(dev);setOpenActionMenuId(null)}} className="w-full text-left px-2.5 py-1.5 rounded hover:bg-slate-800 text-slate-200 flex items-center gap-2"><Activity className="w-3.5 h-3.5 text-emerald-400"/>Diagnose</button>
-                          {dev.status==='DIFFERENT_SUBNET'&&<button onClick={()=>{onPair(dev);setOpenActionMenuId(null)}} className="w-full text-left px-2.5 py-1.5 rounded hover:bg-slate-800 text-slate-200 flex items-center gap-2"><Network className="w-3.5 h-3.5 text-purple-400"/>Pair PC to Camera Network</button>}
-
-                          <div className="border-t border-slate-800 my-1" />
-
-                          <button
-                            onClick={(e) => {
-                              startEditName(dev, e);
-                              setOpenActionMenuId(null);
-                            }}
-                            className="w-full text-left px-2.5 py-1.5 rounded hover:bg-slate-800 text-slate-200 flex items-center gap-2"
-                          >
-                            <Edit2 className="w-3.5 h-3.5 text-slate-400" />
-                            Rename Device
-                          </button>
-
-                          <button
-                            onClick={(e) => {
-                              startEditNotes(dev, e);
-                              setOpenActionMenuId(null);
-                            }}
-                            className="w-full text-left px-2.5 py-1.5 rounded hover:bg-slate-800 text-slate-200 flex items-center gap-2"
-                          >
-                            <StickyNote className="w-3.5 h-3.5 text-slate-400" />
-                            Edit Notes
-                          </button>
-
-                          <div className="border-t border-slate-800 my-1" />
-
-                          <button
-                            onClick={() => {
-                              onConfigureDevice(dev);
-                              setOpenActionMenuId(null);
-                            }}
-                            className="w-full text-left px-2.5 py-1.5 rounded hover:bg-slate-800 text-slate-200 flex items-center gap-2"
-                          >
-                            <Shield className="w-3.5 h-3.5 text-purple-400" />
-                            Device Configuration
-                          </button>
-                        </div>
-                      )}
                     </td>
                   </tr>
                 );
@@ -381,6 +319,7 @@ export const MasterDeviceTable: React.FC<MasterDeviceTableProps> = ({
           </tbody>
         </table>
       </div>
+      {openActionMenu && <FloatingDeviceActionsMenu device={openActionMenu.device} anchor={openActionMenu.anchor} onClose={() => setOpenActionMenu(null)} onOpen={device => onOpenBrowser(device, 'SYSTEM')} onDetails={onInspectDevice} onDiagnose={onDiagnose} onPair={onPair} onRename={device => startEditName(device)} onNotes={device => startEditNotes(device)} onConfigure={onConfigureDevice}/>}
     </div>
   );
 };
