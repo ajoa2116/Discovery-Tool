@@ -45,7 +45,7 @@ import {
   ChevronDown,
 } from 'lucide-react';
 import { applyTheme, persistTheme, readThemePreference, ThemePreference } from './theme.ts';
-import { normalizeProjectDownloadFilename } from './project_download.ts';
+import { saveProjectDownload } from './project_download.ts';
 
 export default function App() {
   // Regression markers: obsolete useState<TaskItem[]>([]) activity state and unsafe global Available IPs finder are intentionally absent.
@@ -225,16 +225,20 @@ export default function App() {
       await handleCreateFromCurrent();
       return;
     }
-    const result = await postProjectAction('/api/project/save-content') as { filename: string; content: string };
-    const fallback = projectFilename || result.filename;
-    const requested = saveAs ? window.prompt('Save project as:', fallback) : fallback;
-    if (saveAs && requested === null) return;
-    const filename = normalizeProjectDownloadFilename(requested, fallback);
-    const url = URL.createObjectURL(new Blob([result.content], { type: 'application/json' }));
-    const anchor = document.createElement('a');
-    anchor.href = url; anchor.download = filename; anchor.click();
-    URL.revokeObjectURL(url);
-    setProjectFilename(filename);
+    const filename = await saveProjectDownload({
+      saveAs,
+      currentFilename: projectFilename,
+      suggestedFilename: `${project?.name || 'CCTV_Project'}.cctvproj`,
+      chooseFilename: fallback => window.prompt('Save project as:', fallback),
+      fetchContent: async () => (await postProjectAction('/api/project/save-content') as { content: string }).content,
+      download: (content, downloadFilename) => {
+        const url = URL.createObjectURL(new Blob([content], { type: 'application/json' }));
+        const anchor = document.createElement('a');
+        anchor.href = url; anchor.download = downloadFilename; anchor.click();
+        URL.revokeObjectURL(url);
+      },
+    });
+    if (filename) setProjectFilename(filename);
   };
 
   // Section 14: Fast Scan Trigger
