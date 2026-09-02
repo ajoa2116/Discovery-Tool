@@ -1,0 +1,7 @@
+export type AdvancedScanMethod='ONVIF'|'NEIGHBOR'|'PING'|'TCP';
+export type AdvancedScanPerformance='CONSERVATIVE'|'NORMAL'|'FAST';
+export type AdvancedTargetInput={type:'CIDR';cidr:string}|{type:'RANGE';start:string;end:string};
+export interface AdvancedScanRequest{adapterIndexes:number[];targets:AdvancedTargetInput[];methods:AdvancedScanMethod[];portPresets:Array<'CAMERA_COMMON'|'WEB'|'RTSP'>;customPorts:number[];filters:{macPrefix?:string;manufacturer?:string;onlyLikelyCameras:boolean;includeUnknownDevices:boolean};performance:AdvancedScanPerformance}
+export interface AdvancedScanPlan{mode:'QUICK_FALLBACK'|'ADVANCED';request:AdvancedScanRequest;adapterIndexes:number[];normalizedTargets:string[];methods:AdvancedScanMethod[];ports:number[];routeSummary:Array<{target:string;classification:'DIRECTLY_CONNECTED'|'ROUTABLE'|'NO_KNOWN_ROUTE'|'UNKNOWN';adapterIndex?:number}>;estimatedTargetCount:number;maximumTcpChecks:number;warnings:string[];valid:boolean;errors:string[]}
+export interface AdvancedScanStatus{running:boolean;mode:'IDLE'|'QUICK_FALLBACK'|'ADVANCED';startedAt?:string;completedAt?:string;targetCount:number;completedTargets:number;findings:number;cancelled:boolean;message:string}
+export const emptyAdvancedScanRequest=():AdvancedScanRequest=>({adapterIndexes:[],targets:[],methods:[],portPresets:[],customPorts:[],filters:{onlyLikelyCameras:false,includeUnknownDevices:true},performance:'NORMAL'});

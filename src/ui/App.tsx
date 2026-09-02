@@ -20,6 +20,7 @@ import { DeviceInspectorDrawer } from './components/DeviceInspectorDrawer.tsx';
 import { BulkReIpModal } from './components/BulkReIpModal.tsx';
 import { BulkDeviceConfigurationModal } from './components/BulkDeviceConfigurationModal.tsx';
 import { SiteSurveyReportModal } from './components/SiteSurveyReportModal.tsx';
+import { AdvancedScanModal } from './components/AdvancedScanModal.tsx';
 import { PairNetworkModal } from './components/PairNetworkModal.tsx';
 import { SettingsMenu, UiPreflight } from './components/SettingsMenu.tsx';
 import {
@@ -56,6 +57,7 @@ export default function App() {
   const openProjectInput = useRef<HTMLInputElement>(null);
   const [interfaces, setInterfaces] = useState<NICInfo[]>([]);
   const [isScanning, setIsScanning] = useState(false);
+  const [advancedScanOpen, setAdvancedScanOpen] = useState(false);
   const [diagnosticRefresh, setDiagnosticRefresh] = useState<{ enabled: boolean; running: boolean; intervalMs: number }>({ enabled: false, running: false, intervalMs: 30000 });
   const [pairSession, setPairSession] = useState<PairSessionState | null>(null);
   const [pairDevice, setPairDevice] = useState<Device | null>(null);
@@ -417,10 +419,10 @@ export default function App() {
         {/* Workspace Toolbar: Search, Filters & Network Adapter Info (Sections 7, 8, 24) */}
         <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg p-2 space-y-2">
           <div className="flex items-center gap-2">
-          <div className="relative flex shrink-0">
+          <div className="relative flex shrink-0" onMouseDown={event=>event.stopPropagation()}>
             <button onClick={handleScanNetwork} className={`h-9 flex items-center gap-2 rounded-l-md px-4 font-bold text-xs text-white ${isScanning?'bg-red-600 hover:bg-red-500':'bg-blue-600 hover:bg-blue-500'}`}>{isScanning?<><RefreshCw className="w-4 h-4 animate-spin"/>Stop</>:<><Play className="w-4 h-4 fill-current"/>Scan</>}</button>
             {!isScanning&&<button aria-label="Scan choices" aria-haspopup="menu" aria-expanded={openMenu==='SCAN'} onClick={()=>setOpenMenu(openMenu==='SCAN'?null:'SCAN')} className="h-9 rounded-r-md border-l border-blue-500 bg-blue-600 px-2 text-white hover:bg-blue-500"><ChevronDown className="w-4 h-4"/></button>}
-            {openMenu==='SCAN'&&!isScanning&&<div role="menu" aria-label="Scan choices" className="ui-menu left-0 right-auto top-10 min-w-64"><button onClick={()=>{void handleScanNetwork();setOpenMenu(null)}}><span className="block font-semibold">Quick Scan <span className="font-normal text-blue-600">· Default</span></span><span className="block text-[10px] text-slate-500">Fast discovery on local network</span></button><button disabled aria-disabled="true" className="cursor-not-allowed opacity-50"><span className="block font-semibold">Advanced Scan — Coming Soon</span><span className="block text-[10px] text-slate-500">Deep scan across subnets</span></button><button onClick={()=>setOpenMenu(null)}><span className="block font-semibold">Scan Options...</span><span className="block text-[10px] text-slate-500">No additional options available</span></button></div>}
+            {openMenu==='SCAN'&&!isScanning&&<div role="menu" aria-label="Scan choices" className="ui-menu left-0 right-auto top-10 min-w-72"><button onClick={()=>{void handleScanNetwork();setOpenMenu(null)}}><span className="block font-semibold">Quick Scan <span className="font-normal text-blue-600">· Default</span></span><span className="block text-[10px] text-slate-500">Fast discovery on local network</span></button><button onClick={()=>{setAdvancedScanOpen(true);setOpenMenu(null)}}><span className="block font-semibold">Advanced Scan</span><span className="block text-[10px] text-slate-500">Customize adapters, ranges, ports, and discovery methods</span></button></div>}
           </div>
           {/* Search Box (Section 7) */}
           <div className="flex-1 min-w-[220px] relative">
@@ -582,14 +584,16 @@ export default function App() {
 
       {/* Milestone 12: contextual reporting and field documentation */}
       {project && (
-        <SiteSurveyReportModal
+        <><SiteSurveyReportModal
           isOpen={isSiteSurveyModalOpen}
           onClose={() => setIsSiteSurveyModalOpen(false)}
           project={project}
           selectedDeviceIds={[...selectedDeviceIds]}
           filteredDeviceIds={filteredDevices.map(device=>device.id)}
         />
+        </>
       )}
+      <AdvancedScanModal open={advancedScanOpen} onClose={()=>setAdvancedScanOpen(false)} onStarted={()=>{setIsScanning(true);setHasCompletedScan(false)}}/>
 
       {/* Section 12: Duplicate Assistant (Separate Window / Drawer) */}
       {project && (

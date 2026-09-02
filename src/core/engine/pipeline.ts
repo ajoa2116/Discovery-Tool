@@ -130,8 +130,8 @@ export class BatchExecutionPipeline {
     return true;
   }
 
-  public async runDiscoveryScan(): Promise<void> {
-    if (this.isRunning) return;
+  public async runDiscoveryScan(options: { adapterNames?: string[]; emitTerminalEvent?: boolean } = {}): Promise<'COMPLETED'|'CANCELLED'|'BUSY'> {
+    if (this.isRunning) return 'BUSY';
     this.isRunning = true;
     this.abortController = new AbortController();
     const signal = this.abortController.signal;
@@ -143,15 +143,17 @@ export class BatchExecutionPipeline {
         p.logs = [];
       }
       await this.runPhase1();
+      if (options.adapterNames?.length) this.currentInterfaces = this.currentInterfaces.filter(nic => options.adapterNames!.includes(nic.name));
       if (!signal.aborted) await this.runPhase2(signal);
       if (!signal.aborted) await this.runPhase3(signal);
       if (!signal.aborted) await this.runPhase4();
 
-      if (signal.aborted) {
+      if (signal.aborted && options.emitTerminalEvent !== false) {
         this.emit({ type: 'SCAN_CANCELLED', data: { project: projectDb.getProject() } });
-      } else {
+      } else if (options.emitTerminalEvent !== false) {
         this.emit({ type: 'SCAN_COMPLETE', data: { project: projectDb.getProject() } });
       }
+      return signal.aborted ? 'CANCELLED' : 'COMPLETED';
     } finally {
       this.abortController = null;
       this.isRunning = false;

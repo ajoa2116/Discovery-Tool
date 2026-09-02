@@ -20,6 +20,7 @@ import { CameraConfigurationService } from '../core/network/camera_configuration
 import { PreferredCameraConfigurationProvider } from '../core/drivers/vendor_configuration_provider.ts';
 import { createReportRouter } from './report_routes.ts';
 import { ShutdownCoordinator, WindowsPreflightService } from '../core/readiness/field_readiness.ts';
+import { AdvancedScanService } from '../core/engine/advanced_scan.ts';
 
 const app = express();
 const server = createServer(app);
@@ -33,6 +34,7 @@ const cameraNetworkService = new CameraNetworkConfigurationService();
 const duplicateRemediationService = new DuplicateRemediationService(projectDb,osVault,cameraNetworkService);
 const cameraConfigurationService = new CameraConfigurationService(projectDb,osVault,new PreferredCameraConfigurationProvider());
 const bulkNetworkService = new BulkNetworkConfigurationService(projectDb, osVault, cameraNetworkService);
+const advancedScanService = new AdvancedScanService();
 const cameraNetworkControllers = new Map<string, AbortController>();
 const preflightService = new WindowsPreflightService({ portAvailable: async port => port === 3001 && server.listening });
 let preflightCache: { expiresAt: number; value: Awaited<ReturnType<WindowsPreflightService['run']>> } | null = null;
@@ -173,7 +175,7 @@ app.post('/api/bulk/network/:batchId/retry', async(req,res)=>{try{res.json(await
 
 // 6-Phase Pipeline
 app.post('/api/discovery/start', (req, res) => {
-  if (pipelineEngine.getIsRunning()) {
+  if (pipelineEngine.getIsRunning() || advancedScanService.getStatus().running) {
     return res.status(409).json({ error: 'A discovery scan is already running.' });
   }
   res.status(202).json({ message: 'ONVIF discovery scan started.' });
@@ -182,6 +184,10 @@ app.post('/api/discovery/start', (req, res) => {
     broadcast({ type: 'SCAN_FAILED', data: { message: error instanceof Error ? error.message : String(error) } });
   });
 });
+
+app.get('/api/discovery/advanced/adapters',async(_req,res)=>{try{res.json(await advancedScanService.listAdapters())}catch(error){res.status(500).json({error:error instanceof Error?error.message:'Unable to inspect adapters.'})}});
+app.post('/api/discovery/advanced/validate',async(req,res)=>{try{const plan=await advancedScanService.validate(req.body);res.status(plan.valid?200:400).json(plan)}catch(error){res.status(400).json({error:error instanceof Error?error.message:'Advanced Scan validation failed.'})}});
+app.post('/api/discovery/advanced/start',async(req,res)=>{try{if(pipelineEngine.getIsRunning()||advancedScanService.getStatus().running)return res.status(409).json({error:'A discovery scan is already running.'});const plan=await advancedScanService.validate(req.body);if(!plan.valid)return res.status(400).json(plan);res.status(202).json({plan,message:plan.mode==='QUICK_FALLBACK'?'Standard Quick Scan started.':'Advanced Scan started.'});if(plan.mode==='QUICK_FALLBACK'){void pipelineEngine.runDiscoveryScan();return}const adapters=await advancedScanService.listAdapters(),names=adapters.filter(a=>plan.adapterIndexes.includes(a.interfaceIndex)).map(a=>a.interfaceAlias);void(async()=>{try{if(names.length&&(plan.methods.includes('ONVIF')||plan.methods.includes('NEIGHBOR'))){const pipelineResult=await pipelineEngine.runDiscoveryScan({adapterNames:names,emitTerminalEvent:false});if(pipelineResult==='CANCELLED'){broadcast({type:'SCAN_CANCELLED',data:{project:projectDb.getProject(),scanMode:'ADVANCED'}});return}}await advancedScanService.execute(plan,{onDevice:(device,isNew)=>broadcast({type:'DEVICE_DISCOVERED',data:{device,isNew,project:projectDb.getProject(),scanMode:'ADVANCED'}}),onComplete:status=>broadcast({type:status.cancelled?'SCAN_CANCELLED':'SCAN_COMPLETE',data:{status,project:projectDb.getProject(),scanMode:'ADVANCED'}})})}catch(error){broadcast({type:'SCAN_FAILED',data:{message:error instanceof Error?error.message:String(error),scanMode:'ADVANCED'}})}})()}catch(error){res.status(400).json({error:error instanceof Error?error.message:'Advanced Scan could not start.'})}});
 
 // One production reporting boundary for preview and export prevents renderer drift.
 app.use('/api/reports', createReportRouter({ getSession: () => projectDb.getSession(), getAuditLogs: () => appStateDb.getAuditLogs() }));
@@ -262,7 +268,7 @@ app.put('/api/connect/:deviceId/credentials/:credentialId', async(req,res)=>{try
 app.delete('/api/connect/:deviceId/credentials/:credentialId', async(req,res)=>{try{res.json(await connectService.deleteCredential(req.params.deviceId,req.params.credentialId))}catch(error:any){res.status(400).json({error:error.message})}});
 
 app.post('/api/discovery/stop', (req, res) => {
-  const stopped = pipelineEngine.stopDiscovery();
+  const pipelineStopped = pipelineEngine.stopDiscovery(), advancedStopped = advancedScanService.stop(), stopped = pipelineStopped || advancedStopped;
   res.status(stopped ? 202 : 409).json({
     stopped,
     message: stopped ? 'Discovery cancellation requested.' : 'No discovery scan is running.',
@@ -270,7 +276,7 @@ app.post('/api/discovery/stop', (req, res) => {
 });
 
 app.get('/api/discovery/status', (req, res) => {
-  res.json({ running: pipelineEngine.getIsRunning(), phases: pipelineEngine.getStates().slice(0, 4) });
+  res.json({ running: pipelineEngine.getIsRunning() || advancedScanService.getStatus().running, phases: pipelineEngine.getStates().slice(0, 4), advanced: advancedScanService.getStatus() });
 });
 
 app.get('/api/system/about', (_req, res) => res.json({ application: 'CCTV Network Assistant', version: '1.6.0', runtime: process.version, platform: process.platform }));
