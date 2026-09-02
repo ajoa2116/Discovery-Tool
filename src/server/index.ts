@@ -18,7 +18,7 @@ import { ConnectService } from '../core/connect/connect_service.ts';
 import { CameraNetworkConfigurationService } from '../core/network/camera_network_service.ts';
 import { CameraConfigurationService } from '../core/network/camera_configuration_service.ts';
 import { PreferredCameraConfigurationProvider } from '../core/drivers/vendor_configuration_provider.ts';
-import { ReportService } from '../core/reporting/report_service.ts';
+import { createReportRouter } from './report_routes.ts';
 import { ShutdownCoordinator, WindowsPreflightService } from '../core/readiness/field_readiness.ts';
 
 const app = express();
@@ -34,12 +34,11 @@ const duplicateRemediationService = new DuplicateRemediationService(projectDb,os
 const cameraConfigurationService = new CameraConfigurationService(projectDb,osVault,new PreferredCameraConfigurationProvider());
 const bulkNetworkService = new BulkNetworkConfigurationService(projectDb, osVault, cameraNetworkService);
 const cameraNetworkControllers = new Map<string, AbortController>();
-const reportService = new ReportService();
 const preflightService = new WindowsPreflightService({ portAvailable: async port => port === 3001 && server.listening });
 let preflightCache: { expiresAt: number; value: Awaited<ReturnType<WindowsPreflightService['run']>> } | null = null;
 const getPreflight = async () => { if (preflightCache && preflightCache.expiresAt > Date.now()) return preflightCache.value; const value = await preflightService.run(); preflightCache = { expiresAt: Date.now() + 60_000, value }; return value; };
 
-app.use(cors());
+app.use(cors({ exposedHeaders: ['X-CCTV-Report-Renderer', 'Content-Disposition'] }));
 app.use(express.json());
 
 // Broadcast WebSocket message to all connected clients
@@ -184,9 +183,8 @@ app.post('/api/discovery/start', (req, res) => {
   });
 });
 
-// Read-only technician reporting. Native PDF is deterministic; JSON is a safe report, not a project bundle.
-app.post('/api/reports/preview',(req,res)=>{try{res.json(reportService.build(projectDb.getSession(),appStateDb.getAuditLogs(),req.body))}catch(error:any){res.status(400).json({error:error.message})}});
-app.post('/api/reports/export/:format',(req,res)=>{try{const model=reportService.build(projectDb.getSession(),appStateDb.getAuditLogs(),req.body),format=String(req.params.format).toLowerCase();if(format==='pdf'){const data=reportService.pdf(model);res.setHeader('Content-Type','application/pdf');res.setHeader('Content-Disposition',`attachment; filename="${reportService.filename(model,'pdf')}"`);return res.send(data)}if(format==='csv'){res.setHeader('Content-Type','text/csv; charset=utf-8');res.setHeader('Content-Disposition',`attachment; filename="${reportService.filename(model,'csv')}"`);return res.send(reportService.csv(model))}if(format==='json'){res.setHeader('Content-Type','application/json');res.setHeader('Content-Disposition',`attachment; filename="${reportService.filename(model,'json')}"`);return res.send(reportService.json(model))}res.status(400).json({error:'Supported report formats are PDF, CSV, and JSON.'})}catch(error:any){res.status(400).json({error:error.message})}});
+// One production reporting boundary for preview and export prevents renderer drift.
+app.use('/api/reports', createReportRouter({ getSession: () => projectDb.getSession(), getAuditLogs: () => appStateDb.getAuditLogs() }));
 
 app.post('/api/diagnostics/run', async (req, res) => {
   const ids: string[] = Array.isArray(req.body.deviceIds) ? req.body.deviceIds : [req.body.deviceId].filter(Boolean);
