@@ -341,6 +341,8 @@ export interface WindowsAdapterSnapshot {
   interfaceAlias: string;
   interfaceDescription?: string;
   mediaType: 'ETHERNET' | 'WIFI' | 'OTHER';
+  physicalMediaType?: string;
+  hardwareInterface?: boolean;
   operationalStatus: string;
   eligible: boolean;
   eligibilityReason?: string;

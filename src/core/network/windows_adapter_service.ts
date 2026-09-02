@@ -19,6 +19,32 @@ const validIp = (value: string) => {
 const validIndex = (value: number) => Number.isInteger(value) && value > 0;
 const validPrefix = (value: number) => Number.isInteger(value) && value >= 1 && value <= 30;
 
+const excludedAdapter = /bluetooth|pangp|palo alto|vpn|tunnel|loopback|wi-?fi direct|wireless direct|hyper-v|virtual|tap|wireguard|vmware|virtualbox/i;
+
+export function classifyWindowsAdapter(adapter: WindowsAdapterSnapshot): WindowsAdapterSnapshot {
+  const physicalMedia = (adapter.physicalMediaType || '').toLowerCase().replace(/[\s_.-]+/g, '');
+  const mediaType = physicalMedia === 'native80211' || physicalMedia === '80211'
+    ? 'WIFI'
+    : physicalMedia === '8023'
+      ? 'ETHERNET'
+      : 'OTHER';
+  const active = adapter.operationalStatus.toLowerCase() === 'up';
+  const hardware = adapter.hardwareInterface === true;
+  const excluded = excludedAdapter.test(`${adapter.interfaceAlias} ${adapter.interfaceDescription || ''}`);
+  const usableIpv4 = adapter.ipv4Addresses.some(ip => validIp(ip.address) && !ip.address.startsWith('127.'));
+  const eligible = active && hardware && !excluded && mediaType !== 'OTHER' && usableIpv4;
+  const eligibilityReason = eligible
+    ? undefined
+    : !active
+      ? 'Adapter is disconnected or disabled.'
+      : excluded || !hardware
+        ? 'Virtual, tunnel, or non-hardware adapter is excluded.'
+        : mediaType === 'OTHER'
+          ? 'Adapter is not an eligible physical Ethernet or Wi-Fi interface.'
+          : 'Adapter has no usable IPv4 address.';
+  return { ...adapter, mediaType, eligible, eligibilityReason };
+}
+
 function runPowerShell(script: string, signal?: AbortSignal): Promise<string> {
   return new Promise((resolve, reject) => {
     execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { windowsHide: true, timeout: 15_000, maxBuffer: 1024 * 1024, signal }, (error, stdout, stderr) => {
@@ -40,11 +66,14 @@ $adapters = Get-NetAdapter -ErrorAction Stop | ForEach-Object {
   $dns = Get-DnsClientServerAddress -InterfaceIndex $a.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue
   $registry = Get-ItemProperty -Path ("HKLM:\\SYSTEM\\CurrentControlSet\\Services\\Tcpip\\Parameters\\Interfaces\\" + $a.InterfaceGuid) -ErrorAction SilentlyContinue
   $description = [string]$a.InterfaceDescription
-  $media = if ($a.NdisPhysicalMedium -match 'Wireless|802.11') { 'WIFI' } elseif ($a.NdisPhysicalMedium -match '802.3|Ethernet') { 'ETHERNET' } else { 'OTHER' }
+  $physicalMedia = [string]$a.PhysicalMediaType
+  if ([string]::IsNullOrWhiteSpace($physicalMedia)) { $physicalMedia = [string]$a.NdisPhysicalMedium }
+  $media = if ($physicalMedia -match 'Native[ _.-]*802[ _.]?11|802[ _.]?11') { 'WIFI' } elseif ($physicalMedia -match '802[ _.]?3') { 'ETHERNET' } else { 'OTHER' }
   $virtual = $description -match 'Hyper-V|Virtual|VPN|Tunnel|Loopback|Bluetooth|TAP|WireGuard|VMware|VirtualBox'
   $eligible = $a.Status -eq 'Up' -and $a.HardwareInterface -and -not $virtual -and ($media -eq 'ETHERNET' -or $media -eq 'WIFI')
   [pscustomobject]@{
     interfaceIndex=[int]$a.ifIndex; interfaceAlias=[string]$a.Name; interfaceDescription=$description; mediaType=$media;
+    physicalMediaType=$physicalMedia; hardwareInterface=[bool]$a.HardwareInterface;
     operationalStatus=[string]$a.Status; eligible=$eligible;
     eligibilityReason=if($eligible){$null}elseif($a.Status -ne 'Up'){'Adapter is disconnected or disabled.'}elseif($virtual){'Virtual or tunnel adapter is excluded.'}else{'Adapter is not an eligible physical Ethernet or Wi-Fi interface.'};
     dhcpEnabled=([string]$ipif.Dhcp -eq 'Enabled'); ipv4Addresses=$ips; defaultGateways=$gateways;
@@ -58,7 +87,7 @@ export class PowerShellWindowsNetworkAdapterService implements WindowsNetworkAda
     const output = await runPowerShell(inspectScript, signal);
     if (!output) return [];
     const parsed = JSON.parse(output) as WindowsAdapterSnapshot[] | WindowsAdapterSnapshot;
-    return (Array.isArray(parsed) ? parsed : [parsed]).map(adapter => ({ ...adapter, ipv4Addresses: adapter.ipv4Addresses || [], defaultGateways: adapter.defaultGateways || [], dnsServers: adapter.dnsServers || [] }));
+    return (Array.isArray(parsed) ? parsed : [parsed]).map(adapter => classifyWindowsAdapter({ ...adapter, ipv4Addresses: adapter.ipv4Addresses || [], defaultGateways: adapter.defaultGateways || [], dnsServers: adapter.dnsServers || [] }));
   }
 
   public async isAdministrator(signal?: AbortSignal): Promise<boolean> {
