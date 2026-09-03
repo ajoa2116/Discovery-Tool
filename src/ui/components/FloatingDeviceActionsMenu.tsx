@@ -23,9 +23,12 @@ interface Props {
   onRename: (device: Device) => void;
   onNotes: (device: Device) => void;
   onConfigure: (device: Device) => void;
+  projectMode: boolean;
+  onRemoveCurrent: (device: Device) => void;
+  onRemoveProject: (device: Device) => void;
 }
 
-export const FloatingDeviceActionsMenu: React.FC<Props> = ({ device, anchor, onClose, onOpen, onDetails, onDiagnose, onPair, onRename, onNotes, onConfigure }) => {
+export const FloatingDeviceActionsMenu: React.FC<Props> = ({ device, anchor, onClose, onOpen, onDetails, onDiagnose, onPair, onRename, onNotes, onConfigure, projectMode, onRemoveCurrent, onRemoveProject }) => {
   const menu = useRef<HTMLDivElement>(null);
   const [position, setPosition] = useState<OverlayPosition>(() => positionFloatingMenu(anchor, 192, 260, window.innerWidth, window.innerHeight));
   useLayoutEffect(() => {
@@ -60,5 +63,8 @@ export const FloatingDeviceActionsMenu: React.FC<Props> = ({ device, anchor, onC
     <button role="menuitem" onClick={action(onNotes)} className={button}><StickyNote className="h-3.5 w-3.5 text-slate-400"/>Edit Notes</button>
     <div className="my-1 border-t border-slate-800"/>
     <button role="menuitem" onClick={action(onConfigure)} className={button}><Shield className="h-3.5 w-3.5 text-purple-400"/>Device Configuration</button>
+    <div className="my-1 border-t border-slate-700"/>
+    <button role="menuitem" onClick={action(onRemoveCurrent)} className="w-full rounded px-2.5 py-1.5 text-left text-rose-300 hover:bg-rose-950/40">{projectMode ? 'Remove from Current List' : 'Remove Device'}</button>
+    {projectMode && <button role="menuitem" onClick={action(onRemoveProject)} className="w-full rounded px-2.5 py-1.5 text-left text-rose-300 hover:bg-rose-950/40">Remove from Project</button>}
   </div>, document.body);
 };

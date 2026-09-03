@@ -345,6 +345,13 @@ export default function App() {
     await fetchData();
   };
 
+  const handleRemoveDevice = async (deviceId: string, scope: 'current' | 'project') => {
+    const response = await fetch(`http://localhost:3001/api/devices/${encodeURIComponent(deviceId)}/remove-${scope}`, { method: 'POST' });
+    if (!response.ok) throw new Error((await response.json()).error || 'Device could not be removed.');
+    setSelectedDeviceIds(current => { const next = new Set(current); next.delete(deviceId); return next; });
+    await fetchData();
+  };
+
   // Filtered devices based on search query, status, and device type (Sections 7 & 8)
   const filteredDevices = (project?.devices || []).filter((dev) => {
     const q = searchQuery.toLowerCase();
@@ -531,6 +538,9 @@ export default function App() {
           onOpenBrowser={handleOpenBrowser}
           onDiagnose={(dev) => handleDiagnose([dev]).catch(error => window.alert(error.message))}
           onPair={(dev) => { setPairDevice(dev); setPairModalDismissed(false); }}
+          projectMode={projectSession?.mode === 'PROJECT'}
+          onRemoveCurrent={(deviceId) => handleRemoveDevice(deviceId, 'current')}
+          onRemoveProject={(deviceId) => handleRemoveDevice(deviceId, 'project')}
         />
       </main>
 

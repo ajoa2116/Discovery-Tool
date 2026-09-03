@@ -17,6 +17,7 @@ import {
   Info,
 } from 'lucide-react';
 import { FloatingDeviceActionsMenu } from './FloatingDeviceActionsMenu.tsx';
+import { DeviceRemovalDialog } from './DeviceRemovalDialog.tsx';
 
 interface MasterDeviceTableProps {
   devices: Device[];
@@ -32,6 +33,9 @@ interface MasterDeviceTableProps {
   onOpenBrowser: (dev: Device, mode: 'EMBEDDED' | 'EDGE' | 'CHROME' | 'SYSTEM') => void;
   onDiagnose: (dev: Device) => void;
   onPair: (dev: Device) => void;
+  projectMode: boolean;
+  onRemoveCurrent: (deviceId: string) => Promise<void>;
+  onRemoveProject: (deviceId: string) => Promise<void>;
 }
 
 export const MasterDeviceTable: React.FC<MasterDeviceTableProps> = ({
@@ -48,6 +52,9 @@ export const MasterDeviceTable: React.FC<MasterDeviceTableProps> = ({
   onOpenBrowser,
   onDiagnose,
   onPair,
+  projectMode,
+  onRemoveCurrent,
+  onRemoveProject,
 }) => {
   const [editingNameId, setEditingNameId] = useState<string | null>(null);
   const [tempName, setTempName] = useState<string>('');
@@ -56,6 +63,8 @@ export const MasterDeviceTable: React.FC<MasterDeviceTableProps> = ({
   const [tempNotes, setTempNotes] = useState<string>('');
 
   const [openActionMenu, setOpenActionMenu] = useState<{ device: Device; anchor: DOMRect } | null>(null);
+  const [removal, setRemoval] = useState<{ device: Device; scope: 'CURRENT' | 'PROJECT' } | null>(null);
+  const [removing, setRemoving] = useState(false);
 
   const startEditName = (dev: Device, e?: React.MouseEvent) => {
     e?.stopPropagation();
@@ -319,7 +328,20 @@ export const MasterDeviceTable: React.FC<MasterDeviceTableProps> = ({
           </tbody>
         </table>
       </div>
-      {openActionMenu && <FloatingDeviceActionsMenu device={openActionMenu.device} anchor={openActionMenu.anchor} onClose={() => setOpenActionMenu(null)} onOpen={device => onOpenBrowser(device, 'SYSTEM')} onDetails={onInspectDevice} onDiagnose={onDiagnose} onPair={onPair} onRename={device => startEditName(device)} onNotes={device => startEditNotes(device)} onConfigure={onConfigureDevice}/>}
+      {openActionMenu && <FloatingDeviceActionsMenu device={openActionMenu.device} anchor={openActionMenu.anchor} onClose={() => setOpenActionMenu(null)} onOpen={device => onOpenBrowser(device, 'SYSTEM')} onDetails={onInspectDevice} onDiagnose={onDiagnose} onPair={onPair} onRename={device => startEditName(device)} onNotes={device => startEditNotes(device)} onConfigure={onConfigureDevice} projectMode={projectMode} onRemoveCurrent={device => setRemoval({ device, scope: 'CURRENT' })} onRemoveProject={device => setRemoval({ device, scope: 'PROJECT' })}/>}
+      {removal && <DeviceRemovalDialog
+        device={removal.device}
+        scope={removal.scope}
+        busy={removing}
+        onCancel={() => setRemoval(null)}
+        onConfirm={async () => {
+          setRemoving(true);
+          try {
+            await (removal.scope === 'PROJECT' ? onRemoveProject(removal.device.id) : onRemoveCurrent(removal.device.id));
+            setRemoval(null);
+          } finally { setRemoving(false); }
+        }}
+      />}
     </div>
   );
 };

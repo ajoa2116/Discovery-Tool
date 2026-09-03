@@ -230,7 +230,15 @@ export class BatchExecutionPipeline {
     const result = await Phase2PassiveListener.execute(this.currentInterfaces, this.passiveDiscovery, signal);
     const localHost = LocalHostIdentity.fromAddresses([...this.localHost.values(), ...this.currentInterfaces.map(value => value.ipAddress)]);
     result.devices = result.devices.filter(device => localHost.isRemoteDevice(device));
-    for (const device of result.devices) projectDb.upsertDevice(device);
+    for (const device of result.devices) {
+      const isNew = !projectDb.getDevices().some(existing => existing.id === device.id || Boolean(
+        (device.anchor.macAddress && existing.anchor.macAddress?.toLowerCase() === device.anchor.macAddress.toLowerCase()) ||
+        (device.anchor.onvifEndpointUuid && existing.anchor.onvifEndpointUuid?.toLowerCase() === device.anchor.onvifEndpointUuid.toLowerCase()) ||
+        (device.anchor.serialNumber && existing.anchor.serialNumber?.toLowerCase() === device.anchor.serialNumber.toLowerCase())
+      ));
+      const stored = projectDb.upsertDevice(device);
+      this.emit({ type: 'DEVICE_DISCOVERED', phaseNumber: 2, data: { device: stored, isNew, project: projectDb.getProject() } });
+    }
     phase.logs.push(...result.logs);
     phase.devicesFoundCount = result.devices.length;
     phase.progressPct = 100;

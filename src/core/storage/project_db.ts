@@ -68,31 +68,44 @@ function prepareLoadedDevice(device: Device): Device {
 
 export class SiteProjectDatabase {
   private session: ProjectSession = { mode: 'QUICK_WORK', project: makeProject('Quick Work'), dirty: false };
+  private hiddenCurrentDeviceIds = new Set<string>();
+  private currentOnlyDeviceIds = new Set<string>();
+  private removedProjectIdentities: Array<{ id: string; mac?: string; uuid?: string; serial?: string }> = [];
 
-  public getSession(): ProjectSession { return clone(this.session); }
-  public getProject(): SiteProject { return this.session.project; }
+  public getSession(): ProjectSession { return { ...clone(this.session), project: this.getProject() }; }
+  public getProject(): SiteProject {
+    const project = clone(this.session.project);
+    project.devices = project.devices.filter(device => !this.hiddenCurrentDeviceIds.has(device.id));
+    project.totalDevices = project.devices.length;
+    return project;
+  }
+
+  private resetTransientDeviceState(): void {
+    this.hiddenCurrentDeviceIds.clear(); this.currentOnlyDeviceIds.clear(); this.removedProjectIdentities = [];
+  }
 
   public startQuickWork(): SiteProject {
+    this.resetTransientDeviceState();
     this.session = { mode: 'QUICK_WORK', project: makeProject('Quick Work'), dirty: false };
     return this.session.project;
   }
 
   public createNewProject(name: string, location = '', description = ''): SiteProject {
     if (!name.trim()) throw new ProjectValidationError('Project name is required.');
-    this.session = { mode: 'PROJECT', project: makeProject(name.trim(), location.trim(), description.trim()), dirty: true };
+    this.resetTransientDeviceState(); this.session = { mode: 'PROJECT', project: makeProject(name.trim(), location.trim(), description.trim()), dirty: true };
     return this.session.project;
   }
 
   public createProjectFromCurrentResults(name: string, description = ''): SiteProject {
     if (!name.trim()) throw new ProjectValidationError('Project name is required.');
-    const current = this.session.project;
+    const current = this.getProject();
     const project = makeProject(name.trim(), current.siteLocation, description.trim());
     project.devices = clone(current.devices);
     project.totalDevices = project.devices.length;
     project.collisions = clone(current.collisions);
     project.rogueDhcpEvents = clone(current.rogueDhcpEvents);
     project.auditLogs = clone(current.auditLogs);
-    this.session = { mode: 'PROJECT', project, dirty: true };
+    this.resetTransientDeviceState(); this.session = { mode: 'PROJECT', project, dirty: true };
     return project;
   }
 
@@ -169,6 +182,28 @@ export class SiteProjectDatabase {
   }
 
   public getDevices(): Device[] { return this.session.project.devices; }
+  public removeDeviceFromCurrentList(id: string): Device {
+    const device = this.getDeviceById(id);
+    if (!device) throw new ProjectValidationError('Device not found.');
+    this.hiddenCurrentDeviceIds.add(id);
+    return clone(device);
+  }
+  public removeDeviceFromProject(id: string): Device {
+    if (this.session.mode !== 'PROJECT') throw new ProjectValidationError('Remove from Project is available only for a saved Project session.');
+    const index = this.session.project.devices.findIndex(device => device.id === id);
+    if (index < 0) throw new ProjectValidationError('Device not found.');
+    const [device] = this.session.project.devices.splice(index, 1);
+    this.hiddenCurrentDeviceIds.delete(id); this.currentOnlyDeviceIds.delete(id);
+    this.removedProjectIdentities.push({ id, mac: device.anchor.macAddress?.toLowerCase(), uuid: device.anchor.onvifEndpointUuid?.toLowerCase(), serial: device.anchor.serialNumber?.toLowerCase() });
+    this.markDirty();
+    return clone(device);
+  }
+  public restoreDiscoveredDevice(device: Device): void {
+    this.hiddenCurrentDeviceIds.delete(device.id);
+    const mac=device.anchor.macAddress?.toLowerCase(),uuid=device.anchor.onvifEndpointUuid?.toLowerCase(),serial=device.anchor.serialNumber?.toLowerCase();
+    const removed = this.removedProjectIdentities.find(identity => identity.id===device.id || Boolean((mac&&identity.mac===mac)||(uuid&&identity.uuid===uuid)||(serial&&identity.serial===serial)));
+    if (removed) this.currentOnlyDeviceIds.add(device.id);
+  }
   public getDeviceByMac(mac: string): Device | undefined { return this.getDevices().find(d => d.anchor.macAddress?.toLowerCase() === mac.toLowerCase()); }
   public getDeviceById(id: string): Device | undefined { return this.getDevices().find(device => device.id === id); }
   public getDeviceByIdentifier(identifier: string): Device | undefined { return this.getDeviceById(identifier) || this.getDeviceByMac(identifier); }
@@ -195,7 +230,7 @@ export class SiteProjectDatabase {
     let parsed: unknown;
     try { parsed = JSON.parse(jsonData); } catch { throw new ProjectValidationError('The project file is not valid JSON.'); }
     const project = this.parseBundle(parsed);
-    this.session = { mode: 'PROJECT', project, dirty: false };
+    this.resetTransientDeviceState(); this.session = { mode: 'PROJECT', project, dirty: false };
     return project;
   }
 
@@ -239,7 +274,7 @@ export class SiteProjectDatabase {
 
   private toBundle(): CctvProjectBundle {
     const project = sanitize(clone(this.session.project)) as SiteProject;
-    project.devices = this.session.project.devices.map(prepareDeviceForSave);
+    project.devices = this.session.project.devices.filter(device => !this.currentOnlyDeviceIds.has(device.id)).map(prepareDeviceForSave);
     project.totalDevices = project.devices.length;
     validateProject(project);
     return { format: PROJECT_FORMAT, schemaVersion: PROJECT_SCHEMA_VERSION, applicationVersion: APPLICATION_VERSION, project };

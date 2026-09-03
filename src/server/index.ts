@@ -71,6 +71,10 @@ osVault.initialize().catch(error => console.error('Windows secure credential sto
 
 // Wire pipeline events to WebSocket clients
 pipelineEngine.subscribe(event => {
+  if (event.type === 'DEVICE_DISCOVERED' && event.data?.device) {
+    projectDb.restoreDiscoveredDevice(event.data.device);
+    event.data.project = projectDb.getProject();
+  }
   broadcast(event);
 });
 
@@ -83,6 +87,22 @@ app.get('/api/project', (req, res) => {
 
 app.get('/api/project/session', (req, res) => {
   res.json(projectDb.getSession());
+});
+
+app.post('/api/devices/:id/remove-current', (req, res) => {
+  try {
+    const device = projectDb.removeDeviceFromCurrentList(req.params.id);
+    appStateDb.logAudit({ id: crypto.randomUUID(), timestamp: new Date().toISOString(), category: 'SYSTEM', level: 'INFO', message: 'Device removed from current list; physical device unchanged.', deviceId: device.id });
+    const session = projectDb.getSession(); broadcast({ type: 'PROJECT_SESSION_CHANGED', data: { session } }); res.json(session);
+  } catch (error) { res.status(404).json({ error: error instanceof Error ? error.message : String(error) }); }
+});
+
+app.post('/api/devices/:id/remove-project', (req, res) => {
+  try {
+    const device = projectDb.removeDeviceFromProject(req.params.id);
+    appStateDb.logAudit({ id: crypto.randomUUID(), timestamp: new Date().toISOString(), category: 'SYSTEM', level: 'INFO', message: 'Device removed from Project membership; physical device unchanged.', deviceId: device.id });
+    const session = projectDb.getSession(); broadcast({ type: 'PROJECT_SESSION_CHANGED', data: { session } }); res.json(session);
+  } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : String(error) }); }
 });
 
 app.post('/api/project/quick-work', (req, res) => {
@@ -187,7 +207,7 @@ app.post('/api/discovery/start', (req, res) => {
 
 app.get('/api/discovery/advanced/adapters',async(_req,res)=>{try{res.json(await advancedScanService.listAdapters())}catch(error){res.status(500).json({error:error instanceof Error?error.message:'Unable to inspect adapters.'})}});
 app.post('/api/discovery/advanced/validate',async(req,res)=>{try{const plan=await advancedScanService.validate(req.body);res.status(plan.valid?200:400).json(plan)}catch(error){res.status(400).json({error:error instanceof Error?error.message:'Advanced Scan validation failed.'})}});
-app.post('/api/discovery/advanced/start',async(req,res)=>{try{if(pipelineEngine.getIsRunning()||advancedScanService.getStatus().running)return res.status(409).json({error:'A discovery scan is already running.'});const plan=await advancedScanService.validate(req.body);if(!plan.valid)return res.status(400).json(plan);res.status(202).json({plan,message:plan.mode==='QUICK_FALLBACK'?'Standard Quick Scan started.':'Advanced Scan started.'});if(plan.mode==='QUICK_FALLBACK'){void pipelineEngine.runDiscoveryScan();return}const adapters=await advancedScanService.listAdapters(),names=adapters.filter(a=>plan.adapterIndexes.includes(a.interfaceIndex)).map(a=>a.interfaceAlias);void(async()=>{try{if(names.length&&(plan.methods.includes('ONVIF')||plan.methods.includes('NEIGHBOR'))){const pipelineResult=await pipelineEngine.runDiscoveryScan({adapterNames:names,emitTerminalEvent:false});if(pipelineResult==='CANCELLED'){broadcast({type:'SCAN_CANCELLED',data:{project:projectDb.getProject(),scanMode:'ADVANCED'}});return}}await advancedScanService.execute(plan,{onDevice:(device,isNew)=>broadcast({type:'DEVICE_DISCOVERED',data:{device,isNew,project:projectDb.getProject(),scanMode:'ADVANCED'}}),onComplete:status=>broadcast({type:status.cancelled?'SCAN_CANCELLED':'SCAN_COMPLETE',data:{status,project:projectDb.getProject(),scanMode:'ADVANCED'}})})}catch(error){broadcast({type:'SCAN_FAILED',data:{message:error instanceof Error?error.message:String(error),scanMode:'ADVANCED'}})}})()}catch(error){res.status(400).json({error:error instanceof Error?error.message:'Advanced Scan could not start.'})}});
+app.post('/api/discovery/advanced/start',async(req,res)=>{try{if(pipelineEngine.getIsRunning()||advancedScanService.getStatus().running)return res.status(409).json({error:'A discovery scan is already running.'});const plan=await advancedScanService.validate(req.body);if(!plan.valid)return res.status(400).json(plan);res.status(202).json({plan,message:plan.mode==='QUICK_FALLBACK'?'Standard Quick Scan started.':'Advanced Scan started.'});if(plan.mode==='QUICK_FALLBACK'){void pipelineEngine.runDiscoveryScan();return}const adapters=await advancedScanService.listAdapters(),names=adapters.filter(a=>plan.adapterIndexes.includes(a.interfaceIndex)).map(a=>a.interfaceAlias);void(async()=>{try{if(names.length&&(plan.methods.includes('ONVIF')||plan.methods.includes('NEIGHBOR'))){const pipelineResult=await pipelineEngine.runDiscoveryScan({adapterNames:names,emitTerminalEvent:false});if(pipelineResult==='CANCELLED'){broadcast({type:'SCAN_CANCELLED',data:{project:projectDb.getProject(),scanMode:'ADVANCED'}});return}}await advancedScanService.execute(plan,{onDevice:(device,isNew)=>{projectDb.restoreDiscoveredDevice(device);broadcast({type:'DEVICE_DISCOVERED',data:{device,isNew,project:projectDb.getProject(),scanMode:'ADVANCED'}})},onComplete:status=>broadcast({type:status.cancelled?'SCAN_CANCELLED':'SCAN_COMPLETE',data:{status,project:projectDb.getProject(),scanMode:'ADVANCED'}})})}catch(error){broadcast({type:'SCAN_FAILED',data:{message:error instanceof Error?error.message:String(error),scanMode:'ADVANCED'}})}})()}catch(error){res.status(400).json({error:error instanceof Error?error.message:'Advanced Scan could not start.'})}});
 
 // One production reporting boundary for preview and export prevents renderer drift.
 app.use('/api/reports', createReportRouter({ getSession: () => projectDb.getSession(), getAuditLogs: () => appStateDb.getAuditLogs() }));
