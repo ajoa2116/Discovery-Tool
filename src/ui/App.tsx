@@ -656,7 +656,7 @@ export default function App() {
         onClose={() => setSelectedDeviceForConfig(null)}
         device={selectedDeviceForConfig}
       />
-      <BulkDeviceConfigurationModal isOpen={isBulkDeviceConfigOpen} onClose={() => setIsBulkDeviceConfigOpen(false)} devices={selectedDevicesList} onChanged={fetchData} />
+      {isBulkDeviceConfigOpen && <BulkDeviceConfigurationModal isOpen onClose={() => setIsBulkDeviceConfigOpen(false)} devices={selectedDevicesList} onChanged={fetchData} />}
     </div>
   );
 }
