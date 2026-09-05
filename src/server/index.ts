@@ -22,6 +22,8 @@ import { ShutdownCoordinator, WindowsPreflightService } from '../core/readiness/
 import { AdvancedScanService } from '../core/engine/advanced_scan.ts';
 import { DEFAULT_MONITORING_INTERVAL_MS, IncrementalDiscoveryMonitor } from '../core/engine/incremental_discovery_monitor.ts';
 import { LegacyConfigurationBoundary } from '../core/network/legacy_configuration_boundary.ts';
+import { technicianErrorResponse } from '../shared/error_presentation.ts';
+import { SupportBundleBuilder } from '../core/readiness/support_bundle.ts';
 
 const app = express();
 const server = createServer(app);
@@ -37,6 +39,7 @@ const cameraConfigurationService = new CameraConfigurationService(projectDb,osVa
 const bulkNetworkService = new BulkNetworkConfigurationService(projectDb, osVault, cameraNetworkService);
 const advancedScanService = new AdvancedScanService();
 const legacyConfigurationBoundary = new LegacyConfigurationBoundary(projectDb);
+const supportBundleBuilder = new SupportBundleBuilder();
 const reverifyWorkflow = new ProjectReverificationWorkflow(
   projectDb,
   database => pipelineEngine.runDiscoveryScan({ database, emitTerminalEvent: false, emitDeviceEvents: false }),
@@ -59,6 +62,12 @@ const broadcast = (data: any) => {
     }
   });
 };
+const safeError = (res:any,error:unknown,status:number,operation:string,deviceId?:string) => {
+  const body=technicianErrorResponse(error,{operation,deviceId});
+  appStateDb.logAudit({id:crypto.randomUUID(),timestamp:body.presentation.timestamp,category:'SYSTEM',level:body.code==='CANCELLED'?'INFO':'ERROR',message:`${body.presentation.title} [${body.presentation.reference}]`,deviceId,details:{reference:body.presentation.reference,operation,code:body.code,technicalDetails:body.presentation.technicalDetails,result:body.code==='CANCELLED'?'CANCELLED':'FAILED'}});
+  return res.status(status).json(body);
+};
+const safeBroadcastError=(type:string,error:unknown,operation:string,extra:Record<string,unknown>={})=>{const body=technicianErrorResponse(error,{operation,fallbackCode:'OPERATION_FAILED'});appStateDb.logAudit({id:crypto.randomUUID(),timestamp:body.presentation.timestamp,category:'SYSTEM',level:body.code==='CANCELLED'?'INFO':'ERROR',message:`${body.presentation.title} [${body.presentation.reference}]`,details:{reference:body.presentation.reference,operation,code:body.code,technicalDetails:body.presentation.technicalDetails}});broadcast({type,data:{...body,...extra}})};
 
 const diagnosticMonitor = new DiagnosticRefreshMonitor(
   diagnosticEngine,
@@ -193,9 +202,9 @@ app.post('/api/project/reverify', async (_req, res) => {
     broadcast({ type: 'PROJECT_REVERIFIED', data: { result, project: projectDb.getProject() } });
     res.json({ result, project: projectDb.getProject() });
   } catch (error) {
-    const message = error instanceof Error ? error.message : 'Project reverification could not complete.';
-    broadcast({ type: message.includes('cancelled') ? 'PROJECT_REVERIFY_CANCELLED' : 'PROJECT_REVERIFY_FAILED', data: { message } });
-    res.status(message.includes('already running') ? 409 : 400).json({ error: message });
+    const body=technicianErrorResponse(error,{operation:'PROJECT_REVERIFY',fallbackCode:'OPERATION_FAILED'});
+    broadcast({ type: body.code==='CANCELLED' ? 'PROJECT_REVERIFY_CANCELLED' : 'PROJECT_REVERIFY_FAILED', data: body });
+    safeError(res,error,body.presentation.technicalDetails?.includes('already running')?409:400,'PROJECT_REVERIFY');
   }
 });
 app.post('/api/project/reverify/cancel', (_req, res) => res.status(202).json({ cancelled: reverifyWorkflow.cancel() }));
@@ -225,9 +234,9 @@ app.get('/api/ip-finder/available', (req, res) => {
 });
 
 // Backend-authoritative bulk network configuration.
-app.post('/api/bulk/network/plan', async (req,res)=>{try{res.json(await bulkNetworkService.createPlan(req.body))}catch(error:any){res.status(400).json({error:error.message,code:error.code})}});
+app.post('/api/bulk/network/plan', async (req,res)=>{try{res.json(await bulkNetworkService.createPlan(req.body))}catch(error:any){safeError(res,error,400,'BULK_REIP_PLAN')}});
 app.get('/api/bulk/network/:batchId', (req,res)=>{try{res.json(bulkNetworkService.get(req.params.batchId))}catch(error:any){res.status(404).json({error:error.message,code:error.code})}});
-app.post('/api/bulk/network/:batchId/apply', async(req,res)=>{try{const batch=await bulkNetworkService.execute(req.params.batchId,req.body.confirmed===true);broadcast({type:'BULK_NETWORK_UPDATED',data:{batch,project:projectDb.getProject()}});res.json(batch)}catch(error:any){res.status(400).json({error:error.message,code:error.code})}});
+app.post('/api/bulk/network/:batchId/apply', async(req,res)=>{try{const batch=await bulkNetworkService.execute(req.params.batchId,req.body.confirmed===true);broadcast({type:'BULK_NETWORK_UPDATED',data:{batch,project:projectDb.getProject()}});res.json(batch)}catch(error:any){safeError(res,error,400,'BULK_REIP_APPLY')}});
 app.post('/api/bulk/network/:batchId/cancel', (req,res)=>res.status(202).json({cancelled:bulkNetworkService.cancel(req.params.batchId)}));
 app.post('/api/bulk/network/:batchId/retry', async(req,res)=>{try{res.json(await bulkNetworkService.retry(req.params.batchId))}catch(error:any){res.status(400).json({error:error.message,code:error.code})}});
 
@@ -239,14 +248,15 @@ app.post('/api/discovery/start', async (req, res) => {
   }
   res.status(202).json({ message: 'ONVIF discovery scan started.' });
   pipelineEngine.runDiscoveryScan().catch(error => {
-    console.error('Discovery scan failed:', error);
-    broadcast({ type: 'SCAN_FAILED', data: { message: error instanceof Error ? error.message : String(error) } });
+    const body=technicianErrorResponse(error,{operation:'QUICK_SCAN',fallbackCode:'DISCOVERY_FAILED'});
+    appStateDb.logAudit({id:crypto.randomUUID(),timestamp:body.presentation.timestamp,category:'DISCOVERY',level:'ERROR',message:`${body.presentation.title} [${body.presentation.reference}]`,details:{...body.presentation.context,reference:body.presentation.reference,code:body.code,technicalDetails:body.presentation.technicalDetails}});
+    broadcast({ type: 'SCAN_FAILED', data: body });
   });
 });
 
-app.get('/api/discovery/advanced/adapters',async(_req,res)=>{try{res.json(await advancedScanService.listAdapters())}catch(error){res.status(500).json({error:error instanceof Error?error.message:'Unable to inspect adapters.'})}});
-app.post('/api/discovery/advanced/validate',async(req,res)=>{try{const plan=await advancedScanService.validate(req.body);res.status(plan.valid?200:400).json(plan)}catch(error){res.status(400).json({error:error instanceof Error?error.message:'Advanced Scan validation failed.'})}});
-app.post('/api/discovery/advanced/start',async(req,res)=>{try{await incrementalMonitor.yieldToTechnician();if(pipelineEngine.getIsRunning()||advancedScanService.getStatus().running)return res.status(409).json({error:'A discovery scan is already running.'});const plan=await advancedScanService.validate(req.body);if(!plan.valid)return res.status(400).json(plan);res.status(202).json({plan,message:plan.mode==='QUICK_FALLBACK'?'Standard Quick Scan started.':'Advanced Scan started.'});if(plan.mode==='QUICK_FALLBACK'){void pipelineEngine.runDiscoveryScan();return}const adapters=await advancedScanService.listAdapters(),names=adapters.filter(a=>plan.adapterIndexes.includes(a.interfaceIndex)).map(a=>a.interfaceAlias);void(async()=>{try{if(names.length&&(plan.methods.includes('ONVIF')||plan.methods.includes('NEIGHBOR'))){const pipelineResult=await pipelineEngine.runDiscoveryScan({adapterNames:names,emitTerminalEvent:false});if(pipelineResult==='CANCELLED'){broadcast({type:'SCAN_CANCELLED',data:{project:projectDb.getProject(),scanMode:'ADVANCED'}});return}}await advancedScanService.execute(plan,{onDevice:(device,isNew)=>{projectDb.restoreDiscoveredDevice(device);broadcast({type:'DEVICE_DISCOVERED',data:{device,isNew,project:projectDb.getProject(),scanMode:'ADVANCED'}})},onComplete:status=>broadcast({type:status.cancelled?'SCAN_CANCELLED':'SCAN_COMPLETE',data:{status,project:projectDb.getProject(),scanMode:'ADVANCED'}})})}catch(error){broadcast({type:'SCAN_FAILED',data:{message:error instanceof Error?error.message:String(error),scanMode:'ADVANCED'}})}})()}catch(error){res.status(400).json({error:error instanceof Error?error.message:'Advanced Scan could not start.'})}});
+app.get('/api/discovery/advanced/adapters',async(_req,res)=>{try{res.json(await advancedScanService.listAdapters())}catch(error){safeError(res,error,500,'ADVANCED_SCAN_ADAPTERS')}});
+app.post('/api/discovery/advanced/validate',async(req,res)=>{try{const plan=await advancedScanService.validate(req.body);res.status(plan.valid?200:400).json(plan)}catch(error){safeError(res,error,400,'ADVANCED_SCAN_VALIDATE')}});
+app.post('/api/discovery/advanced/start',async(req,res)=>{try{await incrementalMonitor.yieldToTechnician();if(pipelineEngine.getIsRunning()||advancedScanService.getStatus().running)return res.status(409).json({error:'A discovery scan is already running.'});const plan=await advancedScanService.validate(req.body);if(!plan.valid)return res.status(400).json(plan);res.status(202).json({plan,message:plan.mode==='QUICK_FALLBACK'?'Standard Quick Scan started.':'Advanced Scan started.'});if(plan.mode==='QUICK_FALLBACK'){void pipelineEngine.runDiscoveryScan();return}const adapters=await advancedScanService.listAdapters(),names=adapters.filter(a=>plan.adapterIndexes.includes(a.interfaceIndex)).map(a=>a.interfaceAlias);void(async()=>{try{if(names.length&&(plan.methods.includes('ONVIF')||plan.methods.includes('NEIGHBOR'))){const pipelineResult=await pipelineEngine.runDiscoveryScan({adapterNames:names,emitTerminalEvent:false});if(pipelineResult==='CANCELLED'){broadcast({type:'SCAN_CANCELLED',data:{project:projectDb.getProject(),scanMode:'ADVANCED'}});return}}await advancedScanService.execute(plan,{onDevice:(device,isNew)=>{projectDb.restoreDiscoveredDevice(device);broadcast({type:'DEVICE_DISCOVERED',data:{device,isNew,project:projectDb.getProject(),scanMode:'ADVANCED'}})},onComplete:status=>broadcast({type:status.cancelled?'SCAN_CANCELLED':'SCAN_COMPLETE',data:{status,project:projectDb.getProject(),scanMode:'ADVANCED'}})})}catch(error){safeBroadcastError('SCAN_FAILED',error,'ADVANCED_SCAN',{scanMode:'ADVANCED'})}})()}catch(error){safeError(res,error,400,'ADVANCED_SCAN_START')}});
 
 // One production reporting boundary for preview and export prevents renderer drift.
 app.use('/api/reports', createReportRouter({ getSession: () => projectDb.getSession(), getAuditLogs: () => appStateDb.getAuditLogs() }));
@@ -270,7 +280,7 @@ app.post('/api/diagnostics/run', async (req, res) => {
       projectDb.upsertDevice(updated);
       broadcast({ type: 'DEVICE_DIAGNOSTICS_UPDATED', data: { device: updated, project: projectDb.getProject() } });
     }).catch(error => {
-      broadcast({ type: 'DIAGNOSTIC_FAILED', data: { deviceId: current.id, message: error instanceof Error ? error.message : 'Diagnostic check failed.' } });
+      const body=technicianErrorResponse(error,{operation:'DIAGNOSE',deviceId:current.id,fallbackCode:'OPERATION_FAILED'});broadcast({ type: 'DIAGNOSTIC_FAILED', data: { deviceId: current.id, ...body } });
     }).finally(() => diagnosticControllers.delete(current.id));
   }
 });
@@ -292,35 +302,35 @@ app.post('/api/monitoring/discovery/run', async (_req, res) => res.json({ result
 // Pair PC to Camera Network — fixed operations only; no arbitrary command surface.
 app.get('/api/pair/adapters', async (req, res) => {
   try { res.json(await pairService.getEligibleAdapters()); }
-  catch (error) { res.status(500).json({ error: error instanceof Error ? error.message : 'Unable to inspect Windows adapters.' }); }
+  catch (error) { safeError(res,error,500,'PAIR_ADAPTERS'); }
 });
 app.get('/api/pair/status', (req, res) => res.json(pairService.getStatus()));
 app.post('/api/pair/prepare', async (req, res) => {
   try {
     const pair = await pairService.prepare(String(req.body.deviceId || ''), Number(req.body.interfaceIndex));
     broadcast({ type: 'PAIR_STATE_CHANGED', data: { pair } }); res.json(pair);
-  } catch (error: any) { res.status(400).json({ error: error?.message || 'Pair preparation failed.', code: error?.code }); }
+  } catch (error: any) { safeError(res,error,400,'PAIR_PREPARE',req.body.deviceId); }
 });
 app.post('/api/pair/candidate', (req, res) => {
   try { const pair = pairService.selectCandidate(String(req.body.ipAddress || '')); broadcast({ type: 'PAIR_STATE_CHANGED', data: { pair } }); res.json(pair); }
-  catch (error: any) { res.status(400).json({ error: error?.message || 'Candidate selection failed.', code: error?.code }); }
+  catch (error: any) { safeError(res,error,400,'PAIR_CANDIDATE'); }
 });
 app.post('/api/pair/confirm', async (req, res) => {
   try {
     const pair = await pairService.confirmAndApply(String(req.body.sessionId || ''), req.body.confirmed === true);
     broadcast({ type: 'PAIR_STATE_CHANGED', data: { pair, project: projectDb.getProject() } }); res.json(pair);
-  } catch (error: any) { const pair = pairService.getStatus(); broadcast({ type: 'PAIR_STATE_CHANGED', data: { pair } }); res.status(error?.code === 'ADMIN_REQUIRED' ? 403 : 400).json({ error: error?.message || 'Pair failed.', code: error?.code, pair }); }
+  } catch (error: any) { const pair = pairService.getStatus(); broadcast({ type: 'PAIR_STATE_CHANGED', data: { pair } }); safeError(res,error,error?.code === 'ADMIN_REQUIRED' ? 403 : 400,'PAIR_APPLY',pair?.deviceId); }
 });
 app.post('/api/pair/restore', async (req, res) => {
   try { const pair = await pairService.restore(); broadcast({ type: 'PAIR_STATE_CHANGED', data: { pair } }); res.json(pair); }
-  catch (error: any) { const pair = pairService.getStatus(); broadcast({ type: 'PAIR_STATE_CHANGED', data: { pair } }); res.status(400).json({ error: error?.message || 'Restore failed.', code: error?.code, pair }); }
+  catch (error: any) { const pair = pairService.getStatus(); broadcast({ type: 'PAIR_STATE_CHANGED', data: { pair } }); safeError(res,error,400,'PAIR_RESTORE',pair?.deviceId); }
 });
 app.post('/api/pair/cancel', (req, res) => { const pair = pairService.cancelPreparation(); broadcast({ type: 'PAIR_STATE_CHANGED', data: { pair } }); res.json(pair); });
 
 app.get('/api/connect/browsers', async (req, res) => res.json(await connectService.availableBrowsers()));
 app.get('/api/connect/:deviceId', (req, res) => { try { res.json(connectService.resolve(req.params.deviceId)); } catch (error: any) { res.status(404).json({ error: error.message, code: error.code }); } });
-app.post('/api/connect/:deviceId/open', async (req, res) => { try { res.json(await connectService.open(req.params.deviceId, req.body.preference || 'SYSTEM')); } catch (error: any) { res.status(400).json({ error: error.message, code: error.code }); } });
-app.post('/api/connect/:deviceId/recheck', async (req, res) => { const id = req.params.deviceId; connectRecheckControllers.get(id)?.abort(); const controller = new AbortController(); connectRecheckControllers.set(id, controller); try { const result = await connectService.recheck(id, controller.signal); broadcast({ type: 'DEVICE_DIAGNOSTICS_UPDATED', data: { device: result.device, project: projectDb.getProject() } }); res.json(result); } catch (error: any) { res.status(400).json({ error: error.message }); } finally { connectRecheckControllers.delete(id); } });
+app.post('/api/connect/:deviceId/open', async (req, res) => { try { res.json(await connectService.open(req.params.deviceId, req.body.preference || 'SYSTEM')); } catch (error: any) { safeError(res,error,400,'CONNECT',req.params.deviceId); } });
+app.post('/api/connect/:deviceId/recheck', async (req, res) => { const id = req.params.deviceId; connectRecheckControllers.get(id)?.abort(); const controller = new AbortController(); connectRecheckControllers.set(id, controller); try { const result = await connectService.recheck(id, controller.signal); broadcast({ type: 'DEVICE_DIAGNOSTICS_UPDATED', data: { device: result.device, project: projectDb.getProject() } }); res.json(result); } catch (error: any) { safeError(res,error,400,'CONNECT_RECHECK',id); } finally { connectRecheckControllers.delete(id); } });
 app.post('/api/connect/:deviceId/recheck/cancel', (req, res) => { connectRecheckControllers.get(req.params.deviceId)?.abort(); res.status(202).json({ cancelled: true }); });
 app.post('/api/connect/:deviceId/activation', (req, res) => { try { res.json({ activationState: connectService.markFirstLogin(req.params.deviceId, req.body.required === true) }); } catch (error: any) { res.status(400).json({ error: error.message }); } });
 app.get('/api/connect/:deviceId/credentials', (req, res) => { try { res.json(connectService.safeCredentials(req.params.deviceId)); } catch (error: any) { res.status(404).json({ error: error.message }); } });
@@ -346,7 +356,10 @@ app.get('/api/system/preflight', async (_req, res) => { try { res.json(await get
 app.get('/api/system/support-bundle', async (_req, res) => {
   try {
     const preflight = await getPreflight();
-    const bundle = { format: 'CCTV_SAFE_SUPPORT_BUNDLE', schemaVersion: 1, generatedAt: new Date().toISOString(), preflight, discovery: { running: pipelineEngine.getIsRunning(), phases: pipelineEngine.getStates().slice(0, 4) }, diagnostics: diagnosticMonitor.getState(), pair: pairService.getStatus() ? { state: pairService.getStatus()!.state, recoveryAvailable: pairService.getStatus()!.recoveryAvailable, errorCode: pairService.getStatus()!.errorCode } : null, recentEvents: appStateDb.getAuditLogs().filter(entry => entry.category !== 'SECURITY' && !/(password|credential|authorization|digest|token|cookie|secret)/i.test(entry.message)).slice(0, 100).map(({ timestamp, category, level, message }) => ({ timestamp, category, level, message })) };
+    const adapters=await advancedScanService.listAdapters().catch(()=>[]);
+    // SupportBundleBuilder recursively filters password|credential|authorization material after this security-event exclusion.
+    const supportEvents=appStateDb.getAuditLogs().filter(entry => entry.category !== 'SECURITY');
+    const bundle = supportBundleBuilder.build({application:{name:'CCTV Network Assistant',version:'1.6.0',runtime:process.version,platform:process.platform},readiness:preflight,network:adapters.map(adapter=>({interfaceIndex:adapter.interfaceIndex,interfaceAlias:adapter.interfaceAlias,mediaType:adapter.mediaType,operationalStatus:adapter.operationalStatus,eligible:adapter.eligible,ipv4Addresses:adapter.ipv4Addresses})),monitoring:monitoringState(),discovery:{running:pipelineEngine.getIsRunning(),phases:pipelineEngine.getStates().slice(0,4)},projectSession:projectDb.getSession(),events:supportEvents,pair:pairService.getStatus()?{state:pairService.getStatus()!.state,recoveryAvailable:pairService.getStatus()!.recoveryAvailable,errorCode:pairService.getStatus()!.errorCode}:null});
     res.setHeader('Content-Disposition', 'attachment; filename="CCTV_Safe_Support_Bundle.json"'); res.json(bundle);
   } catch { res.status(500).json({ error: 'The safe support bundle could not be generated.' }); }
 });
@@ -364,19 +377,19 @@ app.post('/api/pipeline/phase/:num', async (req, res) => {
 });
 
 // Device Configuration & ONVIF Parameter Update
-app.get('/api/device/:identifier/network/current', async (req, res) => { const controller=new AbortController();cameraNetworkControllers.set(req.params.identifier,controller);try{res.json(await cameraNetworkService.readCurrent(req.params.identifier,String(req.query.credentialId||''),controller.signal))}catch(error:any){res.status(400).json({error:error.message,code:error.code})}finally{cameraNetworkControllers.delete(req.params.identifier)}});
+app.get('/api/device/:identifier/network/current', async (req, res) => { const controller=new AbortController();cameraNetworkControllers.set(req.params.identifier,controller);try{res.json(await cameraNetworkService.readCurrent(req.params.identifier,String(req.query.credentialId||''),controller.signal))}catch(error:any){safeError(res,error,400,'CAMERA_NETWORK_READ',req.params.identifier)}finally{cameraNetworkControllers.delete(req.params.identifier)}});
 app.post('/api/device/:identifier/network/candidates', async (req, res) => { const controller=new AbortController();cameraNetworkControllers.set(req.params.identifier,controller);try{res.json({candidates:await cameraNetworkService.findCandidates(req.params.identifier,Number(req.body.prefixLength),req.body.gateway,controller.signal)})}catch(error:any){res.status(400).json({error:error.message,code:error.code})}finally{cameraNetworkControllers.delete(req.params.identifier)}});
-app.post('/api/device/:identifier/network/preview', async (req, res) => { const controller=new AbortController();cameraNetworkControllers.set(req.params.identifier,controller);try{res.json(await cameraNetworkService.preview(req.params.identifier,String(req.body.credentialId||''),req.body.target,controller.signal))}catch(error:any){res.status(400).json({error:error.message,code:error.code})}finally{cameraNetworkControllers.delete(req.params.identifier)}});
-app.post('/api/device/:identifier/network/apply', async (req, res) => { try{const result=await cameraNetworkService.apply(String(req.body.planId||''),req.body.confirmed===true);broadcast({type:'DEVICE_NETWORK_CONFIG_UPDATED',data:{result,project:projectDb.getProject()}});res.json(result)}catch(error:any){res.status(400).json({error:error.message,code:error.code})} });
+app.post('/api/device/:identifier/network/preview', async (req, res) => { const controller=new AbortController();cameraNetworkControllers.set(req.params.identifier,controller);try{res.json(await cameraNetworkService.preview(req.params.identifier,String(req.body.credentialId||''),req.body.target,controller.signal))}catch(error:any){safeError(res,error,400,'CAMERA_NETWORK_PREVIEW',req.params.identifier)}finally{cameraNetworkControllers.delete(req.params.identifier)}});
+app.post('/api/device/:identifier/network/apply', async (req, res) => { try{const result=await cameraNetworkService.apply(String(req.body.planId||''),req.body.confirmed===true);broadcast({type:'DEVICE_NETWORK_CONFIG_UPDATED',data:{result,project:projectDb.getProject()}});res.json(result)}catch(error:any){safeError(res,error,400,'CAMERA_NETWORK_APPLY',req.params.identifier)} });
 app.post('/api/device/:identifier/network/cancel', (req,res)=>{cameraNetworkControllers.get(req.params.identifier)?.abort();res.status(202).json({cancelled:cameraNetworkService.cancel(req.params.identifier)})});
 
 // Broader camera configuration — authenticated, previewed, confirmed, and verified server-side.
-app.get('/api/device/:identifier/configuration/capabilities',async(req,res)=>{try{res.json(await cameraConfigurationService.inspect(req.params.identifier,String(req.query.credentialId||'')))}catch(error:any){res.status(400).json({error:error.message,code:error.code})}});
-app.post('/api/device/:identifier/configuration/preview',async(req,res)=>{try{res.json(await cameraConfigurationService.preview(req.params.identifier,String(req.body.credentialId||''),req.body.operation,req.body.proposal))}catch(error:any){res.status(400).json({error:error.message,code:error.code})}});
-app.post('/api/device/:identifier/configuration/apply',async(req,res)=>{try{const result=await cameraConfigurationService.apply(String(req.body.planId||''),req.body.confirmed===true);broadcast({type:'DEVICE_CONFIG_UPDATED',data:{result,project:projectDb.getProject()}});res.json(result)}catch(error:any){res.status(400).json({error:error.message,code:error.code})}});
+app.get('/api/device/:identifier/configuration/capabilities',async(req,res)=>{try{res.json(await cameraConfigurationService.inspect(req.params.identifier,String(req.query.credentialId||'')))}catch(error:any){safeError(res,error,400,'CAMERA_CONFIG_READ',req.params.identifier)}});
+app.post('/api/device/:identifier/configuration/preview',async(req,res)=>{try{res.json(await cameraConfigurationService.preview(req.params.identifier,String(req.body.credentialId||''),req.body.operation,req.body.proposal))}catch(error:any){safeError(res,error,400,'CAMERA_CONFIG_PREVIEW',req.params.identifier)}});
+app.post('/api/device/:identifier/configuration/apply',async(req,res)=>{try{const result=await cameraConfigurationService.apply(String(req.body.planId||''),req.body.confirmed===true);broadcast({type:'DEVICE_CONFIG_UPDATED',data:{result,project:projectDb.getProject()}});res.json(result)}catch(error:any){safeError(res,error,400,'CAMERA_CONFIG_APPLY',req.params.identifier)}});
 app.post('/api/device/:identifier/configuration/cancel',(req,res)=>res.status(202).json({cancelled:cameraConfigurationService.cancel(String(req.body.planId||''))}));
-app.post('/api/bulk/configuration/plan',async(req,res)=>{try{res.json(await cameraConfigurationService.createBulkPlan(req.body.deviceIds||[],req.body.credentialIds||{},req.body.operation,req.body.proposal))}catch(error:any){res.status(400).json({error:error.message,code:error.code})}});
-app.post('/api/bulk/configuration/:batchId/apply',async(req,res)=>{try{const batch=await cameraConfigurationService.applyBulk(req.params.batchId,req.body.confirmed===true);broadcast({type:'BULK_DEVICE_CONFIG_UPDATED',data:{batch,project:projectDb.getProject()}});res.json(batch)}catch(error:any){res.status(400).json({error:error.message,code:error.code})}});
+app.post('/api/bulk/configuration/plan',async(req,res)=>{try{res.json(await cameraConfigurationService.createBulkPlan(req.body.deviceIds||[],req.body.credentialIds||{},req.body.operation,req.body.proposal))}catch(error:any){safeError(res,error,400,'BULK_CAMERA_CONFIG_PLAN')}});
+app.post('/api/bulk/configuration/:batchId/apply',async(req,res)=>{try{const batch=await cameraConfigurationService.applyBulk(req.params.batchId,req.body.confirmed===true);broadcast({type:'BULK_DEVICE_CONFIG_UPDATED',data:{batch,project:projectDb.getProject()}});res.json(batch)}catch(error:any){safeError(res,error,400,'BULK_CAMERA_CONFIG_APPLY')}});
 app.post('/api/bulk/configuration/:batchId/cancel',(req,res)=>res.status(202).json({cancelled:cameraConfigurationService.cancelBulk(req.params.batchId)}));
 app.post('/api/bulk/configuration/:batchId/retry',async(req,res)=>{try{res.json(await cameraConfigurationService.retryBulk(req.params.batchId))}catch(error:any){res.status(400).json({error:error.message,code:error.code})}});
 
@@ -409,8 +422,8 @@ app.get('/api/edge/collisions', (req, res) => {
 
 app.get('/api/edge/collisions/:collisionId',async(req,res)=>{try{res.json(await duplicateRemediationService.get(req.params.collisionId))}catch(error:any){res.status(404).json({error:error.message,code:error.code})}});
 app.post('/api/edge/collisions/:collisionId/candidates',async(req,res)=>{try{res.json({candidates:await duplicateRemediationService.candidates(req.params.collisionId,String(req.body.deviceId||''),Number(req.body.prefixLength),req.body.gateway)})}catch(error:any){res.status(400).json({error:error.message,code:error.code})}});
-app.post('/api/edge/collisions/:collisionId/preview',async(req,res)=>{try{res.json(await duplicateRemediationService.preview(req.params.collisionId,String(req.body.deviceId||''),String(req.body.credentialId||''),req.body.target))}catch(error:any){res.status(400).json({error:error.message,code:error.code})}});
-app.post('/api/edge/collisions/remediation/:remediationId/apply',async(req,res)=>{try{const result=await duplicateRemediationService.apply(req.params.remediationId,req.body.confirmed===true);broadcast({type:'COLLISION_REMEDIATION_UPDATED',data:{result,project:projectDb.getProject()}});res.json(result)}catch(error:any){res.status(400).json({error:error.message,code:error.code})}});
+app.post('/api/edge/collisions/:collisionId/preview',async(req,res)=>{try{res.json(await duplicateRemediationService.preview(req.params.collisionId,String(req.body.deviceId||''),String(req.body.credentialId||''),req.body.target))}catch(error:any){safeError(res,error,400,'DUPLICATE_REMEDIATION_PREVIEW',String(req.body.deviceId||''))}});
+app.post('/api/edge/collisions/remediation/:remediationId/apply',async(req,res)=>{try{const result=await duplicateRemediationService.apply(req.params.remediationId,req.body.confirmed===true);broadcast({type:'COLLISION_REMEDIATION_UPDATED',data:{result,project:projectDb.getProject()}});res.json(result)}catch(error:any){safeError(res,error,400,'DUPLICATE_REMEDIATION_APPLY')}});
 app.post('/api/edge/collisions/remediation/:remediationId/cancel',(req,res)=>res.status(202).json({cancelled:duplicateRemediationService.cancel(req.params.remediationId)}));
 app.post('/api/edge/collisions/:collisionId/retry',async(req,res)=>{try{res.json(await duplicateRemediationService.retry(req.params.collisionId,String(req.body.deviceId||''),String(req.body.credentialId||''),req.body.target))}catch(error:any){res.status(400).json({error:error.message,code:error.code})}});
 app.post('/api/edge/collisions/:collisionId/rescan',async(req,res)=>{try{const collision=await duplicateRemediationService.afterRescan(req.params.collisionId);broadcast({type:'COLLISION_REMEDIATION_UPDATED',data:{collision,project:projectDb.getProject()}});res.json(collision)}catch(error:any){res.status(400).json({error:error.message,code:error.code})}});

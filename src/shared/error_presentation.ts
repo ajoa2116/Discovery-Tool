@@ -1,0 +1,29 @@
+export type TechnicianErrorCode='UNREACHABLE'|'TIMEOUT'|'AUTHENTICATION_REQUIRED'|'AUTHENTICATION_FAILED'|'UNSUPPORTED'|'DIFFERENT_NETWORK'|'DUPLICATE_IP'|'AMBIGUOUS_IDENTITY'|'DISCOVERY_FAILED'|'OPERATION_FAILED'|'WINDOWS_PERMISSION_REQUIRED'|'ADAPTER_OPERATION_FAILED'|'PROJECT_FILE_INVALID'|'REPORT_FAILED'|'CANCELLED'|'UNKNOWN';
+export interface TechnicianErrorPresentation{title:string;message:string;action?:string;technicalDetails?:string;code:TechnicianErrorCode;reference:string;timestamp:string;context?:{operation?:string;deviceId?:string}}
+const secret=/(password|passwd|pwd|credential|authorization|cookie|token|secret|api[_-]?key)/i;
+export function sanitizeTechnicalDetail(value:unknown):string|undefined{
+  if(value===undefined||value===null)return undefined;
+  let text=value instanceof Error?value.message:String(value);
+  text=text.split(/\r?\n/)[0].replace(/\b(?:Basic|Bearer)\s+[A-Za-z0-9._~+\/-]+=*/gi,'[REDACTED AUTH]').replace(/([?&](?:password|passwd|pwd|token|secret|api[_-]?key)=)[^&\s]+/gi,'$1[REDACTED]').replace(/\b(password|passwd|pwd|token|secret)\s*[:=]\s*[^,;\s]+/gi,'$1=[REDACTED]');
+  return secret.test(text)&&!/credential (?:is|required|reference|provider)/i.test(text)?text.replace(/[^ ]+/g,part=>secret.test(part)?'[REDACTED]':part).slice(0,500):text.slice(0,500);
+}
+const has=(code:string,text:string,pattern:RegExp)=>pattern.test(code)||pattern.test(text);
+export function presentTechnicianError(error:unknown,context:{operation?:string;deviceId?:string;fallbackCode?:TechnicianErrorCode}={}):TechnicianErrorPresentation{
+  const raw=error instanceof Error?error.message:String(error||''),domain=String((error as {code?:unknown})?.code||context.fallbackCode||'UNKNOWN').toUpperCase();
+  let code:TechnicianErrorCode='UNKNOWN',title='Operation could not complete',message='The operation could not complete.',action='Technical Details may help diagnose the problem.';
+  if(has(domain,raw,/CANCEL/iu)){code='CANCELLED';title='Operation cancelled';message='The operation was cancelled before completion.';action='No further action is required unless you want to try again.'}
+  else if(has(domain,raw,/DUPLICATE|COLLISION|AMBIGU/iu)){code=domain.includes('DUPLICATE')?'DUPLICATE_IP':'AMBIGUOUS_IDENTITY';title='Device identity needs attention';message='The selected address cannot be attributed to one physical device.';action='Open Duplicate Assistant to identify the devices sharing this address.'}
+  else if(has(domain,raw,/DIFFERENT.?SUBNET|DIFFERENT.?NETWORK/iu)){code='DIFFERENT_NETWORK';title='Camera is on a different network';message='The camera is not directly reachable from the selected technician network.';action='Use Pair when you are ready to temporarily match the technician PC to the camera network.'}
+  else if(has(domain,raw,/ADMIN|PERMISSION|ACCESS.?DENIED|EACCES|EPERM/iu)){code='WINDOWS_PERMISSION_REQUIRED';title='Windows permission is required';message='Windows did not allow the requested system operation.';action='Run the application with the required administrator permission, then try again.'}
+  else if(has(domain,raw,/AUTH|CREDENTIAL|UNAUTHORIZED|401|403/iu)){code=has(domain,raw,/REQUIRED|NOT_FOUND|MISSING/iu)?'AUTHENTICATION_REQUIRED':'AUTHENTICATION_FAILED';title=code==='AUTHENTICATION_REQUIRED'?'Camera authentication is required':'Camera authentication failed';message=code==='AUTHENTICATION_REQUIRED'?'A saved camera credential is required for this operation.':'The camera rejected the selected credential.';action='Enter or select valid camera credentials and try again.'}
+  else if(has(domain,raw,/UNSUPPORTED|NOT_SUPPORTED|VENDOR_NATIVE/iu)){code='UNSUPPORTED';title='Operation is not supported';message='The current camera provider does not support this operation.';action='Use a supported provider or the camera web interface.'}
+  else if(has(domain,raw,/TIMEOUT|ETIMEDOUT|TIMED OUT/iu)){code='TIMEOUT';title='Camera response timed out';message='The camera did not respond before the operation timeout.';action='Check camera power and network connection, then try again.'}
+  else if(has(domain,raw,/UNREACH|ECONNREFUSED|CONNECTION_FAILED|FETCH FAILED|ENOENT/iu)){code='UNREACHABLE';title='Camera could not be reached';message='The camera did not respond during the connection check.';action='Check camera power and network connection, then try again.'}
+  else if(has(domain,raw,/PROJECT|INVALID.*FILE|JSON/iu)){code='PROJECT_FILE_INVALID';title='Project file could not be opened';message='The selected file is not a valid CCTV Network Assistant Project.';action='Choose a valid CCTV Network Assistant project file.'}
+  else if(has(domain,raw,/REPORT/iu)){code='REPORT_FAILED';title='Report could not be created';message='The report could not be generated from the selected scope.';action='Review the report selection and try again.'}
+  else if(has(domain,raw,/DISCOVERY|SCAN/iu)){code='DISCOVERY_FAILED';title='Scan could not complete';message='Network discovery stopped before it could finish.';action='Check the selected network adapter, then try the scan again.'}
+  else if(context.fallbackCode&&context.fallbackCode!=='UNKNOWN'){code=context.fallbackCode;}
+  const reference=`OP-${crypto.randomUUID().replace(/-/g,'').slice(0,8).toUpperCase()}`;
+  return{title,message,action,technicalDetails:sanitizeTechnicalDetail(raw),code,reference,timestamp:new Date().toISOString(),context:{operation:context.operation,deviceId:context.deviceId}};
+}
+export function technicianErrorResponse(error:unknown,context:{operation?:string;deviceId?:string;fallbackCode?:TechnicianErrorCode}={}){const presentation=presentTechnicianError(error,context);return{error:`${presentation.message}${presentation.action?` ${presentation.action}`:''} Reference: ${presentation.reference}`,code:presentation.code,presentation};}
