@@ -2,6 +2,7 @@ import { promises as fs } from 'node:fs';
 import { dirname } from 'node:path';
 import { CctvProjectBundle, Device, IPCollisionRecord, ProjectSession, RogueDHCPOffer, SiteProject } from '../../types/index.ts';
 import { appStateDb } from './app_db.ts';
+import { AppendProjectHistory, ProjectHistoryFilter, ProjectHistoryService } from './project_history.ts';
 
 const PROJECT_FORMAT = 'CCTV_DISCOVERY_PROJECT' as const;
 const PROJECT_SCHEMA_VERSION = 1 as const;
@@ -33,9 +34,10 @@ function validateProject(value: unknown): asserts value is SiteProject {
   if (!isObject(value) || typeof value.id !== 'string' || typeof value.name !== 'string') throw new ProjectValidationError('Project metadata is missing an id or name.');
   if (!Array.isArray(value.devices)) throw new ProjectValidationError('Project devices must be an array.');
   value.devices.forEach(validateDevice);
-  for (const key of ['collisions', 'rogueDhcpEvents', 'auditLogs'] as const) {
+  for (const key of ['collisions', 'rogueDhcpEvents'] as const) {
     if (!Array.isArray(value[key])) throw new ProjectValidationError(`Project ${key} must be an array.`);
   }
+  if (value.auditLogs !== undefined && !Array.isArray(value.auditLogs)) throw new ProjectValidationError('Project auditLogs must be an array when present.');
 }
 
 function makeProject(name: string, location = '', description = ''): SiteProject {
@@ -95,6 +97,7 @@ export class SiteProjectDatabase {
   public createNewProject(name: string, location = '', description = ''): SiteProject {
     if (!name.trim()) throw new ProjectValidationError('Project name is required.');
     this.resetTransientDeviceState(); this.session = { mode: 'PROJECT', project: makeProject(name.trim(), location.trim(), description.trim()), dirty: true };
+    this.appendHistory({ type:'PROJECT_CREATED', title:'Project Created', summary:`Project “${this.session.project.name}” was created.`, details:{ creationMethod:'NEW_PROJECT' } });
     return this.session.project;
   }
 
@@ -108,10 +111,12 @@ export class SiteProjectDatabase {
     project.rogueDhcpEvents = clone(current.rogueDhcpEvents);
     project.auditLogs = clone(current.auditLogs);
     this.resetTransientDeviceState(); this.session = { mode: 'PROJECT', project, dirty: true };
+    this.appendHistory({ type:'PROJECT_CREATED', title:'Project Created from Current Results', summary:`Project “${project.name}” was created with ${project.devices.length} device(s).`, details:{ creationMethod:'CURRENT_RESULTS', deviceCount:project.devices.length } });
+    for (const device of project.devices) this.appendHistory({ type:'DEVICE_ADDED', title:'Added to Project', summary:'Device was added when the Project was created from current results.', deviceId:device.id });
     return project;
   }
 
-  public upsertDevice(device: Device): Device {
+  public upsertDevice(device: Device, membershipHistory: 'DEVICE_ADDED'|'DEVICE_RE_ADDED' = 'DEVICE_ADDED'): Device {
     const devices = this.session.project.devices;
     const mac = device.anchor.macAddress?.toLowerCase();
     const uuid = device.anchor.onvifEndpointUuid?.toLowerCase();
@@ -137,6 +142,7 @@ export class SiteProjectDatabase {
     }
 
     let storedDevice: Device;
+    const previousIp = existingIndex >= 0 ? devices[existingIndex].network.ipAddress : undefined;
     if (existingIndex >= 0) {
       const existing = devices[existingIndex];
       const history = Array.from(new Set([...(existing.network.ipAddressHistory || [existing.network.ipAddress]), existing.network.ipAddress, device.network.ipAddress]));
@@ -172,14 +178,23 @@ export class SiteProjectDatabase {
       devices.splice(i, 1);
     }
     this.markDirty();
+    if (this.session.mode === 'PROJECT') {
+      if (existingIndex < 0) this.appendHistory({ type:membershipHistory, title:membershipHistory==='DEVICE_RE_ADDED'?'Re-added to Project':'Added to Project', summary:membershipHistory==='DEVICE_RE_ADDED'?'A previously removed stable identity was explicitly re-added to the Project.':'A stable device identity was added to the Project.', deviceId:storedDevice.id, details:{operation:'ADD_TO_EXISTING_PROJECT',result:membershipHistory==='DEVICE_RE_ADDED'?'RE_ADDED':'ADDED'} });
+      else if (previousIp !== storedDevice.network.ipAddress) this.appendHistory({ type:'IP_ADDRESS_CHANGED', title:'IP Address Changed', summary:`IP changed from ${previousIp} to ${storedDevice.network.ipAddress}.`, deviceId:storedDevice.id, details:{ previousIp, currentIp:storedDevice.network.ipAddress } });
+    }
     return storedDevice;
   }
 
   public updateDeviceTechnicianFields(id: string, fields: { name?: string; location?: string; notes?: string }): Device {
     const device = this.getDeviceById(id);
     if (!device) throw new ProjectValidationError('Device not found.');
-    device.technician = { ...device.technician, ...fields };
+    const before = clone(device.technician || {}); device.technician = { ...device.technician, ...fields };
     this.markDirty();
+    if (this.session.mode === 'PROJECT') {
+      if (fields.name !== undefined && fields.name !== before.name) this.appendHistory({type:'TECHNICIAN_NAME_CHANGED',title:'Device Name Changed',summary:'Technician changed the device name.',deviceId:id,details:{before:before.name||'',after:fields.name}});
+      if (fields.location !== undefined && fields.location !== before.location) this.appendHistory({type:'LOCATION_CHANGED',title:'Device Location Changed',summary:'Technician changed the device location.',deviceId:id,details:{before:before.location||'',after:fields.location}});
+      if (fields.notes !== undefined && fields.notes !== before.notes) this.appendHistory({type:'NOTES_UPDATED',title:'Notes Updated',summary:'Technician updated device notes.',deviceId:id});
+    }
     return device;
   }
 
@@ -206,7 +221,7 @@ export class SiteProjectDatabase {
     const duplicateIndex = this.session.project.devices.findIndex((device, candidateIndex) => candidateIndex !== index && device.id === replacement.id && this.currentOnlyDeviceIds.has(device.id));
     if (duplicateIndex >= 0) this.session.project.devices.splice(duplicateIndex, 1);
     this.currentOnlyDeviceIds.delete(replacement.id); this.hiddenCurrentDeviceIds.delete(original.id);
-    this.session.project.auditLogs.push({ id: crypto.randomUUID(), timestamp, category: 'EDGE_CASE', level: 'SUCCESS', message: 'Technician confirmed Project device replacement.', deviceId: original.id, details: { previousIdentity: { macAddress: original.anchor.macAddress, onvifEndpointUuid: original.anchor.onvifEndpointUuid, serialNumber: original.anchor.serialNumber, ipAddress: original.network.ipAddress }, replacementIdentity: { macAddress: replacement.anchor.macAddress, onvifEndpointUuid: replacement.anchor.onvifEndpointUuid, serialNumber: replacement.anchor.serialNumber, ipAddress: replacement.network.ipAddress } } });
+    this.appendHistory({ type:'REPLACEMENT_CONFIRMED', title:'Replacement Confirmed', summary:'Technician confirmed Project device replacement.', deviceId:original.id, timestamp, level:'SUCCESS', category:'EDGE_CASE', result:'SUCCESS', details: { previousIdentity: { macAddress: original.anchor.macAddress, onvifEndpointUuid: original.anchor.onvifEndpointUuid, serialNumber: original.anchor.serialNumber, ipAddress: original.network.ipAddress }, replacementIdentity: { macAddress: replacement.anchor.macAddress, onvifEndpointUuid: replacement.anchor.onvifEndpointUuid, serialNumber: replacement.anchor.serialNumber, ipAddress: replacement.network.ipAddress } } });
     this.markDirty();
     return clone(updated);
   }
@@ -221,7 +236,7 @@ export class SiteProjectDatabase {
     const index = this.session.project.devices.findIndex(device => device.id === id);
     if (index < 0) throw new ProjectValidationError('Device not found.');
     const [device] = this.session.project.devices.splice(index, 1);
-    this.session.project.auditLogs.push({ id: crypto.randomUUID(), timestamp: new Date().toISOString(), category: 'SYSTEM', level: 'INFO', message: 'Technician explicitly removed device from Project membership.', deviceId: device.id, details: { operation: 'REMOVE_FROM_PROJECT', identity: { macAddress: device.anchor.macAddress, onvifEndpointUuid: device.anchor.onvifEndpointUuid, serialNumber: device.anchor.serialNumber } } });
+    this.appendHistory({ type:'DEVICE_REMOVED', title:'Removed from Project', summary:'Technician explicitly removed this device from Project membership.', deviceId:device.id, details:{ operation:'REMOVE_FROM_PROJECT', identity:{ macAddress:device.anchor.macAddress,onvifEndpointUuid:device.anchor.onvifEndpointUuid,serialNumber:device.anchor.serialNumber } } });
     this.hiddenCurrentDeviceIds.delete(id); this.currentOnlyDeviceIds.delete(id);
     this.removedProjectIdentities.push({ id, mac: device.anchor.macAddress?.toLowerCase(), uuid: device.anchor.onvifEndpointUuid?.toLowerCase(), serial: device.anchor.serialNumber?.toLowerCase() });
     this.markDirty();
@@ -240,7 +255,10 @@ export class SiteProjectDatabase {
   public getCollisions(): IPCollisionRecord[] { return this.session.project.collisions; }
   public recordRogueDhcp(event: RogueDHCPOffer): void { this.session.project.rogueDhcpEvents.push(event); this.markDirty(); }
   public getRogueDhcpEvents(): RogueDHCPOffer[] { return this.session.project.rogueDhcpEvents; }
-  public recordProjectAudit(entry: SiteProject['auditLogs'][number]): void { this.session.project.auditLogs.push(clone(entry)); this.markDirty(); }
+  public appendHistory(event: AppendProjectHistory): void { if (this.session.mode !== 'PROJECT') return; this.session.project.auditLogs = ProjectHistoryService.bounded([...this.session.project.auditLogs, ProjectHistoryService.create(event)]); this.markDirty(); }
+  public recordProjectAudit(entry: SiteProject['auditLogs'][number]): void { if (this.session.mode !== 'PROJECT') return; this.session.project.auditLogs = ProjectHistoryService.bounded([...this.session.project.auditLogs, clone(entry)]); this.markDirty(); }
+  public listProjectHistory(filter: ProjectHistoryFilter = 'ALL', deviceId?: string) { return this.session.mode === 'PROJECT' ? ProjectHistoryService.list(this.session.project.auditLogs, filter, deviceId) : []; }
+  public recordConfigurationHistory(deviceId:string, operation:string, result:'SUCCESS'|'FAILED'|'CANCELLED'|'UNKNOWN', details:Record<string,unknown>={}) { this.appendHistory({type:'CONFIGURATION',title:'Configuration Operation',summary:`${operation} completed with result ${result}.`,deviceId,result,level:result==='SUCCESS'?'SUCCESS':result==='FAILED'?'ERROR':'INFO',category:'PROVISIONING',details:{operation,...details}}); }
 
   public exportProjectJson(): string {
     if (this.session.mode !== 'PROJECT') throw new ProjectValidationError('Create a project before saving Quick Work results.');
@@ -320,6 +338,7 @@ export class SiteProjectDatabase {
     } else throw new ProjectValidationError('Unsupported project file format.');
     validateProject(project);
     const loaded = sanitize(clone(project)) as SiteProject;
+    loaded.auditLogs = ProjectHistoryService.bounded(Array.isArray(loaded.auditLogs) ? loaded.auditLogs : []);
     loaded.totalDevices = loaded.devices.length;
     loaded.devices = loaded.devices.map(prepareLoadedDevice);
     return loaded;

@@ -26,6 +26,7 @@ import { technicianErrorResponse } from '../shared/error_presentation.ts';
 import { SupportBundleBuilder } from '../core/readiness/support_bundle.ts';
 import { AddToExistingProjectService } from '../core/storage/add_to_existing_project.ts';
 import { LocalHostIdentity } from '../core/network/local_host_identity.ts';
+import { ProjectHistoryFilter } from '../core/storage/project_history.ts';
 
 const app = express();
 const server = createServer(app);
@@ -123,6 +124,12 @@ app.get('/api/project', (req, res) => {
 
 app.get('/api/project/session', (req, res) => {
   res.json(projectDb.getSession());
+});
+app.get('/api/project/history', (req,res) => {
+  if(projectDb.getSession().mode!=='PROJECT')return res.status(400).json({error:'Project history is available only when a Project is open.'});
+  const filter=String(req.query.filter||'ALL') as ProjectHistoryFilter;
+  if(!['ALL','DEVICE','VERIFICATION','CONFIGURATION','PROJECT'].includes(filter))return res.status(400).json({error:'Project history filter is not supported.'});
+  res.json({events:projectDb.listProjectHistory(filter,typeof req.query.deviceId==='string'?req.query.deviceId:undefined)});
 });
 
 app.post('/api/devices/:id/remove-current', (req, res) => {

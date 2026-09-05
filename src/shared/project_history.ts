@@ -1,0 +1,5 @@
+import type { AuditLogEntry } from '../types/index.ts';
+export type ProjectHistoryType = 'PROJECT_CREATED'|'DEVICE_ADDED'|'DEVICE_RE_ADDED'|'DEVICE_REMOVED'|'IP_ADDRESS_CHANGED'|'IDENTITY_VERIFIED'|'IDENTITY_EVIDENCE_CHANGED'|'DIFFERENT_NETWORK'|'NOT_VERIFIED'|'REVERIFY_COMPLETED'|'REPLACEMENT_CANDIDATE'|'REPLACEMENT_CONFIRMED'|'REPLACEMENT_REJECTED'|'REPLACEMENT_DEFERRED'|'CONFIGURATION'|'TECHNICIAN_NAME_CHANGED'|'LOCATION_CHANGED'|'NOTES_UPDATED'|'UNKNOWN';
+export type ProjectHistoryFilter = 'ALL'|'DEVICE'|'VERIFICATION'|'CONFIGURATION'|'PROJECT';
+export interface ProjectHistoryEvent extends AuditLogEntry { type: ProjectHistoryType; title: string; summary: string; source: string; result?: 'SUCCESS'|'FAILED'|'CANCELLED'|'UNKNOWN'; }
+export interface AppendProjectHistory { type: ProjectHistoryType; title: string; summary: string; deviceId?: string; timestamp?: string; level?: AuditLogEntry['level']; category?: AuditLogEntry['category']; result?: ProjectHistoryEvent['result']; source?: string; details?: Record<string, unknown>; }

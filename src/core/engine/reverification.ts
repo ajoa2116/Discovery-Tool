@@ -83,6 +83,16 @@ export class ProjectReverificationWorkflow {
       }
       this.db.applyReverification(plan.projectDevices, plan.newDevices || [], plan.persistentChanged, session.dirty);
       const result = ProjectReverificationEngine.toResult(plan);
+      const baselineById = new Map(baseline.map(device=>[device.id,device]));
+      for (const device of result.verifiedDevices || []) {
+        const previous = baselineById.get(device.id);
+        if (previous && previous.network.ipAddress !== device.network.ipAddress) this.db.appendHistory({type:'IP_ADDRESS_CHANGED',title:'IP Address Changed',summary:`IP changed from ${previous.network.ipAddress} to ${device.network.ipAddress} during Project Reverify.`,deviceId:device.id,source:'PROJECT_REVERIFY',details:{previousIp:previous.network.ipAddress,currentIp:device.network.ipAddress}});
+        const different = device.reachability?.subnetClassification === 'DIFFERENT_SUBNET';
+        this.db.appendHistory({type:different?'DIFFERENT_NETWORK':'IDENTITY_VERIFIED',title:different?'Different Network':'Identity Verified',summary:different?'Stable identity was verified on a different network.':'Stable device identity was verified during Project Reverify.',deviceId:device.id,source:'PROJECT_REVERIFY',result:'SUCCESS'});
+      }
+      for (const device of result.notVerifiedDevices || []) this.db.appendHistory({type:'NOT_VERIFIED',title:'Not Verified',summary:'Device was not verified during the latest Project Reverify.',deviceId:device.id,source:'PROJECT_REVERIFY',result:'UNKNOWN',level:'WARNING'});
+      for (const candidate of result.possibleReplacements) this.db.appendHistory({type:'REPLACEMENT_CANDIDATE',title:'Replacement Candidate',summary:'A different stable identity was found at the saved Project address.',deviceId:candidate.originalDeviceId,source:'PROJECT_REVERIFY',level:'WARNING',details:{candidateId:candidate.candidateId,expected:{macAddress:candidate.expectedMac,serialNumber:candidate.expectedSerial,ipAddress:candidate.expectedIp},found:{macAddress:candidate.foundMac,serialNumber:candidate.foundSerial,ipAddress:candidate.foundIp}}});
+      this.db.appendHistory({type:'REVERIFY_COMPLETED',title:'Project Reverify Completed',summary:`${result.recognizedCount} verified, ${result.notVerifiedCount} not verified, ${result.newDevicesCount} new device(s), ${result.possibleReplacements.length} replacement candidate(s).`,source:'PROJECT_REVERIFY',result:'SUCCESS',details:{recognizedCount:result.recognizedCount,notVerifiedCount:result.notVerifiedCount,newDevicesCount:result.newDevicesCount,changedIpCount:result.changedIpCount,replacementCandidateCount:result.possibleReplacements.length}});
       appStateDb.logAudit({ id: crypto.randomUUID(), timestamp: new Date().toISOString(), category: 'EDGE_CASE', level: result.possibleReplacements.length ? 'WARNING' : 'INFO', message: `Project reverification completed: ${result.recognizedCount} verified, ${result.notVerifiedCount} not verified, ${result.newDevicesCount} new, ${result.possibleReplacements.length} replacement candidate(s).` });
       return result;
     } catch (error) {
@@ -93,6 +103,8 @@ export class ProjectReverificationWorkflow {
   public decide(candidateId: string, decision: 'CONFIRMED'|'REJECTED'|'DEFERRED'): { device?: Device } {
     const candidate = this.candidates.get(candidateId); if (!candidate) throw new ProjectValidationError('This replacement candidate is no longer available. Run Reverify again.');
     const device = decision === 'CONFIRMED' ? this.db.confirmProjectReplacement(candidate.originalDeviceId, candidate.replacement) : undefined;
+    if (decision === 'REJECTED') this.db.appendHistory({type:'REPLACEMENT_REJECTED',title:'Kept Original Device',summary:'Technician reviewed the candidate and kept the original Project identity.',deviceId:candidate.originalDeviceId,source:'PROJECT_REVERIFY'});
+    if (decision === 'DEFERRED') this.db.appendHistory({type:'REPLACEMENT_DEFERRED',title:'Replacement Decision Deferred',summary:'Technician chose to decide on this replacement candidate later.',deviceId:candidate.originalDeviceId,source:'PROJECT_REVERIFY'});
     if (decision !== 'DEFERRED') this.candidates.delete(candidateId); return { device };
   }
 }

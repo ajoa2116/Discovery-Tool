@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Device, DiagnosticCheckEvidence } from '../../types/index.ts';
-import { X, Video, Server, Activity, Fingerprint, ExternalLink, RefreshCw, AlertTriangle } from 'lucide-react';
+import { X, Video, Server, Activity, Fingerprint, ExternalLink, RefreshCw, AlertTriangle, History } from 'lucide-react';
+import { ProjectHistoryList } from './ProjectHistory.tsx';
 
 interface DeviceInspectorDrawerProps {
   isOpen: boolean;
@@ -9,12 +10,13 @@ interface DeviceInspectorDrawerProps {
   onOpenConfigureModal: (dev: Device) => void;
   onOpenBrowserModal: (dev: Device) => void;
   onDiagnose: (dev: Device) => void;
+  projectMode?: boolean;
 }
 
 const checkLabel = (check: DiagnosticCheckEvidence) => check.type === 'TCP' ? `TCP ${check.port}` : check.type.replaceAll('_', ' ');
 
-export const DeviceInspectorDrawer: React.FC<DeviceInspectorDrawerProps> = ({ isOpen, onClose, device, onOpenConfigureModal, onOpenBrowserModal, onDiagnose }) => {
-  const [activeTab, setActiveTab] = useState<'DIAGNOSTICS' | 'IDENTITY'>('DIAGNOSTICS');
+export const DeviceInspectorDrawer: React.FC<DeviceInspectorDrawerProps> = ({ isOpen, onClose, device, onOpenConfigureModal, onOpenBrowserModal, onDiagnose, projectMode }) => {
+  const [activeTab, setActiveTab] = useState<'DIAGNOSTICS' | 'IDENTITY' | 'HISTORY'>('DIAGNOSTICS');
   if (!isOpen || !device) return null;
   const checks = [...(device.diagnostics?.checks || [])].reverse();
   const adapter = device.reachability?.discoveryInterface;
@@ -36,6 +38,7 @@ export const DeviceInspectorDrawer: React.FC<DeviceInspectorDrawerProps> = ({ is
       <div className="flex border-b border-slate-800 bg-slate-950/60 px-3 text-xs gap-2">
         <button onClick={() => setActiveTab('DIAGNOSTICS')} className={`py-2.5 px-3 font-semibold border-b-2 flex items-center gap-1.5 ${activeTab === 'DIAGNOSTICS' ? 'border-sky-400 text-sky-400' : 'border-transparent text-slate-400'}`}><Activity className="w-3.5 h-3.5" />Diagnostics</button>
         <button onClick={() => setActiveTab('IDENTITY')} className={`py-2.5 px-3 font-semibold border-b-2 flex items-center gap-1.5 ${activeTab === 'IDENTITY' ? 'border-sky-400 text-sky-400' : 'border-transparent text-slate-400'}`}><Fingerprint className="w-3.5 h-3.5" />Identity & Network</button>
+        {projectMode&&<button onClick={() => setActiveTab('HISTORY')} className={`py-2.5 px-3 font-semibold border-b-2 flex items-center gap-1.5 ${activeTab === 'HISTORY' ? 'border-sky-400 text-sky-400' : 'border-transparent text-slate-400'}`}><History className="w-3.5 h-3.5" />History</button>}
       </div>
 
       <div className="p-4 overflow-y-auto flex-1 space-y-3 text-xs">
@@ -73,6 +76,7 @@ export const DeviceInspectorDrawer: React.FC<DeviceInspectorDrawerProps> = ({ is
           <div><span className="text-slate-500">Originating adapter</span><p className="text-slate-200">{adapter ? `${adapter.name} — ${adapter.ipAddress} / ${adapter.netmask}` : 'Unknown'}</p></div>
           <div><span className="text-slate-500">ONVIF discovery response</span><p className="text-slate-200">{device.reachability?.wsDiscoveryRespondedAt || 'Not observed'}</p></div>
         </div>}
+        {activeTab === 'HISTORY' && projectMode && <ProjectHistoryList deviceId={device.id}/>}
       </div>
 
       <div className="p-3 bg-slate-950 border-t border-slate-800 flex gap-2">
