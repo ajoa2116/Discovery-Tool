@@ -24,6 +24,8 @@ import { DEFAULT_MONITORING_INTERVAL_MS, IncrementalDiscoveryMonitor } from '../
 import { LegacyConfigurationBoundary } from '../core/network/legacy_configuration_boundary.ts';
 import { technicianErrorResponse } from '../shared/error_presentation.ts';
 import { SupportBundleBuilder } from '../core/readiness/support_bundle.ts';
+import { AddToExistingProjectService } from '../core/storage/add_to_existing_project.ts';
+import { LocalHostIdentity } from '../core/network/local_host_identity.ts';
 
 const app = express();
 const server = createServer(app);
@@ -40,6 +42,7 @@ const bulkNetworkService = new BulkNetworkConfigurationService(projectDb, osVaul
 const advancedScanService = new AdvancedScanService();
 const legacyConfigurationBoundary = new LegacyConfigurationBoundary(projectDb);
 const supportBundleBuilder = new SupportBundleBuilder();
+const addToExistingProjectService = new AddToExistingProjectService();
 const reverifyWorkflow = new ProjectReverificationWorkflow(
   projectDb,
   database => pipelineEngine.runDiscoveryScan({ database, emitTerminalEvent: false, emitDeviceEvents: false }),
@@ -163,6 +166,9 @@ app.post('/api/project/from-current', (req, res) => {
     res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
   }
 });
+app.post('/api/project/add-existing/preview',async(req,res)=>{try{const ids=Array.isArray(req.body.deviceIds)?req.body.deviceIds.map(String):[],selected=ids.map((id:string)=>projectDb.getDeviceById(id)).filter(Boolean);const adapters=await advancedScanService.listAdapters().catch(()=>[]);res.json(addToExistingProjectService.preview(String(req.body.jsonData||''),selected,LocalHostIdentity.fromAdapters(adapters)))}catch(error){safeError(res,error,400,'ADD_TO_EXISTING_PROJECT_PREVIEW')}});
+app.post('/api/project/add-existing/confirm',(req,res)=>{try{const result=addToExistingProjectService.confirm(String(req.body.planId||''),req.body.confirmed===true);appStateDb.logAudit({id:crypto.randomUUID(),timestamp:new Date().toISOString(),category:'SYSTEM',level:'SUCCESS',message:`Add to Existing Project created an updated Project file: ${result.added} added, ${result.updated} reconciled, ${result.blocked} blocked.`,details:{operation:'ADD_TO_EXISTING_PROJECT',added:result.added,updated:result.updated,blocked:result.blocked}});res.json(result)}catch(error){safeError(res,error,400,'ADD_TO_EXISTING_PROJECT_CONFIRM')}});
+app.post('/api/project/add-existing/cancel',(req,res)=>res.json({cancelled:addToExistingProjectService.cancel(String(req.body.planId||''))}));
 
 app.post('/api/project/open', (req, res) => {
   try {

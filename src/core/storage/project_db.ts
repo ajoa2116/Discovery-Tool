@@ -221,6 +221,7 @@ export class SiteProjectDatabase {
     const index = this.session.project.devices.findIndex(device => device.id === id);
     if (index < 0) throw new ProjectValidationError('Device not found.');
     const [device] = this.session.project.devices.splice(index, 1);
+    this.session.project.auditLogs.push({ id: crypto.randomUUID(), timestamp: new Date().toISOString(), category: 'SYSTEM', level: 'INFO', message: 'Technician explicitly removed device from Project membership.', deviceId: device.id, details: { operation: 'REMOVE_FROM_PROJECT', identity: { macAddress: device.anchor.macAddress, onvifEndpointUuid: device.anchor.onvifEndpointUuid, serialNumber: device.anchor.serialNumber } } });
     this.hiddenCurrentDeviceIds.delete(id); this.currentOnlyDeviceIds.delete(id);
     this.removedProjectIdentities.push({ id, mac: device.anchor.macAddress?.toLowerCase(), uuid: device.anchor.onvifEndpointUuid?.toLowerCase(), serial: device.anchor.serialNumber?.toLowerCase() });
     this.markDirty();
@@ -239,6 +240,7 @@ export class SiteProjectDatabase {
   public getCollisions(): IPCollisionRecord[] { return this.session.project.collisions; }
   public recordRogueDhcp(event: RogueDHCPOffer): void { this.session.project.rogueDhcpEvents.push(event); this.markDirty(); }
   public getRogueDhcpEvents(): RogueDHCPOffer[] { return this.session.project.rogueDhcpEvents; }
+  public recordProjectAudit(entry: SiteProject['auditLogs'][number]): void { this.session.project.auditLogs.push(clone(entry)); this.markDirty(); }
 
   public exportProjectJson(): string {
     if (this.session.mode !== 'PROJECT') throw new ProjectValidationError('Create a project before saving Quick Work results.');

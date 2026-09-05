@@ -22,6 +22,7 @@ import { SiteSurveyReportModal } from './components/SiteSurveyReportModal.tsx';
 import { AdvancedScanModal } from './components/AdvancedScanModal.tsx';
 import { PairNetworkModal } from './components/PairNetworkModal.tsx';
 import { ProjectReverifyModal } from './components/ProjectReverifyModal.tsx';
+import { AddExistingPreview, AddToExistingProjectModal } from './components/AddToExistingProjectModal.tsx';
 import { SettingsMenu, UiMonitoringStatus, UiPreflight } from './components/SettingsMenu.tsx';
 import {
   ShieldCheck,
@@ -56,6 +57,7 @@ export default function App() {
   const [projectSession, setProjectSession] = useState<ProjectSession | null>(null);
   const [projectFilename, setProjectFilename] = useState('');
   const openProjectInput = useRef<HTMLInputElement>(null);
+  const addExistingProjectInput = useRef<HTMLInputElement>(null);
   const [interfaces, setInterfaces] = useState<NICInfo[]>([]);
   const [isScanning, setIsScanning] = useState(false);
   const [advancedScanOpen, setAdvancedScanOpen] = useState(false);
@@ -90,6 +92,7 @@ export default function App() {
   const [filtersVisible, setFiltersVisible] = useState(true);
   const [hasCompletedScan, setHasCompletedScan] = useState(false);
   const [preflight, setPreflight] = useState<UiPreflight|null>(null);
+  const [addExisting, setAddExisting] = useState<{preview:AddExistingPreview;filename:string}|null>(null);
   const menuAreaRef = useRef<HTMLDivElement>(null);
 
   // New device notification (Section 16)
@@ -235,6 +238,10 @@ export default function App() {
       event.target.value = '';
     }
   };
+
+  const handleAddExistingFile=async(event:React.ChangeEvent<HTMLInputElement>)=>{const file=event.target.files?.[0];event.target.value='';if(!file)return;try{const response=await fetch('http://localhost:3001/api/project/add-existing/preview',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({jsonData:await file.text(),deviceIds:[...selectedDeviceIds]})}),data=await response.json();if(!response.ok)throw new Error(data.error||'The selected Project could not be opened.');setAddExisting({preview:data,filename:file.name})}catch(error){window.alert(error instanceof Error?error.message:'The selected Project could not be opened.')}};
+  const cancelAddExisting=()=>{if(addExisting)void fetch('http://localhost:3001/api/project/add-existing/cancel',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({planId:addExisting.preview.planId})});setAddExisting(null)};
+  const confirmAddExisting=async()=>{if(!addExisting)return;const response=await fetch('http://localhost:3001/api/project/add-existing/confirm',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({planId:addExisting.preview.planId,confirmed:true})}),data=await response.json();if(!response.ok)throw new Error(data.error||'The updated Project could not be created.');const url=URL.createObjectURL(new Blob([data.content],{type:'application/json'})),anchor=document.createElement('a');anchor.href=url;anchor.download=addExisting.filename;anchor.click();URL.revokeObjectURL(url);setAddExisting(null);window.alert(`Updated Project downloaded as ${addExisting.filename}. Keep this file as the new Project copy.`)};
 
   const handleSaveProject = async (saveAs = false) => {
     if (projectSession?.mode !== 'PROJECT') {
@@ -396,10 +403,11 @@ export default function App() {
       <header className="border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-4 sm:px-6 py-2 flex items-center justify-between gap-4">
         <div className="flex items-center gap-2 min-w-0"><ShieldCheck className="w-5 h-5 text-blue-600 shrink-0"/><div className="min-w-0"><h1 className="font-bold text-sm sm:text-base text-slate-900 dark:text-white truncate">CCTV Network Assistant</h1><p className="text-[11px] text-slate-500 truncate">{projectSession?.mode==='PROJECT'?(project?.name||'Project'):'Quick Work'}{projectSession?.dirty&&<span className="text-amber-600"> • Unsaved</span>}</p></div></div>
         <div ref={menuAreaRef} className="flex items-center gap-1.5 shrink-0">
-          <div className="relative"><button aria-haspopup="menu" aria-expanded={openMenu==='PROJECT'} onClick={()=>setOpenMenu(openMenu==='PROJECT'?null:'PROJECT')} className="ui-header-button">Project <ChevronDown className="w-3.5 h-3.5"/></button>{openMenu==='PROJECT'&&<div role="menu" className="ui-menu"><button onClick={()=>{void handleNewProject();setOpenMenu(null)}}>New Project</button>{projectSession?.mode==='QUICK_WORK'&&(project?.devices.length||0)>0&&<button onClick={()=>{void handleCreateFromCurrent();setOpenMenu(null)}}>Create Project from Results</button>}<button onClick={()=>{openProjectInput.current?.click();setOpenMenu(null)}}>Open Project</button><button onClick={()=>{void handleSaveProject(false);setOpenMenu(null)}}>Save Project</button>{projectSession?.mode==='PROJECT'&&<><button onClick={()=>{void handleSaveProject(true);setOpenMenu(null)}}>Save As</button><button disabled={projectReverifyOpen} onClick={()=>{setProjectReverifyOpen(true);setOpenMenu(null)}}>Reverify</button></>}</div>}</div>
+          <div className="relative"><button aria-haspopup="menu" aria-expanded={openMenu==='PROJECT'} onClick={()=>setOpenMenu(openMenu==='PROJECT'?null:'PROJECT')} className="ui-header-button">Project <ChevronDown className="w-3.5 h-3.5"/></button>{openMenu==='PROJECT'&&<div role="menu" className="ui-menu"><button onClick={()=>{void handleNewProject();setOpenMenu(null)}}>New Project</button>{projectSession?.mode==='QUICK_WORK'&&(project?.devices.length||0)>0&&<button onClick={()=>{void handleCreateFromCurrent();setOpenMenu(null)}}>Create Project from Results</button>}{projectSession?.mode==='QUICK_WORK'&&<button disabled={selectedDeviceIds.size===0} onClick={()=>{addExistingProjectInput.current?.click();setOpenMenu(null)}}>Add Selected to Existing Project</button>}<button onClick={()=>{openProjectInput.current?.click();setOpenMenu(null)}}>Open Project</button><button onClick={()=>{void handleSaveProject(false);setOpenMenu(null)}}>Save Project</button>{projectSession?.mode==='PROJECT'&&<><button onClick={()=>{void handleSaveProject(true);setOpenMenu(null)}}>Save As</button><button disabled={projectReverifyOpen} onClick={()=>{setProjectReverifyOpen(true);setOpenMenu(null)}}>Reverify</button></>}</div>}</div>
           <div className="relative"><button aria-haspopup="menu" aria-expanded={openMenu==='TOOLS'} onClick={()=>setOpenMenu(openMenu==='TOOLS'?null:'TOOLS')} className="ui-header-button">Tools <ChevronDown className="w-3.5 h-3.5"/></button>{openMenu==='TOOLS'&&<div role="menu" className="ui-menu"><button onClick={()=>{setIsLegacyModalOpen(true);setOpenMenu(null)}}>Add Device Manually</button><button onClick={()=>{setIsSiteSurveyModalOpen(true);setOpenMenu(null)}}>Reports</button></div>}</div>
           <div className="relative"><button aria-haspopup="menu" aria-expanded={openMenu==='SETTINGS'} onClick={()=>setOpenMenu(openMenu==='SETTINGS'?null:'SETTINGS')} className="ui-header-button"><Settings className="w-4 h-4"/>Settings <ChevronDown className="w-3.5 h-3.5"/></button>{openMenu==='SETTINGS'&&<SettingsMenu preferences={preferences} onPreferences={changePreferences} monitoring={diagnosticRefresh} preflight={preflight} onClose={()=>setOpenMenu(null)}/>}</div>
           <input ref={openProjectInput} type="file" accept=".cctvproj,application/json" onChange={handleOpenProject} className="hidden" />
+          <input ref={addExistingProjectInput} type="file" accept=".cctvproj,application/json" onChange={handleAddExistingFile} className="hidden" />
         </div>
       </header>
 
@@ -501,6 +509,7 @@ export default function App() {
             </div>
 
             <div className="flex items-center gap-2">
+              {projectSession?.mode==='QUICK_WORK'&&<button onClick={()=>addExistingProjectInput.current?.click()} className="px-3.5 py-1.5 bg-blue-700 hover:bg-blue-600 text-white rounded-lg font-bold transition flex items-center gap-1.5"><FolderOpen className="w-3.5 h-3.5"/>Add to Existing Project</button>}
               <button
                 onClick={() => handleDiagnose(selectedDevicesList).catch(error => window.alert(error.message))}
                 className="px-3.5 py-1.5 bg-emerald-700 hover:bg-emerald-600 text-white rounded-lg font-bold transition flex items-center gap-1.5"
@@ -580,6 +589,7 @@ export default function App() {
         onDiagnose={(dev) => handleDiagnose([dev]).catch(error => window.alert(error.message))}
       />
 
+      {addExisting&&<AddToExistingProjectModal preview={addExisting.preview} filename={addExisting.filename} onCancel={cancelAddExisting} onConfirm={confirmAddExisting}/>}
       <PairNetworkModal
         isOpen={pairDevice !== null || Boolean(!pairModalDismissed && pairSession?.recoveryAvailable && ['PAIRED', 'ROLLBACK_REQUIRED'].includes(pairSession.state))}
         device={pairDevice || project?.devices.find(device => device.id === pairSession?.deviceId) || null}
