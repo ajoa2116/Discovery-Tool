@@ -8,7 +8,6 @@ import { appStateDb } from '../core/storage/app_db.ts';
 import { osVault } from '../core/storage/vault.ts';
 import { DuplicateRemediationService } from '../core/edge_cases/duplicate_remediation_service.ts';
 import { LegacyHardwareOnboarding } from '../core/edge_cases/legacy_hardware.ts';
-import { OnvifDriver } from '../core/drivers/onvif.ts';
 import { BulkNetworkConfigurationService } from '../core/engine/bulk_reip.ts';
 import { ProjectReverificationWorkflow } from '../core/engine/reverification.ts';
 import { ProjectValidationError } from '../core/storage/project_db.ts';
@@ -22,6 +21,7 @@ import { createReportRouter } from './report_routes.ts';
 import { ShutdownCoordinator, WindowsPreflightService } from '../core/readiness/field_readiness.ts';
 import { AdvancedScanService } from '../core/engine/advanced_scan.ts';
 import { DEFAULT_MONITORING_INTERVAL_MS, IncrementalDiscoveryMonitor } from '../core/engine/incremental_discovery_monitor.ts';
+import { LegacyConfigurationBoundary } from '../core/network/legacy_configuration_boundary.ts';
 
 const app = express();
 const server = createServer(app);
@@ -36,6 +36,7 @@ const duplicateRemediationService = new DuplicateRemediationService(projectDb,os
 const cameraConfigurationService = new CameraConfigurationService(projectDb,osVault,new PreferredCameraConfigurationProvider());
 const bulkNetworkService = new BulkNetworkConfigurationService(projectDb, osVault, cameraNetworkService);
 const advancedScanService = new AdvancedScanService();
+const legacyConfigurationBoundary = new LegacyConfigurationBoundary(projectDb);
 const reverifyWorkflow = new ProjectReverificationWorkflow(
   projectDb,
   database => pipelineEngine.runDiscoveryScan({ database, emitTerminalEvent: false, emitDeviceEvents: false }),
@@ -380,38 +381,20 @@ app.post('/api/bulk/configuration/:batchId/cancel',(req,res)=>res.status(202).js
 app.post('/api/bulk/configuration/:batchId/retry',async(req,res)=>{try{res.json(await cameraConfigurationService.retryBulk(req.params.batchId))}catch(error:any){res.status(400).json({error:error.message,code:error.code})}});
 
 app.get('/api/device/:identifier/config', (req, res) => {
-  const dev = projectDb.getDeviceByIdentifier(req.params.identifier);
-  if (!dev) return res.status(404).json({ error: 'Device not found' });
-  res.json({
-    device: dev,
-    onvifConfig: dev.onvifConfig || OnvifDriver.createDefaultOnvifConfig(dev.network.ipAddress),
-    manufacturerParams: dev.manufacturerParams || {},
-  });
+  try { res.json(legacyConfigurationBoundary.read(req.params.identifier)); }
+  catch (error) { res.status(404).json({ status:'UNAVAILABLE', error:error instanceof Error?error.message:'Device not found.' }); }
 });
 
 app.post('/api/device/:identifier/config', (req, res) => {
-  const dev = projectDb.getDeviceByIdentifier(req.params.identifier);
-  if (!dev) return res.status(404).json({ error: 'Device not found' });
-
-  const { onvifConfig, manufacturerParams, technician } = req.body;
-  if (onvifConfig) dev.onvifConfig = onvifConfig;
-  if (manufacturerParams) dev.manufacturerParams = { ...dev.manufacturerParams, ...manufacturerParams };
-  if (technician) projectDb.updateDeviceTechnicianFields(dev.id, technician);
-
-  dev.lastSeenAt = new Date().toISOString();
-  projectDb.upsertDevice(dev);
-
-  appStateDb.logAudit({
-    id: crypto.randomUUID(),
-    timestamp: new Date().toISOString(),
-    category: 'PROVISIONING',
-    level: 'INFO',
-    message: `Parameters updated for ${dev.anchor.vendor} (${dev.anchor.macAddress})`,
-    deviceId: dev.id,
-  });
-
-  broadcast({ type: 'DEVICE_CONFIG_UPDATED', data: { device: dev, project: projectDb.getProject() } });
-  res.json({ success: true, device: dev });
+  try {
+    const device=legacyConfigurationBoundary.updateLocalMetadata(req.params.identifier,req.body||{});
+    appStateDb.logAudit({id:crypto.randomUUID(),timestamp:new Date().toISOString(),category:'SYSTEM',level:'INFO',message:'Local technician metadata updated.',deviceId:device.id});
+    broadcast({type:'DEVICE_METADATA_UPDATED',data:{device,project:projectDb.getProject()}});
+    res.json({status:'LOCAL_METADATA_UPDATED',device});
+  } catch(error) {
+    const message=error instanceof Error?error.message:'Local metadata could not be updated.';
+    res.status(message.includes('Device not found')?404:message.includes('physical camera')?410:400).json({status:message.includes('physical camera')?'UNSUPPORTED':'UNAVAILABLE',error:message});
+  }
 });
 
 // PTZ Move Command

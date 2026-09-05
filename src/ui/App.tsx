@@ -5,7 +5,6 @@ import {
   IPCollisionRecord,
   RogueDHCPOffer,
   NICInfo,
-  OnvifCustomConfig,
   ProjectSession,
   PairSessionState,
 } from '../types/index.ts';
@@ -324,18 +323,6 @@ export default function App() {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ deviceIds: devices.map(device => device.id) }),
     });
     if (!response.ok) throw new Error((await response.json()).error || 'Unable to start diagnostics.');
-  };
-
-  const handleSaveDeviceConfig = async (
-    deviceId: string,
-    config: { onvifConfig: OnvifCustomConfig; manufacturerParams: Record<string, any> }
-  ) => {
-    await fetch(`http://localhost:3001/api/device/${encodeURIComponent(deviceId)}/config`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(config),
-    });
-    await fetchData();
   };
 
   const handleLegacyOnboard = async (payload: any) => {
