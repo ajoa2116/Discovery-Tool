@@ -18,6 +18,7 @@ import {
 } from 'lucide-react';
 import { FloatingDeviceActionsMenu } from './FloatingDeviceActionsMenu.tsx';
 import { DeviceRemovalDialog } from './DeviceRemovalDialog.tsx';
+import { TableColumnId } from '../preferences.ts';
 
 interface MasterDeviceTableProps {
   devices: Device[];
@@ -36,6 +37,7 @@ interface MasterDeviceTableProps {
   projectMode: boolean;
   onRemoveCurrent: (deviceId: string) => Promise<void>;
   onRemoveProject: (deviceId: string) => Promise<void>;
+  visibleColumns: TableColumnId[];
 }
 
 export const MasterDeviceTable: React.FC<MasterDeviceTableProps> = ({
@@ -55,6 +57,7 @@ export const MasterDeviceTable: React.FC<MasterDeviceTableProps> = ({
   projectMode,
   onRemoveCurrent,
   onRemoveProject,
+  visibleColumns,
 }) => {
   const [editingNameId, setEditingNameId] = useState<string | null>(null);
   const [tempName, setTempName] = useState<string>('');
@@ -168,6 +171,7 @@ export const MasterDeviceTable: React.FC<MasterDeviceTableProps> = ({
   const isAllSelected = devices.length > 0 && selectedDeviceIds.size === devices.length;
   const lastSix = (device: Device) => { const value = device.anchor.macAddress?.replace(/[^0-9a-f]/gi, '').toUpperCase(); return value && value.length === 12 ? value.slice(-6) : null; };
   const configured = (device: Device) => device.configuredState?.manualOverride ?? device.configuredState?.inferred ?? null;
+  const visible = (column: TableColumnId) => visibleColumns.includes(column);
 
   return (
     <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg overflow-hidden">
@@ -184,13 +188,13 @@ export const MasterDeviceTable: React.FC<MasterDeviceTableProps> = ({
                   className="rounded border-slate-700 bg-slate-900 text-sky-500 focus:ring-sky-500 w-4 h-4 cursor-pointer"
                 />
               </th>
-              <th className="py-3 px-3">Name</th>
-              <th className="py-3 px-3">Status</th>
-              <th className="py-3 px-3">IP</th>
-              <th className="py-2 px-3"><span className="inline-flex items-center gap-1"><span>MAC <span className="block text-[9px] font-medium normal-case tracking-normal">(Last 6)</span></span><span title="MAC (Last 6): Shows the last 6 characters of the device MAC address for quick identification. The full MAC address is shown in Device Details."><Info aria-label="MAC column information" className="w-3.5 h-3.5"/></span></span></th>
-              <th className="py-2 px-3"><span className="inline-flex items-center gap-1">Config <span title="Shows the camera's current configured state. This is separate from Online/Offline status. Technician override may change this value."><Info aria-label="Config column information" className="w-3.5 h-3.5"/></span></span></th>
-              <th className="py-3 px-3">Serial</th>
-              <th className="py-3 px-3">Notes</th>
+              {visible('NAME')&&<th className="py-3 px-3">Name</th>}
+              {visible('STATUS')&&<th className="py-3 px-3">Status</th>}
+              {visible('IP')&&<th className="py-3 px-3">IP</th>}
+              {visible('LAST_6')&&<th className="py-2 px-3"><span className="inline-flex items-center gap-1"><span>MAC <span className="block text-[9px] font-medium normal-case tracking-normal">(Last 6)</span></span><span title="MAC (Last 6): Shows the last 6 characters of the device MAC address for quick identification. The full MAC address is shown in Device Details."><Info aria-label="MAC column information" className="w-3.5 h-3.5"/></span></span></th>}
+              {visible('CONFIGURED')&&<th className="py-2 px-3"><span className="inline-flex items-center gap-1">Config <span title="Shows the camera's current configured state. This is separate from Online/Offline status. Technician override may change this value."><Info aria-label="Config column information" className="w-3.5 h-3.5"/></span></span></th>}
+              {visible('SERIAL')&&<th className="py-3 px-3">Serial</th>}
+              {visible('NOTES')&&<th className="py-3 px-3">Notes</th>}
               <th className="py-3 px-3 text-right">Actions</th>
             </tr>
           </thead>
@@ -198,7 +202,7 @@ export const MasterDeviceTable: React.FC<MasterDeviceTableProps> = ({
           <tbody className="divide-y divide-slate-800/60">
             {devices.length === 0 ? (
               <tr>
-                <td colSpan={9} className="py-12 text-center text-slate-500">
+                <td colSpan={visibleColumns.length+2} className="py-12 text-center text-slate-500">
                   <span className="block font-medium text-slate-700 dark:text-slate-300">{hasCompletedScan ? 'No devices found.' : 'No devices discovered.'}</span><span className="mt-1 block">{hasCompletedScan ? 'Select Scan to scan again.' : 'Select Scan to begin discovery.'}</span>
                 </td>
               </tr>
@@ -228,7 +232,7 @@ export const MasterDeviceTable: React.FC<MasterDeviceTableProps> = ({
                     </td>
 
                     {/* 2. Name (Inline Editable per Section 6) */}
-                    <td className="py-2 px-3 font-medium text-slate-800 dark:text-slate-100">
+                    {visible('NAME')&&<td className="py-2 px-3 font-medium text-slate-800 dark:text-slate-100">
                       {isEditingName ? (
                         <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
                           <input
@@ -262,13 +266,13 @@ export const MasterDeviceTable: React.FC<MasterDeviceTableProps> = ({
                           <Edit2 className="w-3 h-3 text-slate-500 opacity-0 group-hover:opacity-100 transition" />
                         </div>
                       )}
-                    </td>
+                    </td>}
 
                     {/* Status remains separate from configured state. */}
-                    <td className="py-2 px-3">{getStatusBadge(dev.status, dev)}</td>
+                    {visible('STATUS')&&<td className="py-2 px-3">{getStatusBadge(dev.status, dev)}</td>}
 
                     {/* IP opens the existing secure Connect workflow. */}
-                    <td className="py-3 px-3 font-mono" onClick={(e) => e.stopPropagation()}>
+                    {visible('IP')&&<td className="py-3 px-3 font-mono" onClick={(e) => e.stopPropagation()}>
                       <button
                         onClick={() => onOpenBrowser(dev, 'SYSTEM')}
                         className="text-sky-400 hover:text-sky-300 font-semibold underline underline-offset-2 flex items-center gap-1"
@@ -277,14 +281,14 @@ export const MasterDeviceTable: React.FC<MasterDeviceTableProps> = ({
                         {dev.network.ipAddress}
                         <ExternalLink className="w-3 h-3 opacity-60" />
                       </button>
-                    </td>
+                    </td>}
 
-                    <td className="py-2 px-3 font-mono text-slate-600 dark:text-slate-300">{lastSix(dev) || 'Unknown'}</td>
-                    <td className="py-2 px-3">{configured(dev)===true?<span className="text-emerald-700 dark:text-emerald-400">✓ Yes{dev.configuredState?.manualOverride!==undefined?' · Manual':''}</span>:configured(dev)===false?<span className="text-slate-600 dark:text-slate-400">No{dev.configuredState?.manualOverride!==undefined?' · Manual':''}</span>:<span className="text-slate-500">Unknown</span>}</td>
-                    <td className="py-2 px-3 font-mono text-slate-500">{dev.anchor.serialNumber || 'Unknown'}</td>
+                    {visible('LAST_6')&&<td className="py-2 px-3 font-mono text-slate-600 dark:text-slate-300">{lastSix(dev) || 'Unknown'}</td>}
+                    {visible('CONFIGURED')&&<td className="py-2 px-3">{configured(dev)===true?<span className="text-emerald-700 dark:text-emerald-400">✓ Yes{dev.configuredState?.manualOverride!==undefined?' · Manual':''}</span>:configured(dev)===false?<span className="text-slate-600 dark:text-slate-400">No{dev.configuredState?.manualOverride!==undefined?' · Manual':''}</span>:<span className="text-slate-500">Unknown</span>}</td>}
+                    {visible('SERIAL')&&<td className="py-2 px-3 font-mono text-slate-500">{dev.anchor.serialNumber || 'Unknown'}</td>}
 
                     {/* 9. Notes (Inline Editable per Section 5) */}
-                    <td className="py-2 px-3 text-slate-500">
+                    {visible('NOTES')&&<td className="py-2 px-3 text-slate-500">
                       {isEditingNotes ? (
                         <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
                           <input
@@ -313,7 +317,7 @@ export const MasterDeviceTable: React.FC<MasterDeviceTableProps> = ({
                           <span>{dev.technician?.notes || <span className="italic text-slate-600">Add note</span>}</span>
                         </div>
                       )}
-                    </td>
+                    </td>}
 
                     {/* 10. Actions (Section 31) */}
                     <td className="py-2 px-3 text-right relative" onClick={(e) => e.stopPropagation()}>

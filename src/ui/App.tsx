@@ -22,7 +22,7 @@ import { SiteSurveyReportModal } from './components/SiteSurveyReportModal.tsx';
 import { AdvancedScanModal } from './components/AdvancedScanModal.tsx';
 import { PairNetworkModal } from './components/PairNetworkModal.tsx';
 import { ProjectReverifyModal } from './components/ProjectReverifyModal.tsx';
-import { SettingsMenu, UiPreflight } from './components/SettingsMenu.tsx';
+import { SettingsMenu, UiMonitoringStatus, UiPreflight } from './components/SettingsMenu.tsx';
 import {
   ShieldCheck,
   Search,
@@ -45,8 +45,9 @@ import {
   Filter,
   ChevronDown,
 } from 'lucide-react';
-import { applyTheme, persistTheme, readThemePreference, ThemePreference } from './theme.ts';
+import { applyTheme } from './theme.ts';
 import { saveProjectDownload } from './project_download.ts';
+import { ApplicationPreferences, persistApplicationPreferences, readApplicationPreferences, resolveOpenPreference, shouldNotifyForDiscovery, updateApplicationPreferences } from './preferences.ts';
 
 export default function App() {
   // Regression markers: obsolete useState<TaskItem[]>([]) activity state and unsafe global Available IPs finder are intentionally absent.
@@ -59,7 +60,7 @@ export default function App() {
   const [isScanning, setIsScanning] = useState(false);
   const [advancedScanOpen, setAdvancedScanOpen] = useState(false);
   const [projectReverifyOpen, setProjectReverifyOpen] = useState(false);
-  const [diagnosticRefresh, setDiagnosticRefresh] = useState<{ enabled: boolean; running: boolean; intervalMs: number }>({ enabled: false, running: false, intervalMs: 30000 });
+  const [diagnosticRefresh, setDiagnosticRefresh] = useState<UiMonitoringStatus>({ enabled: false, running: false, intervalMs: 30000, status:'OFF' });
   const [pairSession, setPairSession] = useState<PairSessionState | null>(null);
   const [pairDevice, setPairDevice] = useState<Device | null>(null);
   const [pairModalDismissed, setPairModalDismissed] = useState(false);
@@ -83,7 +84,8 @@ export default function App() {
   const [selectedDeviceForConfig, setSelectedDeviceForConfig] = useState<Device | null>(null);
   const [selectedDeviceForBrowser, setSelectedDeviceForBrowser] = useState<Device | null>(null);
   const [selectedDeviceForInspector, setSelectedDeviceForInspector] = useState<Device | null>(null);
-  const [theme, setTheme] = useState<ThemePreference>(() => readThemePreference());
+  const [preferences, setPreferences] = useState<ApplicationPreferences>(() => readApplicationPreferences());
+  const preferencesRef = useRef(preferences);
   const [openMenu, setOpenMenu] = useState<'PROJECT' | 'TOOLS' | 'SETTINGS' | 'SCAN' | null>(null);
   const [filtersVisible, setFiltersVisible] = useState(true);
   const [hasCompletedScan, setHasCompletedScan] = useState(false);
@@ -130,7 +132,7 @@ export default function App() {
         if ((data.type === 'DEVICE_DISCOVERED' || data.type === 'DEVICE_ENRICHED') && data.data?.project) {
           setProject(data.data.project);
         }
-        if (data.type === 'DEVICE_DISCOVERED' && data.data?.isNew === true && data.data?.device) {
+        if (data.type === 'DEVICE_DISCOVERED' && data.data?.isNew === true && shouldNotifyForDiscovery(preferencesRef.current,true) && data.data?.device) {
           setNewDeviceDetected({ ip: data.data.device.network.ipAddress, vendor: data.data.device.anchor.vendor });
         }
         if (data.type === 'DEVICE_DIAGNOSTICS_UPDATED' && data.data?.project) {
@@ -171,12 +173,23 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    preferencesRef.current=preferences;
+    persistApplicationPreferences(preferences);
+  },[preferences]);
+
+  useEffect(() => {
     const media = window.matchMedia('(prefers-color-scheme: dark)');
-    const update = () => applyTheme(theme, document.documentElement.classList, media.matches);
-    update(); persistTheme(theme);
+    const update = () => applyTheme(preferences.appearance, document.documentElement.classList, media.matches);
+    update();
     media.addEventListener('change', update);
     return () => media.removeEventListener('change', update);
-  }, [theme]);
+  }, [preferences.appearance]);
+
+  useEffect(()=>{fetch('http://localhost:3001/api/monitoring/preferences',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:preferences.monitoringEnabled,cadenceMs:preferences.monitoringCadenceMs})}).then(async response=>{if(response.ok)setDiagnosticRefresh(await response.json())}).catch(()=>{/* status polling remains authoritative */})},[preferences.monitoringEnabled,preferences.monitoringCadenceMs]);
+
+  useEffect(()=>{if(!preferences.newDeviceNotifications)setNewDeviceDetected(null)},[preferences.newDeviceNotifications]);
+
+  const changePreferences=(patch:Partial<Omit<ApplicationPreferences,'version'>>)=>setPreferences(current=>updateApplicationPreferences(current,patch));
 
   useEffect(() => {
     const close = (event: MouseEvent) => { if (!menuAreaRef.current?.contains(event.target as Node)) setOpenMenu(null); };
@@ -309,10 +322,11 @@ export default function App() {
   };
 
   const handleOpenBrowser = (dev: Device, mode: 'EMBEDDED' | 'EDGE' | 'CHROME' | 'SYSTEM') => {
-    if (mode === 'EMBEDDED') {
+    const requested=resolveOpenPreference(mode,preferences.browserPreference);
+    if (requested === 'EMBEDDED') {
       setSelectedDeviceForBrowser(dev);
     } else {
-      fetch(`http://localhost:3001/api/connect/${encodeURIComponent(dev.id)}/open`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ preference: mode }) })
+      fetch(`http://localhost:3001/api/connect/${encodeURIComponent(dev.id)}/open`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ preference: requested }) })
         .then(async response => { const data = await response.json(); if (!response.ok) throw new Error(data.error); if (data.browser?.fallback) window.alert('Preferred browser was unavailable; opened with the Windows default browser.'); })
         .catch(error => window.alert(error.message));
     }
@@ -384,7 +398,7 @@ export default function App() {
         <div ref={menuAreaRef} className="flex items-center gap-1.5 shrink-0">
           <div className="relative"><button aria-haspopup="menu" aria-expanded={openMenu==='PROJECT'} onClick={()=>setOpenMenu(openMenu==='PROJECT'?null:'PROJECT')} className="ui-header-button">Project <ChevronDown className="w-3.5 h-3.5"/></button>{openMenu==='PROJECT'&&<div role="menu" className="ui-menu"><button onClick={()=>{void handleNewProject();setOpenMenu(null)}}>New Project</button>{projectSession?.mode==='QUICK_WORK'&&(project?.devices.length||0)>0&&<button onClick={()=>{void handleCreateFromCurrent();setOpenMenu(null)}}>Create Project from Results</button>}<button onClick={()=>{openProjectInput.current?.click();setOpenMenu(null)}}>Open Project</button><button onClick={()=>{void handleSaveProject(false);setOpenMenu(null)}}>Save Project</button>{projectSession?.mode==='PROJECT'&&<><button onClick={()=>{void handleSaveProject(true);setOpenMenu(null)}}>Save As</button><button disabled={projectReverifyOpen} onClick={()=>{setProjectReverifyOpen(true);setOpenMenu(null)}}>Reverify</button></>}</div>}</div>
           <div className="relative"><button aria-haspopup="menu" aria-expanded={openMenu==='TOOLS'} onClick={()=>setOpenMenu(openMenu==='TOOLS'?null:'TOOLS')} className="ui-header-button">Tools <ChevronDown className="w-3.5 h-3.5"/></button>{openMenu==='TOOLS'&&<div role="menu" className="ui-menu"><button onClick={()=>{setIsLegacyModalOpen(true);setOpenMenu(null)}}>Add Device Manually</button><button onClick={()=>{setIsSiteSurveyModalOpen(true);setOpenMenu(null)}}>Reports</button></div>}</div>
-          <div className="relative"><button aria-haspopup="menu" aria-expanded={openMenu==='SETTINGS'} onClick={()=>setOpenMenu(openMenu==='SETTINGS'?null:'SETTINGS')} className="ui-header-button"><Settings className="w-4 h-4"/>Settings <ChevronDown className="w-3.5 h-3.5"/></button>{openMenu==='SETTINGS'&&<SettingsMenu theme={theme} onTheme={setTheme} preflight={preflight} onClose={()=>setOpenMenu(null)}/>}</div>
+          <div className="relative"><button aria-haspopup="menu" aria-expanded={openMenu==='SETTINGS'} onClick={()=>setOpenMenu(openMenu==='SETTINGS'?null:'SETTINGS')} className="ui-header-button"><Settings className="w-4 h-4"/>Settings <ChevronDown className="w-3.5 h-3.5"/></button>{openMenu==='SETTINGS'&&<SettingsMenu preferences={preferences} onPreferences={changePreferences} monitoring={diagnosticRefresh} preflight={preflight} onClose={()=>setOpenMenu(null)}/>}</div>
           <input ref={openProjectInput} type="file" accept=".cctvproj,application/json" onChange={handleOpenProject} className="hidden" />
         </div>
       </header>
@@ -530,6 +544,7 @@ export default function App() {
           projectMode={projectSession?.mode === 'PROJECT'}
           onRemoveCurrent={(deviceId) => handleRemoveDevice(deviceId, 'current')}
           onRemoveProject={(deviceId) => handleRemoveDevice(deviceId, 'project')}
+          visibleColumns={preferences.visibleColumns}
         />
       </main>
 

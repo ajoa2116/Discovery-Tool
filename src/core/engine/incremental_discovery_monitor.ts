@@ -33,7 +33,7 @@ export class IncrementalDiscoveryMonitor {
   private lastSkipReason?: string;
   private lastError?: string;
 
-  constructor(private readonly dependencies: IncrementalDiscoveryDependencies, public readonly intervalMs = DEFAULT_MONITORING_INTERVAL_MS) {}
+  constructor(private readonly dependencies: IncrementalDiscoveryDependencies, public intervalMs = DEFAULT_MONITORING_INTERVAL_MS) {}
 
   public start(): void {
     if (this.timer) return;
@@ -50,6 +50,16 @@ export class IncrementalDiscoveryMonitor {
     this.nextRunAt = undefined;
     if (this.running) this.dependencies.cancelCycle?.();
     this.dependencies.log?.('STOPPED', 'Incremental discovery monitoring stopped.');
+  }
+
+  public setIntervalMs(intervalMs: number): void {
+    if (intervalMs === this.intervalMs) return;
+    const enabled = Boolean(this.timer);
+    if (this.timer) (this.dependencies.clearTimer ?? clearInterval)(this.timer);
+    this.timer = null;
+    this.nextRunAt = undefined;
+    this.intervalMs = intervalMs;
+    if (enabled) this.start();
   }
 
   public async runNow(): Promise<'COMPLETED' | 'SKIPPED' | 'FAILED'> {

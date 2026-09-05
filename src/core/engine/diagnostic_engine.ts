@@ -203,7 +203,7 @@ export class DiagnosticRefreshMonitor {
   private running = false;
   private lastRunAt?: string;
 
-  constructor(private readonly engine: DeviceDiagnosticEngine, private readonly getDevices: () => Device[], private readonly onDevice: (device: Device) => void, public readonly intervalMs = DEFAULT_MONITORING_INTERVAL_MS, public readonly maxConcurrency = 3) {}
+  constructor(private readonly engine: DeviceDiagnosticEngine, private readonly getDevices: () => Device[], private readonly onDevice: (device: Device) => void, public intervalMs = DEFAULT_MONITORING_INTERVAL_MS, public readonly maxConcurrency = 3) {}
 
   public start(): void {
     if (this.timer) return;
@@ -212,6 +212,15 @@ export class DiagnosticRefreshMonitor {
   }
 
   public stop(): void { if (this.timer) clearInterval(this.timer); this.timer = null; this.controller?.abort(); }
+
+  public setIntervalMs(intervalMs: number): void {
+    if (intervalMs === this.intervalMs) return;
+    const enabled = Boolean(this.timer);
+    if (this.timer) clearInterval(this.timer);
+    this.timer = null;
+    this.intervalMs = intervalMs;
+    if (enabled) this.start();
+  }
 
   public async refreshNow(): Promise<void> {
     if (this.running) return;

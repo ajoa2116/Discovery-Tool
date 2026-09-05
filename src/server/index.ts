@@ -291,11 +291,24 @@ app.post('/api/diagnostics/cancel', (req, res) => {
   res.status(202).json({ cancelled: ids });
 });
 
-const monitoringState = () => ({ ...diagnosticMonitor.getState(), diagnosticRefresh: diagnosticMonitor.getState(), incrementalDiscovery: incrementalMonitor.getState() });
+const monitoringState = () => {
+  const diagnosticRefresh=diagnosticMonitor.getState(),incrementalDiscovery=incrementalMonitor.getState();
+  const enabled=diagnosticRefresh.enabled&&incrementalDiscovery.enabled;
+  const running=diagnosticRefresh.running||incrementalDiscovery.running;
+  const deferred=!running&&Boolean(incrementalDiscovery.lastSkippedAt)&&(!incrementalDiscovery.lastRunAt||incrementalDiscovery.lastSkippedAt!>incrementalDiscovery.lastRunAt);
+  return { ...diagnosticRefresh, enabled, running, intervalMs:diagnosticRefresh.intervalMs, status:!enabled?'OFF':running?'ACTIVE':deferred?'DEFERRED':'WAITING', diagnosticRefresh, incrementalDiscovery };
+};
 app.get('/api/diagnostics/refresh', (req, res) => res.json(monitoringState()));
 app.get('/api/monitoring/status', (req, res) => res.json(monitoringState()));
 app.post('/api/diagnostics/refresh/start', (req, res) => { diagnosticMonitor.start(); incrementalMonitor.start(); res.json(monitoringState()); });
 app.post('/api/diagnostics/refresh/stop', (req, res) => { diagnosticMonitor.stop(); incrementalMonitor.stop(); res.json(monitoringState()); });
+app.post('/api/monitoring/preferences', (req,res) => {
+  const cadence=Number(req.body.cadenceMs),enabled=req.body.enabled;
+  if(![15_000,30_000,60_000,120_000].includes(cadence)||typeof enabled!=='boolean')return safeError(res,new Error('Monitoring settings are invalid. Choose an available cadence.'),400,'MONITORING_PREFERENCES');
+  diagnosticMonitor.setIntervalMs(cadence);incrementalMonitor.setIntervalMs(cadence);
+  if(enabled){diagnosticMonitor.start();incrementalMonitor.start()}else{diagnosticMonitor.stop();incrementalMonitor.stop()}
+  res.json(monitoringState());
+});
 app.post('/api/diagnostics/refresh/run', (req, res) => { res.status(202).json({ started: true }); void diagnosticMonitor.refreshNow(); });
 app.post('/api/monitoring/discovery/run', async (_req, res) => res.json({ result: await incrementalMonitor.runNow(), monitoring: monitoringState() }));
 
