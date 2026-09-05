@@ -4,6 +4,7 @@ import https from 'node:https';
 import net from 'node:net';
 import { TLSSocket } from 'node:tls';
 import { Device, DiagnosticCheckEvidence, DiagnosticErrorCategory } from '../../types/index.ts';
+import { DEFAULT_MONITORING_INTERVAL_MS } from './incremental_discovery_monitor.ts';
 
 export interface PingProvider {
   check(ipAddress: string, options: { timeoutMs: number; signal?: AbortSignal }): Promise<DiagnosticCheckEvidence>;
@@ -202,7 +203,7 @@ export class DiagnosticRefreshMonitor {
   private running = false;
   private lastRunAt?: string;
 
-  constructor(private readonly engine: DeviceDiagnosticEngine, private readonly getDevices: () => Device[], private readonly onDevice: (device: Device) => void, public readonly intervalMs = 30_000, public readonly maxConcurrency = 3) {}
+  constructor(private readonly engine: DeviceDiagnosticEngine, private readonly getDevices: () => Device[], private readonly onDevice: (device: Device) => void, public readonly intervalMs = DEFAULT_MONITORING_INTERVAL_MS, public readonly maxConcurrency = 3) {}
 
   public start(): void {
     if (this.timer) return;

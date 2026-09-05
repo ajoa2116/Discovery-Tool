@@ -21,6 +21,7 @@ import { PreferredCameraConfigurationProvider } from '../core/drivers/vendor_con
 import { createReportRouter } from './report_routes.ts';
 import { ShutdownCoordinator, WindowsPreflightService } from '../core/readiness/field_readiness.ts';
 import { AdvancedScanService } from '../core/engine/advanced_scan.ts';
+import { DEFAULT_MONITORING_INTERVAL_MS, IncrementalDiscoveryMonitor } from '../core/engine/incremental_discovery_monitor.ts';
 
 const app = express();
 const server = createServer(app);
@@ -60,10 +61,24 @@ const diagnosticMonitor = new DiagnosticRefreshMonitor(
     projectDb.upsertDevice(device);
     broadcast({ type: 'DEVICE_DIAGNOSTICS_UPDATED', data: { device, project: projectDb.getProject(), refresh: diagnosticMonitor.getState() } });
   },
-  30_000,
+  DEFAULT_MONITORING_INTERVAL_MS,
   3,
 );
 diagnosticMonitor.start();
+const monitoringAudit = (event: string, message: string) => appStateDb.logAudit({ id: crypto.randomUUID(), timestamp: new Date().toISOString(), category: 'DISCOVERY', level: event === 'CYCLE_FAILED' ? 'WARNING' : 'INFO', message });
+const incrementalMonitor = new IncrementalDiscoveryMonitor({
+  runCycle: async () => { await pipelineEngine.runDiscoveryScan({ emitTerminalEvent: false }); },
+  cancelCycle: () => { pipelineEngine.stopDiscovery(); },
+  canRun: () => {
+    if (pipelineEngine.getIsRunning()) return { allowed: false, reason: 'Discovery cycle skipped because a manual scan is active.' };
+    if (advancedScanService.getStatus().running) return { allowed: false, reason: 'Discovery cycle skipped because Advanced Scan is active.' };
+    const pair = pairService.getStatus();
+    if (pair && ['PREPARING','CHECKING_ADDRESS','READY_FOR_CONFIRMATION','APPLYING','VERIFYING','PAIRED','RESTORING','ROLLBACK_REQUIRED'].includes(pair.state)) return { allowed: false, reason: 'Discovery cycle skipped because Pair or restore work is active.' };
+    if (cameraNetworkControllers.size || cameraNetworkService.hasActiveOperation() || bulkNetworkService.hasActiveOperation() || cameraConfigurationService.hasActiveOperation() || duplicateRemediationService.isActive()) return { allowed: false, reason: 'Discovery cycle skipped because camera or network configuration is active.' };
+    return { allowed: true };
+  },
+  log: (event, message) => { if (event !== 'CYCLE_STARTED' && event !== 'CYCLE_COMPLETED') monitoringAudit(event, message); },
+}, DEFAULT_MONITORING_INTERVAL_MS);
 pairService.initializeRecovery().then(state => {
   if (state) broadcast({ type: 'PAIR_STATE_CHANGED', data: { pair: state } });
 }).catch(error => console.error('Pair recovery inspection failed:', error instanceof Error ? error.message : error));
@@ -74,9 +89,11 @@ pipelineEngine.subscribe(event => {
   if (event.type === 'DEVICE_DISCOVERED' && event.data?.device) {
     projectDb.restoreDiscoveredDevice(event.data.device);
     event.data.project = projectDb.getProject();
+    if (incrementalMonitor.getState().running && event.data.isNew === true) monitoringAudit('NEW_DEVICE', `Incremental discovery found new stable device ${event.data.device.id}.`);
   }
   broadcast(event);
 });
+incrementalMonitor.start();
 
 // ==================== REST API ROUTES ====================
 
@@ -194,7 +211,8 @@ app.post('/api/bulk/network/:batchId/cancel', (req,res)=>res.status(202).json({c
 app.post('/api/bulk/network/:batchId/retry', async(req,res)=>{try{res.json(await bulkNetworkService.retry(req.params.batchId))}catch(error:any){res.status(400).json({error:error.message,code:error.code})}});
 
 // 6-Phase Pipeline
-app.post('/api/discovery/start', (req, res) => {
+app.post('/api/discovery/start', async (req, res) => {
+  await incrementalMonitor.yieldToTechnician();
   if (pipelineEngine.getIsRunning() || advancedScanService.getStatus().running) {
     return res.status(409).json({ error: 'A discovery scan is already running.' });
   }
@@ -207,7 +225,7 @@ app.post('/api/discovery/start', (req, res) => {
 
 app.get('/api/discovery/advanced/adapters',async(_req,res)=>{try{res.json(await advancedScanService.listAdapters())}catch(error){res.status(500).json({error:error instanceof Error?error.message:'Unable to inspect adapters.'})}});
 app.post('/api/discovery/advanced/validate',async(req,res)=>{try{const plan=await advancedScanService.validate(req.body);res.status(plan.valid?200:400).json(plan)}catch(error){res.status(400).json({error:error instanceof Error?error.message:'Advanced Scan validation failed.'})}});
-app.post('/api/discovery/advanced/start',async(req,res)=>{try{if(pipelineEngine.getIsRunning()||advancedScanService.getStatus().running)return res.status(409).json({error:'A discovery scan is already running.'});const plan=await advancedScanService.validate(req.body);if(!plan.valid)return res.status(400).json(plan);res.status(202).json({plan,message:plan.mode==='QUICK_FALLBACK'?'Standard Quick Scan started.':'Advanced Scan started.'});if(plan.mode==='QUICK_FALLBACK'){void pipelineEngine.runDiscoveryScan();return}const adapters=await advancedScanService.listAdapters(),names=adapters.filter(a=>plan.adapterIndexes.includes(a.interfaceIndex)).map(a=>a.interfaceAlias);void(async()=>{try{if(names.length&&(plan.methods.includes('ONVIF')||plan.methods.includes('NEIGHBOR'))){const pipelineResult=await pipelineEngine.runDiscoveryScan({adapterNames:names,emitTerminalEvent:false});if(pipelineResult==='CANCELLED'){broadcast({type:'SCAN_CANCELLED',data:{project:projectDb.getProject(),scanMode:'ADVANCED'}});return}}await advancedScanService.execute(plan,{onDevice:(device,isNew)=>{projectDb.restoreDiscoveredDevice(device);broadcast({type:'DEVICE_DISCOVERED',data:{device,isNew,project:projectDb.getProject(),scanMode:'ADVANCED'}})},onComplete:status=>broadcast({type:status.cancelled?'SCAN_CANCELLED':'SCAN_COMPLETE',data:{status,project:projectDb.getProject(),scanMode:'ADVANCED'}})})}catch(error){broadcast({type:'SCAN_FAILED',data:{message:error instanceof Error?error.message:String(error),scanMode:'ADVANCED'}})}})()}catch(error){res.status(400).json({error:error instanceof Error?error.message:'Advanced Scan could not start.'})}});
+app.post('/api/discovery/advanced/start',async(req,res)=>{try{await incrementalMonitor.yieldToTechnician();if(pipelineEngine.getIsRunning()||advancedScanService.getStatus().running)return res.status(409).json({error:'A discovery scan is already running.'});const plan=await advancedScanService.validate(req.body);if(!plan.valid)return res.status(400).json(plan);res.status(202).json({plan,message:plan.mode==='QUICK_FALLBACK'?'Standard Quick Scan started.':'Advanced Scan started.'});if(plan.mode==='QUICK_FALLBACK'){void pipelineEngine.runDiscoveryScan();return}const adapters=await advancedScanService.listAdapters(),names=adapters.filter(a=>plan.adapterIndexes.includes(a.interfaceIndex)).map(a=>a.interfaceAlias);void(async()=>{try{if(names.length&&(plan.methods.includes('ONVIF')||plan.methods.includes('NEIGHBOR'))){const pipelineResult=await pipelineEngine.runDiscoveryScan({adapterNames:names,emitTerminalEvent:false});if(pipelineResult==='CANCELLED'){broadcast({type:'SCAN_CANCELLED',data:{project:projectDb.getProject(),scanMode:'ADVANCED'}});return}}await advancedScanService.execute(plan,{onDevice:(device,isNew)=>{projectDb.restoreDiscoveredDevice(device);broadcast({type:'DEVICE_DISCOVERED',data:{device,isNew,project:projectDb.getProject(),scanMode:'ADVANCED'}})},onComplete:status=>broadcast({type:status.cancelled?'SCAN_CANCELLED':'SCAN_COMPLETE',data:{status,project:projectDb.getProject(),scanMode:'ADVANCED'}})})}catch(error){broadcast({type:'SCAN_FAILED',data:{message:error instanceof Error?error.message:String(error),scanMode:'ADVANCED'}})}})()}catch(error){res.status(400).json({error:error instanceof Error?error.message:'Advanced Scan could not start.'})}});
 
 // One production reporting boundary for preview and export prevents renderer drift.
 app.use('/api/reports', createReportRouter({ getSession: () => projectDb.getSession(), getAuditLogs: () => appStateDb.getAuditLogs() }));
@@ -242,10 +260,13 @@ app.post('/api/diagnostics/cancel', (req, res) => {
   res.status(202).json({ cancelled: ids });
 });
 
-app.get('/api/diagnostics/refresh', (req, res) => res.json(diagnosticMonitor.getState()));
-app.post('/api/diagnostics/refresh/start', (req, res) => { diagnosticMonitor.start(); res.json(diagnosticMonitor.getState()); });
-app.post('/api/diagnostics/refresh/stop', (req, res) => { diagnosticMonitor.stop(); res.json(diagnosticMonitor.getState()); });
+const monitoringState = () => ({ ...diagnosticMonitor.getState(), diagnosticRefresh: diagnosticMonitor.getState(), incrementalDiscovery: incrementalMonitor.getState() });
+app.get('/api/diagnostics/refresh', (req, res) => res.json(monitoringState()));
+app.get('/api/monitoring/status', (req, res) => res.json(monitoringState()));
+app.post('/api/diagnostics/refresh/start', (req, res) => { diagnosticMonitor.start(); incrementalMonitor.start(); res.json(monitoringState()); });
+app.post('/api/diagnostics/refresh/stop', (req, res) => { diagnosticMonitor.stop(); incrementalMonitor.stop(); res.json(monitoringState()); });
 app.post('/api/diagnostics/refresh/run', (req, res) => { res.status(202).json({ started: true }); void diagnosticMonitor.refreshNow(); });
+app.post('/api/monitoring/discovery/run', async (_req, res) => res.json({ result: await incrementalMonitor.runNow(), monitoring: monitoringState() }));
 
 // Pair PC to Camera Network — fixed operations only; no arbitrary command surface.
 app.get('/api/pair/adapters', async (req, res) => {
@@ -428,9 +449,10 @@ server.listen(PORT, () => {
 });
 
 const activeControllers = function* () { yield* diagnosticControllers.values(); yield* connectRecheckControllers.values(); yield* cameraNetworkControllers.values(); };
+const combinedMonitor = { stop: () => { diagnosticMonitor.stop(); incrementalMonitor.stop(); }, cancelCurrent: () => { diagnosticMonitor.cancelCurrent(); pipelineEngine.stopDiscovery(); } };
 const shutdown = new ShutdownCoordinator(
   pipelineEngine,
-  diagnosticMonitor,
+  combinedMonitor,
   { [Symbol.iterator]: activeControllers },
   () => new Promise(resolve => { for (const client of wss.clients) client.terminate(); wss.close(() => resolve()); }),
   () => new Promise(resolve => server.close(() => resolve())),
