@@ -407,11 +407,26 @@ export interface ReverificationResult {
   recognizedCount: number;
   changedIpCount: number;
   newDevicesCount: number;
+  notVerifiedCount?: number;
+  collisionCount?: number;
+  verifiedDevices?: Device[];
+  notVerifiedDevices?: Device[];
+  newDevices?: Device[];
   possibleReplacements: Array<{
+    candidateId?: string;
+    originalDeviceId?: string;
     expectedName: string;
     expectedMac: string | null;
+    expectedIp?: string;
+    expectedSerial?: string;
+    expectedVendor?: string;
+    expectedModel?: string;
     foundMac: string | null;
     foundIp: string;
+    foundSerial?: string;
+    foundVendor?: string;
     model: string;
+    evidence?: string[];
+    decision?: 'PENDING' | 'CONFIRMED' | 'REJECTED' | 'DEFERRED';
   }>;
 }

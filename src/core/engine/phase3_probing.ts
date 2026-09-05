@@ -1,6 +1,6 @@
 import { Device, NICInfo } from '../../types/index.ts';
 import { appStateDb } from '../storage/app_db.ts';
-import { projectDb } from '../storage/project_db.ts';
+import { projectDb, SiteProjectDatabase } from '../storage/project_db.ts';
 import { NodeOnvifWsDiscoveryTransport, OnvifDiscoveryTransport } from '../drivers/ws_discovery_transport.ts';
 import { DeviceEnricher, WindowsDeviceEnricher } from './device_enrichment.ts';
 import { LocalHostIdentity } from '../network/local_host_identity.ts';
@@ -19,6 +19,7 @@ export class Phase3ActiveProbing {
     enricher: DeviceEnricher = new WindowsDeviceEnricher(),
     options: ActiveProbeOptions = {},
     localHost: LocalHostIdentity = LocalHostIdentity.fromInterfaces(interfaces),
+    database: SiteProjectDatabase = projectDb,
   ): Promise<{
     probedDevices: Device[];
     logs: string[];
@@ -37,19 +38,19 @@ export class Phase3ActiveProbing {
           logs.push(`[Phase 3] Ignored local-host response at ${device.network.ipAddress}.`);
           return;
         }
-        const isNew = !projectDb.getDevices().some(existing => existing.id === device.id || Boolean(
+        const isNew = !database.getDevices().some(existing => existing.id === device.id || Boolean(
           (device.anchor.macAddress && existing.anchor.macAddress?.toLowerCase() === device.anchor.macAddress.toLowerCase()) ||
           (device.anchor.onvifEndpointUuid && existing.anchor.onvifEndpointUuid?.toLowerCase() === device.anchor.onvifEndpointUuid.toLowerCase()) ||
           (device.anchor.serialNumber && existing.anchor.serialNumber?.toLowerCase() === device.anchor.serialNumber.toLowerCase())
         ));
-        const stored = projectDb.upsertDevice(device);
+        const stored = database.upsertDevice(device);
         options.onDevice?.(stored, isNew);
         const enrichmentKey = stored.anchor.onvifEndpointUuid || stored.anchor.macAddress || stored.id;
         if (!enrichmentTasks.has(enrichmentKey)) {
           const task = enricher.enrich(stored, {
             signal: options.signal,
             onUpdate: (updated, changedFields) => {
-              const enriched = projectDb.upsertDevice(updated);
+              const enriched = database.upsertDevice(updated);
               options.onEnrichment?.(enriched, changedFields);
             },
           }).then(() => undefined).catch(error => {

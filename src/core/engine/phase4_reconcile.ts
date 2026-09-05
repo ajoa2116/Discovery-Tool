@@ -1,17 +1,17 @@
 import { Device, IPCollisionRecord } from '../../types/index.ts';
 import { appStateDb } from '../storage/app_db.ts';
-import { projectDb } from '../storage/project_db.ts';
+import { projectDb, SiteProjectDatabase } from '../storage/project_db.ts';
 
 export class Phase4IdentityReconciliation {
   /**
    * Phase 4: Identity Reconciliation via MAC/Serial Anchors
    * Isolates physical hardware identities, eliminates IP volatility, and flags duplicate IP collisions.
    */
-  public static async execute(): Promise<{ reconciledDevices: Device[]; collisions: IPCollisionRecord[]; logs: string[] }> {
+  public static async execute(database: SiteProjectDatabase = projectDb): Promise<{ reconciledDevices: Device[]; collisions: IPCollisionRecord[]; logs: string[] }> {
     const logs: string[] = [];
     logs.push('[Phase 4] Initiating physical identity reconciliation via immutable MAC/Serial anchors...');
 
-    const devices = projectDb.getDevices();
+    const devices = database.getDevices();
     const ipMap = new Map<string, Device[]>();
 
     for (const dev of devices) {
@@ -50,7 +50,7 @@ export class Phase4IdentityReconciliation {
           resolutionStrategy: 'MANUAL_REASSIGN',
         };
 
-        projectDb.recordCollision(collisionRecord);
+        database.recordCollision(collisionRecord);
         collisions.push(collisionRecord);
 
         appStateDb.logAudit({

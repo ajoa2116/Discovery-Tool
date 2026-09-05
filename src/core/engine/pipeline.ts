@@ -5,7 +5,7 @@ import { Phase3ActiveProbing } from './phase3_probing.ts';
 import { Phase4IdentityReconciliation } from './phase4_reconcile.ts';
 import { Phase5BatchProvisioning } from './phase5_provision.ts';
 import { Phase6TelemetryVerification } from './phase6_telemetry.ts';
-import { projectDb } from '../storage/project_db.ts';
+import { projectDb, SiteProjectDatabase } from '../storage/project_db.ts';
 import { NodeOnvifWsDiscoveryTransport, OnvifDiscoveryTransport } from '../drivers/ws_discovery_transport.ts';
 import { DeviceEnricher, WindowsDeviceEnricher } from './device_enrichment.ts';
 import { LocalHostIdentity } from '../network/local_host_identity.ts';
@@ -132,7 +132,7 @@ export class BatchExecutionPipeline {
     return true;
   }
 
-  public async runDiscoveryScan(options: { adapterNames?: string[]; emitTerminalEvent?: boolean } = {}): Promise<'COMPLETED'|'CANCELLED'|'BUSY'> {
+  public async runDiscoveryScan(options: { adapterNames?: string[]; emitTerminalEvent?: boolean; database?: SiteProjectDatabase; emitDeviceEvents?: boolean } = {}): Promise<'COMPLETED'|'CANCELLED'|'BUSY'> {
     if (this.isRunning) return 'BUSY';
     this.isRunning = true;
     this.abortController = new AbortController();
@@ -144,16 +144,17 @@ export class BatchExecutionPipeline {
         p.devicesFoundCount = 0;
         p.logs = [];
       }
+      const database = options.database || projectDb;
       await this.runPhase1();
       if (options.adapterNames?.length) this.currentInterfaces = this.currentInterfaces.filter(nic => options.adapterNames!.includes(nic.name));
-      if (!signal.aborted) await this.runPhase2(signal);
-      if (!signal.aborted) await this.runPhase3(signal);
-      if (!signal.aborted) await this.runPhase4();
+      if (!signal.aborted) await this.runPhase2(signal, database, options.emitDeviceEvents !== false);
+      if (!signal.aborted) await this.runPhase3(signal, database, options.emitDeviceEvents !== false);
+      if (!signal.aborted) await this.runPhase4(database);
 
       if (signal.aborted && options.emitTerminalEvent !== false) {
-        this.emit({ type: 'SCAN_CANCELLED', data: { project: projectDb.getProject() } });
+        this.emit({ type: 'SCAN_CANCELLED', data: { project: database.getProject() } });
       } else if (options.emitTerminalEvent !== false) {
-        this.emit({ type: 'SCAN_COMPLETE', data: { project: projectDb.getProject() } });
+        this.emit({ type: 'SCAN_COMPLETE', data: { project: database.getProject() } });
       }
       return signal.aborted ? 'CANCELLED' : 'COMPLETED';
     } finally {
@@ -221,7 +222,7 @@ export class BatchExecutionPipeline {
     this.emit({ type: 'PHASE_COMPLETE', phaseNumber: 1, data: result });
   }
 
-  public async runPhase2(signal?: AbortSignal): Promise<void> {
+  public async runPhase2(signal?: AbortSignal, database: SiteProjectDatabase = projectDb, emitDeviceEvents = true): Promise<void> {
     const phase = this.phases[1];
     phase.status = 'RUNNING';
     phase.startTime = new Date().toISOString();
@@ -231,13 +232,13 @@ export class BatchExecutionPipeline {
     const localHost = LocalHostIdentity.fromAddresses([...this.localHost.values(), ...this.currentInterfaces.map(value => value.ipAddress)]);
     result.devices = result.devices.filter(device => localHost.isRemoteDevice(device));
     for (const device of result.devices) {
-      const isNew = !projectDb.getDevices().some(existing => existing.id === device.id || Boolean(
+      const isNew = !database.getDevices().some(existing => existing.id === device.id || Boolean(
         (device.anchor.macAddress && existing.anchor.macAddress?.toLowerCase() === device.anchor.macAddress.toLowerCase()) ||
         (device.anchor.onvifEndpointUuid && existing.anchor.onvifEndpointUuid?.toLowerCase() === device.anchor.onvifEndpointUuid.toLowerCase()) ||
         (device.anchor.serialNumber && existing.anchor.serialNumber?.toLowerCase() === device.anchor.serialNumber.toLowerCase())
       ));
-      const stored = projectDb.upsertDevice(device);
-      this.emit({ type: 'DEVICE_DISCOVERED', phaseNumber: 2, data: { device: stored, isNew, project: projectDb.getProject() } });
+      const stored = database.upsertDevice(device);
+      if (emitDeviceEvents) this.emit({ type: 'DEVICE_DISCOVERED', phaseNumber: 2, data: { device: stored, isNew, project: database.getProject() } });
     }
     phase.logs.push(...result.logs);
     phase.devicesFoundCount = result.devices.length;
@@ -247,7 +248,7 @@ export class BatchExecutionPipeline {
     this.emit({ type: 'PHASE_COMPLETE', phaseNumber: 2, data: result });
   }
 
-  public async runPhase3(signal?: AbortSignal): Promise<void> {
+  public async runPhase3(signal?: AbortSignal, database: SiteProjectDatabase = projectDb, emitDeviceEvents = true): Promise<void> {
     const phase = this.phases[2];
     phase.status = 'RUNNING';
     phase.startTime = new Date().toISOString();
@@ -256,17 +257,17 @@ export class BatchExecutionPipeline {
     const result = await Phase3ActiveProbing.execute(this.currentInterfaces, this.onvifDiscovery, this.deviceEnricher, {
       signal,
       timeoutMs: this.discoveryTimeoutMs,
-      onDevice: (device, isNew) => this.emit({
+      onDevice: emitDeviceEvents ? (device, isNew) => this.emit({
         type: 'DEVICE_DISCOVERED',
         phaseNumber: 3,
-        data: { device, isNew, project: projectDb.getProject() },
-      }),
-      onEnrichment: (device, changedFields) => this.emit({
+        data: { device, isNew, project: database.getProject() },
+      }) : undefined,
+      onEnrichment: emitDeviceEvents ? (device, changedFields) => this.emit({
         type: 'DEVICE_ENRICHED',
         phaseNumber: 3,
-        data: { device, changedFields, project: projectDb.getProject() },
-      }),
-    }, LocalHostIdentity.fromAddresses([...this.localHost.values(), ...this.currentInterfaces.map(value => value.ipAddress)]));
+        data: { device, changedFields, project: database.getProject() },
+      }) : undefined,
+    }, LocalHostIdentity.fromAddresses([...this.localHost.values(), ...this.currentInterfaces.map(value => value.ipAddress)]), database);
     phase.logs.push(...result.logs);
     phase.devicesFoundCount = result.probedDevices.length;
     phase.progressPct = 100;
@@ -275,13 +276,13 @@ export class BatchExecutionPipeline {
     this.emit({ type: 'PHASE_COMPLETE', phaseNumber: 3, data: result });
   }
 
-  public async runPhase4(): Promise<void> {
+  public async runPhase4(database: SiteProjectDatabase = projectDb): Promise<void> {
     const phase = this.phases[3];
     phase.status = 'RUNNING';
     phase.startTime = new Date().toISOString();
     this.emit({ type: 'PHASE_START', phaseNumber: 4 });
 
-    const result = await Phase4IdentityReconciliation.execute();
+    const result = await Phase4IdentityReconciliation.execute(database);
     phase.logs.push(...result.logs);
     phase.devicesFoundCount = result.reconciledDevices.length;
     phase.progressPct = 100;

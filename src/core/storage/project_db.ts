@@ -49,7 +49,9 @@ function makeProject(name: string, location = '', description = ''): SiteProject
 
 function prepareDeviceForSave(device: Device): Device {
   const saved = sanitize(clone(device)) as Device;
-  saved.savedStatusSnapshot = device.status;
+  const status = device.sessionVerification === 'NOT_FOUND' && device.savedStatusSnapshot ? device.savedStatusSnapshot : device.status;
+  saved.status = status;
+  saved.savedStatusSnapshot = status;
   delete saved.sessionVerification;
   if (saved.customStaticProfile) delete saved.customStaticProfile.appliedCredentialsId;
   return saved;
@@ -182,6 +184,32 @@ export class SiteProjectDatabase {
   }
 
   public getDevices(): Device[] { return this.session.project.devices; }
+  public getProjectMemberDevices(): Device[] { return this.session.project.devices.filter(device => !this.currentOnlyDeviceIds.has(device.id)); }
+  public isProjectMember(id: string): boolean { return this.getProjectMemberDevices().some(device => device.id === id); }
+  public applyReverification(memberDevices: Device[], liveOnlyDevices: Device[], persistentChanged: boolean, dirtyBefore: boolean): void {
+    const memberIds = new Set(memberDevices.map(device => device.id));
+    this.session.project.devices = [...clone(memberDevices), ...clone(liveOnlyDevices).filter(device => !memberIds.has(device.id))];
+    this.currentOnlyDeviceIds = new Set(liveOnlyDevices.filter(device => !memberIds.has(device.id)).map(device => device.id));
+    for (const device of memberDevices) if (device.sessionVerification === 'VERIFIED') this.hiddenCurrentDeviceIds.delete(device.id);
+    this.session.project.totalDevices = this.session.project.devices.length;
+    this.session.dirty = dirtyBefore || persistentChanged;
+    if (persistentChanged) this.session.project.updatedAt = new Date().toISOString();
+  }
+  public confirmProjectReplacement(originalId: string, replacement: Device): Device {
+    const index = this.session.project.devices.findIndex(device => device.id === originalId && !this.currentOnlyDeviceIds.has(device.id));
+    if (index < 0) throw new ProjectValidationError('Original Project device is no longer available for replacement review.');
+    const original = this.session.project.devices[index];
+    const timestamp = new Date().toISOString();
+    const history = Array.from(new Set([...(original.network.ipAddressHistory || [original.network.ipAddress]), original.network.ipAddress, replacement.network.ipAddress]));
+    const updated: Device = { ...original, ...clone(replacement), id: original.id, technician: clone(original.technician), firstSeenAt: original.firstSeenAt, anchor: clone(replacement.anchor), network: { ...clone(replacement.network), ipAddressHistory: history }, sessionVerification: 'VERIFIED', lastSeenAt: replacement.lastSeenAt || timestamp };
+    this.session.project.devices[index] = updated;
+    const duplicateIndex = this.session.project.devices.findIndex((device, candidateIndex) => candidateIndex !== index && device.id === replacement.id && this.currentOnlyDeviceIds.has(device.id));
+    if (duplicateIndex >= 0) this.session.project.devices.splice(duplicateIndex, 1);
+    this.currentOnlyDeviceIds.delete(replacement.id); this.hiddenCurrentDeviceIds.delete(original.id);
+    this.session.project.auditLogs.push({ id: crypto.randomUUID(), timestamp, category: 'EDGE_CASE', level: 'SUCCESS', message: 'Technician confirmed Project device replacement.', deviceId: original.id, details: { previousIdentity: { macAddress: original.anchor.macAddress, onvifEndpointUuid: original.anchor.onvifEndpointUuid, serialNumber: original.anchor.serialNumber, ipAddress: original.network.ipAddress }, replacementIdentity: { macAddress: replacement.anchor.macAddress, onvifEndpointUuid: replacement.anchor.onvifEndpointUuid, serialNumber: replacement.anchor.serialNumber, ipAddress: replacement.network.ipAddress } } });
+    this.markDirty();
+    return clone(updated);
+  }
   public removeDeviceFromCurrentList(id: string): Device {
     const device = this.getDeviceById(id);
     if (!device) throw new ProjectValidationError('Device not found.');

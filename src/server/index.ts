@@ -10,7 +10,7 @@ import { DuplicateRemediationService } from '../core/edge_cases/duplicate_remedi
 import { LegacyHardwareOnboarding } from '../core/edge_cases/legacy_hardware.ts';
 import { OnvifDriver } from '../core/drivers/onvif.ts';
 import { BulkNetworkConfigurationService } from '../core/engine/bulk_reip.ts';
-import { ProjectReverificationEngine } from '../core/engine/reverification.ts';
+import { ProjectReverificationWorkflow } from '../core/engine/reverification.ts';
 import { ProjectValidationError } from '../core/storage/project_db.ts';
 import { DeviceDiagnosticEngine, DiagnosticRefreshMonitor } from '../core/engine/diagnostic_engine.ts';
 import { PairService } from '../core/network/pair_service.ts';
@@ -36,6 +36,11 @@ const duplicateRemediationService = new DuplicateRemediationService(projectDb,os
 const cameraConfigurationService = new CameraConfigurationService(projectDb,osVault,new PreferredCameraConfigurationProvider());
 const bulkNetworkService = new BulkNetworkConfigurationService(projectDb, osVault, cameraNetworkService);
 const advancedScanService = new AdvancedScanService();
+const reverifyWorkflow = new ProjectReverificationWorkflow(
+  projectDb,
+  database => pipelineEngine.runDiscoveryScan({ database, emitTerminalEvent: false, emitDeviceEvents: false }),
+  () => pipelineEngine.stopDiscovery(),
+);
 const cameraNetworkControllers = new Map<string, AbortController>();
 const preflightService = new WindowsPreflightService({ portAvailable: async port => port === 3001 && server.listening });
 let preflightCache: { expiresAt: number; value: Awaited<ReturnType<WindowsPreflightService['run']>> } | null = null;
@@ -70,6 +75,7 @@ const incrementalMonitor = new IncrementalDiscoveryMonitor({
   runCycle: async () => { await pipelineEngine.runDiscoveryScan({ emitTerminalEvent: false }); },
   cancelCycle: () => { pipelineEngine.stopDiscovery(); },
   canRun: () => {
+    if (reverifyWorkflow?.isRunning()) return { allowed: false, reason: 'Discovery cycle skipped because Project reverification is active.' };
     if (pipelineEngine.getIsRunning()) return { allowed: false, reason: 'Discovery cycle skipped because a manual scan is active.' };
     if (advancedScanService.getStatus().running) return { allowed: false, reason: 'Discovery cycle skipped because Advanced Scan is active.' };
     const pair = pairService.getStatus();
@@ -178,14 +184,28 @@ app.post('/api/project/save', async (req, res) => {
   }
 });
 
-app.post('/api/project/reverify', (req, res) => {
+app.post('/api/project/reverify', async (_req, res) => {
   try {
-    const result = ProjectReverificationEngine.reverifyActiveProject(req.body.liveDevices || []);
+    await incrementalMonitor.yieldToTechnician();
+    if (advancedScanService.getStatus().running) return res.status(409).json({ error: 'Project reverification cannot start while Advanced Scan is running.' });
+    const result = await reverifyWorkflow.run();
     broadcast({ type: 'PROJECT_REVERIFIED', data: { result, project: projectDb.getProject() } });
     res.json({ result, project: projectDb.getProject() });
   } catch (error) {
-    res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
+    const message = error instanceof Error ? error.message : 'Project reverification could not complete.';
+    broadcast({ type: message.includes('cancelled') ? 'PROJECT_REVERIFY_CANCELLED' : 'PROJECT_REVERIFY_FAILED', data: { message } });
+    res.status(message.includes('already running') ? 409 : 400).json({ error: message });
   }
+});
+app.post('/api/project/reverify/cancel', (_req, res) => res.status(202).json({ cancelled: reverifyWorkflow.cancel() }));
+app.post('/api/project/reverify/replacements/:candidateId', (req, res) => {
+  try {
+    const decision = req.body.decision as 'CONFIRMED'|'REJECTED'|'DEFERRED';
+    if (!['CONFIRMED','REJECTED','DEFERRED'].includes(decision)) return res.status(400).json({ error: 'Choose Confirm Replacement, Keep Original, or Decide Later.' });
+    const result = reverifyWorkflow.decide(req.params.candidateId, decision);
+    broadcast({ type: 'PROJECT_REPLACEMENT_REVIEWED', data: { decision, project: projectDb.getProject(), session: projectDb.getSession() } });
+    res.json({ ...result, decision, project: projectDb.getProject(), session: projectDb.getSession() });
+  } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'Replacement review could not be completed.' }); }
 });
 
 app.get('/api/project/devices', (req, res) => {
