@@ -11,7 +11,7 @@ function safe(value: unknown, key = ''): unknown {
   if (SECRET_KEY.test(key)) return '[REDACTED]';
   if (Array.isArray(value)) return value.map(item => safe(item));
   if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value as Record<string, unknown>).filter(([name]) => !SECRET_KEY.test(name)).map(([name, child]) => [name, safe(child, name)]));
-  if (typeof value === 'string') return value.replace(/\b(?:Basic|Bearer)\s+[A-Za-z0-9._~+\/-]+=*/gi, '[REDACTED AUTH]').replace(/\b(password|passwd|pwd|token|secret)\s*[:=]\s*[^,;\s]+/gi, '$1=[REDACTED]');
+  if (typeof value === 'string') return value.replace(/\b(?:Basic|Bearer)\s+[A-Za-z0-9._~+\/-]+=*/gi, '[REDACTED AUTH]').replace(/\b(password|passwd|pwd|credential(?:ref)?|authorization|cookie|token|secret|api[_ -]?key|vault)\b(?:\s*[:=]\s*[^,;\s]+)?/gi, '[REDACTED]');
   return value;
 }
 const knownType = (value: unknown): ProjectHistoryType => typeof value === 'string' && [
@@ -28,7 +28,7 @@ const legacyType = (entry: AuditLogEntry): ProjectHistoryType => {
 export class ProjectHistoryService {
   public static create(input: AppendProjectHistory): AuditLogEntry {
     const timestamp = input.timestamp && Number.isFinite(Date.parse(input.timestamp)) ? input.timestamp : new Date().toISOString();
-    return { id: crypto.randomUUID(), timestamp, category: input.category || 'SYSTEM', level: input.level || (input.result === 'FAILED' ? 'ERROR' : 'INFO'), message: input.summary, deviceId: input.deviceId, details: safe({ historyType: input.type, title: input.title, source: input.source || 'PROJECT', result: input.result, ...(input.details || {}) }) as Record<string, unknown> };
+    return { id: crypto.randomUUID(), timestamp, category: input.category || 'SYSTEM', level: input.level || (input.result === 'FAILED' ? 'ERROR' : 'INFO'), message: String(safe(input.summary)), deviceId: input.deviceId, details: safe({ historyType: input.type, title: input.title, source: input.source || 'PROJECT', result: input.result, ...(input.details || {}) }) as Record<string, unknown> };
   }
   public static sanitizeEntry(value: unknown): AuditLogEntry | null {
     if (!value || typeof value !== 'object') return null;

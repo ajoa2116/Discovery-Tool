@@ -617,6 +617,7 @@ export default function App() {
           project={project}
           selectedDeviceIds={[...selectedDeviceIds]}
           filteredDeviceIds={filteredDevices.map(device=>device.id)}
+          projectMode={projectSession?.mode==='PROJECT'}
         />
         </>
       )}
