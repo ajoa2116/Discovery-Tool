@@ -28,8 +28,9 @@ async function run() {
     assert.ok(!result.transportReachable);
     const db = new SiteProjectDatabase();
     db.startQuickWork();
-    const service = new AdvancedScanService({ inspectAdapters: async () => [] } as any, ping, undefined, db);
+    const service = new AdvancedScanService({ inspectAdapters: async () => [{interfaceIndex:8,interfaceAlias:'Ethernet',mediaType:'ETHERNET',operationalStatus:'Up',eligible:true,dhcpEnabled:true,ipv4Addresses:[{address:'192.168.0.124',prefixLength:24}],defaultGateways:[],dnsAutomatic:true,dnsServers:[],capturedAt:'now'}] } as any, ping, undefined, db);
     const request = emptyAdvancedScanRequest();
+    request.adapterIndexes = [8];
     request.targets = [{ type: 'RANGE', start: target, end: target }];
     request.methods = ['PING'];
     let emitted = 0;

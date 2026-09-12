@@ -1,3 +1,4 @@
+import { matchesAdvancedScanFilters } from '../../shared/discovery_evidence.ts';
 import { AdvancedScanMethod, AdvancedScanPlan, AdvancedScanRequest, AdvancedScanStatus } from '../../shared/advanced_scan.ts';
 import { Device, DiagnosticCheckEvidence, WindowsAdapterSnapshot } from '../../types/index.ts';
 import { NodeTcpDiagnosticProvider, TcpDiagnosticProvider, WindowsPingProvider, PingProvider } from './diagnostic_engine.ts';
@@ -6,6 +7,7 @@ import { LocalHostIdentity } from '../network/local_host_identity.ts';
 import { SiteProjectDatabase, projectDb } from '../storage/project_db.ts';
 import { applyNetworkRelationship } from '../../shared/network_relationship.ts';
 import { appStateDb } from '../storage/app_db.ts';
+import { advancedRequestErrors, isAdapterCollection } from '../../shared/advanced_scan_contract.ts';
 
 const PRESETS = { CAMERA_COMMON: [80, 443, 554, 8000, 8080], WEB: [80, 443, 8080, 8443], RTSP: [554] };
 const MAX_TARGETS = 4096;
@@ -40,17 +42,7 @@ const localContains = (adapter: WindowsAdapterSnapshot, ip: string) => adapter.i
   return number !== null && local !== null && ((number & mask(address.prefixLength)) >>> 0) === ((local & mask(address.prefixLength)) >>> 0);
 });
 
-export const matchesAdvancedScanFilters = (device: Device, filters: AdvancedScanRequest['filters']) => {
-  const mac = device.anchor.macAddress?.toLowerCase() || '';
-  const prefix = (filters.macPrefix || '').toLowerCase().replace(/-/g, ':');
-  const vendor = device.anchor.vendor || 'Unknown';
-  const likely = Boolean(device.anchor.onvifEndpointUuid || (vendor !== 'Unknown' && vendor !== 'Generic ONVIF Device'));
-  if (prefix && !mac.startsWith(prefix)) return false;
-  if (filters.manufacturer && filters.manufacturer !== 'Any' && !vendor.toLowerCase().includes(filters.manufacturer.toLowerCase())) return false;
-  if (filters.onlyLikelyCameras && !likely) return false;
-  if (!filters.includeUnknownDevices && !likely) return false;
-  return true;
-};
+export { matchesAdvancedScanFilters } from '../../shared/discovery_evidence.ts';
 
 export class AdvancedScanValidationError extends Error {
   constructor(message: string, public code: string) { super(message); }
@@ -60,9 +52,10 @@ export class AdvancedScanPlanner {
   public plan(request: AdvancedScanRequest, adapters: WindowsAdapterSnapshot[]): AdvancedScanPlan {
     const errors: string[] = [];
     const warnings: string[] = [];
-    const hasChoice = Boolean(request.adapterIndexes.length || request.targets.length || request.methods.length || request.portPresets.length || request.customPorts.length || request.filters.macPrefix || request.filters.manufacturer || request.filters.onlyLikelyCameras || !request.filters.includeUnknownDevices);
+    const hasChoice = Boolean(request.adapterIndexes.length || request.targets.length || request.methods.length || request.portPresets.length || request.customPorts.length || request.filters.macPrefix || request.filters.manufacturer || request.filters.onlyLikelyCameras || !request.filters.includeUnknownDevices || request.performance !== 'NORMAL');
     if (!hasChoice) return { mode: 'QUICK_FALLBACK', request, adapterIndexes: [], normalizedTargets: [], methods: [], ports: [], routeSummary: [], estimatedTargetCount: 0, maximumTcpChecks: 0, warnings: [], valid: true, errors: [] };
     const selected = [...new Set(request.adapterIndexes)];
+    if (!selected.length) errors.push('Select an eligible network adapter for Advanced Scan.');
     for (const index of selected) {
       const adapter = adapters.find(value => value.interfaceIndex === index);
       if (!adapter?.eligible) errors.push(adapter?.eligibilityReason || `Adapter ${index} is not eligible.`);
@@ -80,6 +73,7 @@ export class AdvancedScanPlanner {
     if (ports.length > MAX_PORTS) errors.push(`Advanced Scan is limited to ${MAX_PORTS} unique TCP ports.`);
     const methods = [...new Set(request.methods)] as AdvancedScanMethod[];
     if (!methods.length) methods.push('ONVIF', 'NEIGHBOR', 'PING');
+    if (!targets.length && !methods.includes('ONVIF') && !methods.includes('NEIGHBOR')) errors.push('Add an IP target for Ping or TCP checks.');
     if (ports.length && !methods.includes('TCP')) methods.push('TCP');
     const chosen = adapters.filter(adapter => selected.includes(adapter.interfaceIndex));
     const routeSummary = targets.map(target => {
@@ -105,8 +99,16 @@ export class AdvancedScanService {
     private db: SiteProjectDatabase = projectDb,
     private planner = new AdvancedScanPlanner(),
   ) {}
-  public async listAdapters() { return this.adapters.inspectAdapters(); }
-  public async validate(request: AdvancedScanRequest) { return this.planner.plan(request, await this.listAdapters()); }
+  public async listAdapters() {
+    const adapters = await this.adapters.inspectAdapters();
+    if (!isAdapterCollection(adapters)) throw new AdvancedScanValidationError('Network adapter enumeration returned an invalid collection.', 'ADAPTER_ENUMERATION_MALFORMED_OUTPUT');
+    return adapters;
+  }
+  public async validate(request: AdvancedScanRequest) {
+    const errors = advancedRequestErrors(request);
+    if (errors.length) throw new AdvancedScanValidationError(errors.join(' '), 'INVALID_PLAN');
+    return this.planner.plan(request, await this.listAdapters());
+  }
   public getStatus() { return structuredClone(this.status); }
   public stop() { if (!this.controller) return false; this.controller.abort(); return true; }
   public async execute(plan: AdvancedScanPlan, callbacks: AdvancedScanCallbacks) {
@@ -122,6 +124,8 @@ export class AdvancedScanService {
       const localHost = LocalHostIdentity.fromAdapters(adapters);
       const concurrency = { CONSERVATIVE: 4, NORMAL: 12, FAST: 24 }[plan.request.performance];
       const queue = [...plan.normalizedTargets];
+      const filteredObservations: Array<{ip:string;positiveChecks:string[]}> = [];
+      let filteredCount = 0;
       const worker = async () => {
         while (queue.length && !signal.aborted) {
           const ip = queue.shift()!;
@@ -147,6 +151,7 @@ export class AdvancedScanService {
             const device: Device = existing ? { ...existing, diagnostics: { ...existing.diagnostics, checks: [...(existing.diagnostics?.checks || []), ...evidence].slice(-100) }, lastSeenAt: now } : {
               id: `advanced:${ip}`, anchor: { macAddress: null, vendor: 'Unknown' }, network: { ipAddress: ip, ipAddressHistory: [ip], subnetMask: 'Unknown', port: 0, protocol: 'PASSIVE_SNIFF' }, status: 'UNKNOWN', discoveredPhase: 3, firstSeenAt: now, lastSeenAt: now, sessionVerification: 'NOT_VERIFIED', technician: { name: 'Unknown Device', location: '', notes: '' }, configuredState: { inferred: null, manualOverride: false }, diagnostics: { checks: evidence },
             };
+            if (!existing && !matchesAdvancedScanFilters(device, plan.request.filters)) { filteredCount++; if(filteredObservations.length<32)filteredObservations.push({ip,positiveChecks:evidence.filter(check=>check.success).map(check=>check.type)}); this.status.completedTargets++; continue; }
             applyNetworkRelationship(device, adapters, this.db.getDevices(), plan.adapterIndexes[0]);
             const stored = this.db.upsertDevice(device);
             this.status.findings++;
@@ -157,7 +162,7 @@ export class AdvancedScanService {
       };
       await Promise.all(Array.from({ length: Math.min(concurrency, Math.max(1, queue.length)) }, worker));
       this.status = { ...this.status, running: false, cancelled: signal.aborted, completedAt: new Date().toISOString(), message: signal.aborted ? 'Advanced Scan cancelled; completed findings were preserved.' : 'Advanced Scan completed.' };
-      appStateDb.logAudit({ id: crypto.randomUUID(), timestamp: this.status.completedAt!, category: 'DISCOVERY', level: 'INFO', message: 'Advanced Scan target checks completed.', details: { targetCount: this.status.targetCount, checkedTargets: this.status.completedTargets, evidenceBackedTargets: this.status.findings, cancelled: this.status.cancelled } });
+      appStateDb.logAudit({ id: crypto.randomUUID(), timestamp: this.status.completedAt!, category: 'DISCOVERY', level: 'INFO', message: 'Advanced Scan target checks completed.', details: { targetCount: this.status.targetCount, checkedTargets: this.status.completedTargets, evidenceBackedTargets: this.status.findings, filteredCount, filteredObservations, cancelled: this.status.cancelled } });
       callbacks.onComplete(this.getStatus());
       return this.getStatus();
     } finally { this.controller = null; }

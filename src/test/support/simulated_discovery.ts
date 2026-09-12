@@ -6,7 +6,7 @@ function device(mac: string, ip: string, vendor: string, model: string, phase: n
   const now = new Date().toISOString();
   return {
     id: `mac:${mac}`,
-    anchor: { macAddress: mac, vendor, model, serialNumber: `${vendor}-${mac.replace(/:/g, '')}` },
+    anchor: { macAddress: mac, vendor, model, hardwareClass: vendor === 'Lenel Access Control' ? 'ACCESS_CONTROL' : 'IP_CAMERA', serialNumber: `${vendor}-${mac.replace(/:/g, '')}` },
     network: { ipAddress: ip, subnetMask: '255.255.255.0', port: 80, protocol: phase === 2 ? 'PASSIVE_SNIFF' : 'ONVIF' },
     status: 'DISCOVERED',
     discoveredPhase: phase,

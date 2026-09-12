@@ -1,3 +1,6 @@
+import { hasCctvEvidence, matchesAdvancedScanFilters, sameDiscoveryIdentity } from '../../shared/discovery_evidence.ts';
+import { AdvancedScanRequest } from '../../shared/advanced_scan.ts';
+import { appStateDb } from '../storage/app_db.ts';
 import { PhaseState, NICInfo } from '../../types/index.ts';
 import { Phase1Topology } from './phase1_topology.ts';
 import { WindowsNeighborDiscoveryProvider, PassiveDiscoveryProvider, Phase2PassiveListener } from './phase2_passive.ts';
@@ -132,7 +135,7 @@ export class BatchExecutionPipeline {
     return true;
   }
 
-  public async runDiscoveryScan(options: { adapterNames?: string[]; discoveryMethods?: string[]; emitTerminalEvent?: boolean; database?: SiteProjectDatabase; emitDeviceEvents?: boolean } = {}): Promise<'COMPLETED'|'CANCELLED'|'BUSY'> {
+  public async runDiscoveryScan(options: { adapterNames?: string[]; filters?: AdvancedScanRequest['filters']; discoveryMethods?: string[]; emitTerminalEvent?: boolean; database?: SiteProjectDatabase; emitDeviceEvents?: boolean } = {}): Promise<'COMPLETED'|'CANCELLED'|'BUSY'> {
     if (this.isRunning) return 'BUSY';
     this.isRunning = true;
     this.abortController = new AbortController();
@@ -147,8 +150,8 @@ export class BatchExecutionPipeline {
       const database = options.database || projectDb;
       await this.runPhase1();
       if (options.adapterNames?.length) this.currentInterfaces = this.currentInterfaces.filter(nic => options.adapterNames!.includes(nic.name));
-      if (!signal.aborted && (!options.discoveryMethods || options.discoveryMethods.includes('NEIGHBOR'))) await this.runPhase2(signal, database, options.emitDeviceEvents !== false);
-      if (!signal.aborted && (!options.discoveryMethods || options.discoveryMethods.includes('ONVIF'))) await this.runPhase3(signal, database, options.emitDeviceEvents !== false);
+      if (!signal.aborted && (!options.discoveryMethods || options.discoveryMethods.includes('NEIGHBOR'))) await this.runPhase2(signal, database, options.emitDeviceEvents !== false, options.filters);
+      if (!signal.aborted && (!options.discoveryMethods || options.discoveryMethods.includes('ONVIF'))) await this.runPhase3(signal, database, options.emitDeviceEvents !== false, options.filters);
       if (!signal.aborted) await this.runPhase4(database);
 
       if (signal.aborted && options.emitTerminalEvent !== false) {
@@ -222,7 +225,7 @@ export class BatchExecutionPipeline {
     this.emit({ type: 'PHASE_COMPLETE', phaseNumber: 1, data: result });
   }
 
-  public async runPhase2(signal?: AbortSignal, database: SiteProjectDatabase = projectDb, emitDeviceEvents = true): Promise<void> {
+  public async runPhase2(signal?: AbortSignal, database: SiteProjectDatabase = projectDb, emitDeviceEvents = true, filters?: AdvancedScanRequest['filters']): Promise<void> {
     const phase = this.phases[1];
     phase.status = 'RUNNING';
     phase.startTime = new Date().toISOString();
@@ -231,7 +234,23 @@ export class BatchExecutionPipeline {
     const result = await Phase2PassiveListener.execute(this.currentInterfaces, this.passiveDiscovery, signal);
     const localHost = LocalHostIdentity.fromAddresses([...this.localHost.values(), ...this.currentInterfaces.map(value => value.ipAddress)]);
     result.devices = result.devices.filter(device => localHost.isRemoteDevice(device));
-    for (const device of result.devices) {
+    const observed = result.devices.length;
+    const excluded = result.devices.filter(device => {
+      const known = database.getDevices().find(existing => sameDiscoveryIdentity(existing,device));
+      return !(known || (filters ? matchesAdvancedScanFilters(device,filters) : hasCctvEvidence(device)));
+    });
+    const excludedSet = new Set(excluded);
+    result.devices = result.devices.filter(device => !excludedSet.has(device));
+    if (excluded.length) {
+      result.logs.push(`[Phase 2] ${excluded.length} generic or filtered neighbor observations retained in Support evidence; not promoted to inventory.`);
+      appStateDb.logAudit({id:crypto.randomUUID(),timestamp:new Date().toISOString(),category:'DISCOVERY',level:'INFO',message:'Neighbor evidence inventory policy applied.',details:{observed,promoted:result.devices.length,excluded:excluded.length,samples:excluded.slice(0,32).map(device=>({ip:device.network.ipAddress,mac:device.anchor.macAddress,sourceAdapter:device.reachability?.discoveryInterface,classification:hasCctvEvidence(device)?'FILTERED_CCTV':'GENERIC_NETWORK',reason:'Does not meet current inventory discovery policy.'}))}});
+    }
+    for (let device of result.devices) {
+      const known = database.getDevices().find(existing => sameDiscoveryIdentity(existing,device));
+      if (known && !hasCctvEvidence(device)) {
+        const unchangedAddress = known.network.ipAddress === device.network.ipAddress;
+        device = {...device,anchor:{...known.anchor,macAddress:device.anchor.macAddress || known.anchor.macAddress},network:{...known.network,ipAddress:device.network.ipAddress},technician:known.technician,sessionVerification:unchangedAddress?known.sessionVerification:'NOT_VERIFIED',status:unchangedAddress?known.status:device.status,statusMessage:unchangedAddress?known.statusMessage:device.statusMessage};
+      }
       const isNew = !database.getDevices().some(existing => existing.id === device.id || Boolean(
         (device.anchor.macAddress && existing.anchor.macAddress?.toLowerCase() === device.anchor.macAddress.toLowerCase()) ||
         (device.anchor.onvifEndpointUuid && existing.anchor.onvifEndpointUuid?.toLowerCase() === device.anchor.onvifEndpointUuid.toLowerCase()) ||
@@ -248,7 +267,7 @@ export class BatchExecutionPipeline {
     this.emit({ type: 'PHASE_COMPLETE', phaseNumber: 2, data: result });
   }
 
-  public async runPhase3(signal?: AbortSignal, database: SiteProjectDatabase = projectDb, emitDeviceEvents = true): Promise<void> {
+  public async runPhase3(signal?: AbortSignal, database: SiteProjectDatabase = projectDb, emitDeviceEvents = true, filters?: AdvancedScanRequest['filters']): Promise<void> {
     const phase = this.phases[2];
     phase.status = 'RUNNING';
     phase.startTime = new Date().toISOString();
@@ -257,6 +276,7 @@ export class BatchExecutionPipeline {
     const result = await Phase3ActiveProbing.execute(this.currentInterfaces, this.onvifDiscovery, this.deviceEnricher, {
       signal,
       timeoutMs: this.discoveryTimeoutMs,
+      acceptDevice: filters ? device => matchesAdvancedScanFilters(device,filters) : undefined,
       onDevice: emitDeviceEvents ? (device, isNew) => this.emit({
         type: 'DEVICE_DISCOVERED',
         phaseNumber: 3,

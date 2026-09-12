@@ -44,8 +44,8 @@ async function run() {
   const pipeline = new BatchExecutionPipeline({ passiveDiscovery: passive });
   (pipeline as any).currentInterfaces = [nic('Wi-Fi', '192.168.145.49')];
   (pipeline as any).localHost = LocalHostIdentity.fromInterfaces([nic('Wi-Fi', '192.168.145.49'), nic('Ethernet', '10.0.0.8')]);
-  await pipeline.runPhase2();
-  assert(projectDb.getDevices().map(found => found.network.ipAddress).join() === '192.168.145.50', 'Quick Scan excludes selected and other local-adapter addresses at the passive/neighbor boundary');
+  await pipeline.runPhase2(undefined, projectDb, true, {onlyLikelyCameras:false,includeUnknownDevices:true});
+  assert(projectDb.getDevices().map(found => found.network.ipAddress).join() === '192.168.145.50', 'explicit unknown discovery excludes selected and other local-adapter addresses at the passive/neighbor boundary');
 
   console.log(`\nLocal-host exclusion summary: ${passed} passed, ${failed} failed`);
   if (failed) process.exit(1);

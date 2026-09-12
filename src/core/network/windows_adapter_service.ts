@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process';
 import { WindowsAdapterSnapshot } from '../../types/index.ts';
+import { isAdapterCollection, isRecord } from '../../shared/advanced_scan_contract.ts';
 
 export class NetworkConfigurationError extends Error {
   constructor(message: string, public readonly code: string) { super(message); }
@@ -45,10 +46,14 @@ export function classifyWindowsAdapter(adapter: WindowsAdapterSnapshot): Windows
   return { ...adapter, mediaType, eligible, eligibilityReason };
 }
 
-function runPowerShell(script: string, signal?: AbortSignal): Promise<string> {
+function runPowerShell(script: string, signal?: AbortSignal, purpose?: 'INSPECT'): Promise<string> {
   return new Promise((resolve, reject) => {
-    execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { windowsHide: true, timeout: 15_000, maxBuffer: 1024 * 1024, signal }, (error, stdout, stderr) => {
+    execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], { windowsHide: true, timeout: purpose === 'INSPECT' ? 30_000 : 15_000, maxBuffer: 1024 * 1024, signal }, (error, stdout, stderr) => {
       if (error) {
+        if (purpose === 'INSPECT') {
+          const reason = signal?.aborted ? 'CANCELLED' : error.killed ? 'TIMEOUT' : /access.*denied|privilege/i.test(stderr) ? 'PERMISSION' : 'COMMAND_FAILED';
+          reject(new NetworkConfigurationError(`Network adapter enumeration could not complete (${reason.toLowerCase().replaceAll('_',' ')}). Retry or inspect Diagnostics/Support.`, `ADAPTER_ENUMERATION_${reason}`)); return;
+        }
         const text = stderr.trim();
         const accessDenied = /access.*denied|administrator|privilege/i.test(text);
         reject(new NetworkConfigurationError(accessDenied ? 'Administrator privileges are required to change this adapter.' : 'Windows could not complete the network adapter operation.', accessDenied ? 'ADMIN_REQUIRED' : 'POWERSHELL_FAILED'));
@@ -58,12 +63,17 @@ function runPowerShell(script: string, signal?: AbortSignal): Promise<string> {
 }
 
 const inspectScript = `
+$ErrorActionPreference = 'Stop'
+$allInterfaces = @(Get-NetIPInterface -AddressFamily IPv4)
+$allAddresses = @(Get-NetIPAddress -AddressFamily IPv4)
+$allGateways = @(Get-NetRoute -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue)
+$allDns = @(Get-DnsClientServerAddress -AddressFamily IPv4)
 $adapters = Get-NetAdapter -ErrorAction Stop | ForEach-Object {
   $a = $_
-  $ipif = Get-NetIPInterface -InterfaceIndex $a.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue
-  $ips = @(Get-NetIPAddress -InterfaceIndex $a.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object AddressState -ne Duplicate | ForEach-Object { [pscustomobject]@{ address=$_.IPAddress; prefixLength=$_.PrefixLength } })
-  $gateways = @(Get-NetRoute -InterfaceIndex $a.ifIndex -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | Select-Object -ExpandProperty NextHop)
-  $dns = Get-DnsClientServerAddress -InterfaceIndex $a.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue
+  $ipif = $allInterfaces | Where-Object InterfaceIndex -eq $a.ifIndex | Select-Object -First 1
+  $ips = @($allAddresses | Where-Object { $_.InterfaceIndex -eq $a.ifIndex -and $_.AddressState -ne 'Duplicate' } | ForEach-Object { [pscustomobject]@{ address=$_.IPAddress; prefixLength=$_.PrefixLength } })
+  $gateways = @($allGateways | Where-Object InterfaceIndex -eq $a.ifIndex | Select-Object -ExpandProperty NextHop)
+  $dns = $allDns | Where-Object InterfaceIndex -eq $a.ifIndex
   $registry = Get-ItemProperty -Path ("HKLM:\\SYSTEM\\CurrentControlSet\\Services\\Tcpip\\Parameters\\Interfaces\\" + $a.InterfaceGuid) -ErrorAction SilentlyContinue
   $description = [string]$a.InterfaceDescription
   $physicalMedia = [string]$a.PhysicalMediaType
@@ -80,14 +90,25 @@ $adapters = Get-NetAdapter -ErrorAction Stop | ForEach-Object {
     dnsAutomatic=([string]::IsNullOrWhiteSpace([string]$registry.NameServer)); dnsServers=@($dns.ServerAddresses); capturedAt=(Get-Date).ToUniversalTime().ToString('o')
   }
 }
-@($adapters) | ConvertTo-Json -Depth 6 -Compress`;
+ConvertTo-Json -InputObject @($adapters) -Depth 6 -Compress`;
+
+export function parseWindowsAdapterOutput(output: string): WindowsAdapterSnapshot[] {
+  let parsed: unknown;
+  try { parsed = JSON.parse(output); } catch { throw new NetworkConfigurationError('Windows returned an invalid adapter collection.', 'ADAPTER_ENUMERATION_MALFORMED_OUTPUT'); }
+  const rows = Array.isArray(parsed) ? parsed : isRecord(parsed) ? [parsed] : null;
+  // PowerShell emits [null] for an adapter with no DNS servers; retain absence without inventing values.
+  const normalized = rows?.map(row => isRecord(row) ? { ...row, dnsServers: Array.isArray(row.dnsServers) ? row.dnsServers.filter(value => value !== null) : row.dnsServers } : row);
+  if (!isAdapterCollection(normalized)) throw new NetworkConfigurationError('Windows returned an invalid adapter collection.', 'ADAPTER_ENUMERATION_MALFORMED_OUTPUT');
+  return normalized.map(classifyWindowsAdapter);
+}
 
 export class PowerShellWindowsNetworkAdapterService implements WindowsNetworkAdapterService {
+  private pendingInspection?: Promise<WindowsAdapterSnapshot[]>;
+  constructor(private readonly inspectRunner = (script: string, signal?: AbortSignal) => runPowerShell(script, signal, 'INSPECT')) {}
   public async inspectAdapters(signal?: AbortSignal): Promise<WindowsAdapterSnapshot[]> {
-    const output = await runPowerShell(inspectScript, signal);
-    if (!output) return [];
-    const parsed = JSON.parse(output) as WindowsAdapterSnapshot[] | WindowsAdapterSnapshot;
-    return (Array.isArray(parsed) ? parsed : [parsed]).map(adapter => classifyWindowsAdapter({ ...adapter, ipv4Addresses: adapter.ipv4Addresses || [], defaultGateways: adapter.defaultGateways || [], dnsServers: adapter.dnsServers || [] }));
+    if (signal) return parseWindowsAdapterOutput(await this.inspectRunner(inspectScript, signal));
+    if (!this.pendingInspection) this.pendingInspection = this.inspectRunner(inspectScript).then(parseWindowsAdapterOutput).finally(() => { this.pendingInspection = undefined; });
+    return structuredClone(await this.pendingInspection);
   }
 
   public async isAdministrator(signal?: AbortSignal): Promise<boolean> {
@@ -127,7 +148,7 @@ if(${snapshot.dnsAutomatic ? '$true' : '$false'}) { Set-DnsClientServerAddress -
   }
 
   private async getAdapter(interfaceIndex: number): Promise<WindowsAdapterSnapshot> {
-    const adapter = (await this.inspectAdapters()).find(item => item.interfaceIndex === interfaceIndex);
+    const adapter = (await this.inspectAdapters(new AbortController().signal)).find(item => item.interfaceIndex === interfaceIndex);
     if (!adapter) throw new NetworkConfigurationError('The selected network adapter no longer exists.', 'ADAPTER_NOT_FOUND');
     return adapter;
   }

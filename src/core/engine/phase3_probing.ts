@@ -7,6 +7,7 @@ import { LocalHostIdentity } from '../network/local_host_identity.ts';
 
 export interface ActiveProbeOptions {
   signal?: AbortSignal;
+  acceptDevice?: (device: Device) => boolean;
   timeoutMs?: number;
   onDevice?: (device: Device, isNew: boolean) => void;
   onEnrichment?: (device: Device, changedFields: string[]) => void;
@@ -43,6 +44,7 @@ export class Phase3ActiveProbing {
           (device.anchor.onvifEndpointUuid && existing.anchor.onvifEndpointUuid?.toLowerCase() === device.anchor.onvifEndpointUuid.toLowerCase()) ||
           (device.anchor.serialNumber && existing.anchor.serialNumber?.toLowerCase() === device.anchor.serialNumber.toLowerCase())
         ));
+        if (isNew && options.acceptDevice && !options.acceptDevice(device)) { logs.push('[Phase 3] ONVIF observation excluded by explicit Advanced Scan filters.'); return; }
         const stored = database.upsertDevice(device);
         options.onDevice?.(stored, isNew);
         const enrichmentKey = stored.anchor.onvifEndpointUuid || stored.anchor.macAddress || stored.id;

@@ -76,7 +76,7 @@ async function run(){
   a(LegacyHardwareOnboarding.onboardLegacyDevice({ipAddress:'192.168.1.90'}).anchor.macAddress===null,'optional MAC remains absent');
   const db=new SiteProjectDatabase();db.startQuickWork();
   const scan=new AdvancedScanService(adapters,{check:async(ip)=>({type:'PING',targetIp:ip,success:ip.endsWith('.9'),timestamp:'now'})},{check:async(ip,options)=>({type:'TCP',targetIp:ip,port:options.port,success:['192.168.1.100','192.168.1.200'].includes(ip),timestamp:'now'})},db);
-  const request=emptyAdvancedScanRequest();request.targets=[{type:'RANGE',start:'192.168.1.1',end:'192.168.1.254'}];request.methods=['PING','TCP'];request.customPorts=[80];
+  const request=emptyAdvancedScanRequest();request.adapterIndexes=[8];request.targets=[{type:'RANGE',start:'192.168.1.1',end:'192.168.1.254'}];request.methods=['PING','TCP'];request.customPorts=[80];
   const emitted:string[]=[];const status=await scan.execute(await scan.validate(request),{onDevice:d=>emitted.push(d.id),onComplete:()=>{}});
   a(status.completedTargets===254&&status.findings===3&&db.getDevices().length===3,'254 checked targets produce exactly three evidence-backed candidates');
   a(emitted.length===3,'three progressive device events, none for silent targets');

@@ -41,7 +41,7 @@ const component = readFileSync('src/ui/components/IPv4Input.tsx', 'utf8');
 const modal = readFileSync('src/ui/components/AdvancedScanModal.tsx', 'utf8');
 assert(component.includes('onPaste={paste}') && component.includes("event.key") && component.includes("inputMode=\"numeric\""), 'reusable control wires paste, keyboard navigation, and numeric mobile input');
 assert(component.includes('placeholder="24"') && component.includes('prefixTouched && !prefixValid'), 'CIDR prefix has a distinct visible entry area and defers its error until blur');
-assert(modal.includes('assistFrom={row.first}') && modal.includes('incompleteTarget'), 'Advanced Scan uses Start-prefix assistance and blocks incomplete target submission without backend churn');
+assert(modal.includes('assistFrom={row.first}') && modal.includes("draft.state !== 'READY'"), 'Advanced Scan uses Start-prefix assistance and blocks incomplete target submission without backend churn');
 
 console.log(`\nIPv4 input summary: ${passed} passed, ${failed} failed`);
 if (failed) process.exit(1);

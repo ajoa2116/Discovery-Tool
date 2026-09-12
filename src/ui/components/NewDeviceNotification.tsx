@@ -4,6 +4,8 @@ import { Radio, X, Plus, Eye, EyeOff } from 'lucide-react';
 interface NewDeviceNotificationProps {
   deviceIp: string;
   vendor: string;
+  evidence?: string;
+  sourceAdapter?: string;
   onView: () => void;
   onAdd: () => void;
   onIgnore: () => void;
@@ -12,6 +14,8 @@ interface NewDeviceNotificationProps {
 export const NewDeviceNotification: React.FC<NewDeviceNotificationProps> = ({
   deviceIp,
   vendor,
+  evidence = 'Device discovery evidence received.',
+  sourceAdapter,
   onView,
   onAdd,
   onIgnore,
@@ -30,7 +34,7 @@ export const NewDeviceNotification: React.FC<NewDeviceNotificationProps> = ({
             <span className="font-bold text-slate-200">{vendor}</span>
           </div>
           <p className="text-slate-300 font-mono text-[11px] mt-0.5">
-            IP: <span className="text-sky-300 font-bold">{deviceIp}</span> broadcasted new ARP handshake.
+            IP: <span className="text-sky-300 font-bold">{deviceIp}</span> - {evidence}{sourceAdapter && ` Adapter: ${sourceAdapter}.`}
           </p>
         </div>
       </div>

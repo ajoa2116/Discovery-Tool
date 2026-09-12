@@ -1,3 +1,4 @@
+import { discoveryNotification } from '../shared/discovery_evidence.ts';
 import React, { useState, useEffect, useRef } from 'react';
 import {
   SiteProject,
@@ -98,7 +99,7 @@ export default function App() {
   const menuAreaRef = useRef<HTMLDivElement>(null);
 
   // New device notification (Section 16)
-  const [newDeviceDetected, setNewDeviceDetected] = useState<{ ip: string; vendor: string } | null>(null);
+  const [newDeviceDetected, setNewDeviceDetected] = useState<ReturnType<typeof discoveryNotification>>(null);
 
   // Fetch initial data
   const fetchData = async () => {
@@ -138,7 +139,8 @@ export default function App() {
           setProject(data.data.project);
         }
         if (data.type === 'DEVICE_DISCOVERED' && data.data?.isNew === true && shouldNotifyForDiscovery(preferencesRef.current,true) && data.data?.device) {
-          setNewDeviceDetected({ ip: data.data.device.network.ipAddress, vendor: data.data.device.anchor.vendor });
+          const notification = discoveryNotification(data.data.device);
+          if (notification) setNewDeviceDetected(notification);
         }
         if (data.type === 'DEVICE_DIAGNOSTICS_UPDATED' && data.data?.project) {
           setProject(data.data.project);
@@ -422,6 +424,8 @@ export default function App() {
           <NewDeviceNotification
             deviceIp={newDeviceDetected.ip}
             vendor={newDeviceDetected.vendor}
+            evidence={newDeviceDetected.evidence}
+            sourceAdapter={newDeviceDetected.sourceAdapter}
             onView={() => setSearchQuery(newDeviceDetected.ip)}
             onAdd={() => setNewDeviceDetected(null)}
             onIgnore={() => setNewDeviceDetected(null)}
@@ -491,7 +495,7 @@ export default function App() {
 
             {/* Network Adapter Info (Section 24) */}
             <div className="flex items-center gap-1.5 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-md px-2.5 py-1 text-slate-600 dark:text-slate-300 font-mono text-[11px]">
-              <span>{interfaces[0] ? `${interfaces[0].name} • ${interfaces[0].ipAddress}` : 'Adapter: Detecting…'}</span>
+              <span title="First enumerated adapter shown. Quick Scan and monitoring use all eligible adapters; Advanced ONVIF/neighbor discovery uses your selection; targeted checks use Windows routing.">{interfaces[0] ? `${interfaces[0].name} • ${interfaces[0].ipAddress}` : 'Adapter: Detecting…'}</span>
             </div>
 
             {/* Continuous Discovery Monitor Indicator (Section 15) */}

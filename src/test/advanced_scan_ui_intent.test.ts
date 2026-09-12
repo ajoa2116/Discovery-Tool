@@ -36,7 +36,7 @@ const modal = readFileSync('src/ui/components/AdvancedScanModal.tsx', 'utf8');
 assert(modal.includes("prefixSource: 'EDITED'") && modal.includes("row.prefixSource === 'EDITED'"), 'technician-edited or cleared prefix is never overwritten by later assistance');
 assert(modal.includes("prefixSource === 'SUGGESTED'") && modal.includes("prefix: ''"), 'ambiguous adapter selection clears only an untouched suggestion');
 assert(modal.includes("advancedIntent ? 'Start Advanced Scan' : 'Start Quick Scan'"), 'button label follows configured intent rather than current plan validity');
-assert(modal.includes('disabled={busy || incompleteTarget || plan?.valid === false}'), 'incomplete or invalid Advanced Scan remains disabled');
+assert(modal.includes('disabled={busy || !canStart}') && modal.includes("plan?.valid === true"), 'incomplete or invalid Advanced Scan remains disabled');
 
 const planner = new AdvancedScanPlanner();
 for (const [start, end, count] of [
