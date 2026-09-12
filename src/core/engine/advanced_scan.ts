@@ -104,11 +104,16 @@ export class AdvancedScanService {
     if (!isAdapterCollection(adapters)) throw new AdvancedScanValidationError('Network adapter enumeration returned an invalid collection.', 'ADAPTER_ENUMERATION_MALFORMED_OUTPUT');
     return adapters;
   }
-  public async validate(request: AdvancedScanRequest) {
+  public async prepare(request: AdvancedScanRequest) {
     const errors = advancedRequestErrors(request);
     if (errors.length) throw new AdvancedScanValidationError(errors.join(' '), 'INVALID_PLAN');
-    return this.planner.plan(request, await this.listAdapters());
+    const started = Date.now();
+    const adapters = await this.listAdapters();
+    const inspected = Date.now();
+    const plan = this.planner.plan(request, adapters);
+    return { plan, adapters, timings: { adapterInspectionMs: inspected-started, planningMs: Date.now()-inspected } };
   }
+  public async validate(request: AdvancedScanRequest) { return (await this.prepare(request)).plan; }
   public getStatus() { return structuredClone(this.status); }
   public stop() { if (!this.controller) return false; this.controller.abort(); return true; }
   public async execute(plan: AdvancedScanPlan, callbacks: AdvancedScanCallbacks) {

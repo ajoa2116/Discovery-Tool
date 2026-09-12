@@ -122,6 +122,7 @@ export interface NetworkEndpoint {
 }
 
 export interface ReachabilityEvidence {
+  discoverySource?: { ipAddress:string; port:number; payloadBytes:number; kind:'HELLO'|'PROBE_MATCH' };
   wsDiscoveryAnnouncedAt?: string;
   relationshipAdapter?: { name: string; ipAddress: string; netmask: string; interfaceIndex?: number };
   pairEligibility?: { eligible: boolean; reason: string; adapterIndexes: number[]; calculatedAt: string };

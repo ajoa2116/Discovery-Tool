@@ -9,7 +9,7 @@ import { Phase4IdentityReconciliation } from './phase4_reconcile.ts';
 import { Phase5BatchProvisioning } from './phase5_provision.ts';
 import { Phase6TelemetryVerification } from './phase6_telemetry.ts';
 import { projectDb, SiteProjectDatabase } from '../storage/project_db.ts';
-import { NodeOnvifWsDiscoveryTransport, OnvifDiscoveryTransport } from '../drivers/ws_discovery_transport.ts';
+import { DEFAULT_DISCOVERY_WINDOW_MS, NodeOnvifWsDiscoveryTransport, OnvifDiscoveryTransport } from '../drivers/ws_discovery_transport.ts';
 import { DeviceEnricher, WindowsDeviceEnricher } from './device_enrichment.ts';
 import { LocalHostIdentity } from '../network/local_host_identity.ts';
 
@@ -100,7 +100,7 @@ export class BatchExecutionPipeline {
     this.passiveDiscovery = dependencies.passiveDiscovery ?? new WindowsNeighborDiscoveryProvider();
     this.onvifDiscovery = dependencies.onvifDiscovery ?? new NodeOnvifWsDiscoveryTransport();
     this.deviceEnricher = dependencies.deviceEnricher ?? new WindowsDeviceEnricher();
-    this.discoveryTimeoutMs = dependencies.discoveryTimeoutMs ?? 3500;
+    this.discoveryTimeoutMs = dependencies.discoveryTimeoutMs ?? DEFAULT_DISCOVERY_WINDOW_MS;
     this.phaseDelayMs = dependencies.phaseDelayMs ?? 0;
   }
 

@@ -1,33 +1,8 @@
+import { inspectDiscoveryHello } from './ws_discovery_hello.ts';
 import { Device, OnvifCustomConfig, OnvifVideoStreamProfile, OnvifImagingSettings, OnvifPtzCapabilities } from '../../types/index.ts';
 import { appStateDb } from '../storage/app_db.ts';
 import { XMLParser, XMLValidator } from 'fast-xml-parser';
 import { normalizeIPv4 } from '../../shared/address_validation.ts';
-
-const discoveryNamespaces = ['http://schemas.xmlsoap.org/ws/2005/04/discovery', 'http://docs.oasis-open.org/ws-dd/ns/discovery/2009/01'];
-function validHello(xml: string): boolean {
-  const document = new XMLParser({ ignoreAttributes:false, processEntities:false }).parse(xml);
-  const child = (parent: any, name: string, namespaces: string[], inherited: Record<string,string> = {}): {node:any; ns:Record<string,string>} | null => {
-    const keys = Object.keys(parent || {}).filter(key => !key.startsWith('@_') && key.split(':').at(-1) === name);
-    if (keys.length !== 1 || Array.isArray(parent[keys[0]])) return null;
-    const key = keys[0], node = parent[key], ns = {...inherited};
-    for (const [attribute, uri] of Object.entries(node || {})) if (attribute === '@_xmlns' || attribute.startsWith('@_xmlns:')) ns[attribute === '@_xmlns' ? '' : attribute.slice(8)] = String(uri);
-    const prefix = key.includes(':') ? key.split(':')[0] : '';
-    return namespaces.includes(ns[prefix]) ? { node, ns } : null;
-  };
-  const soap = ['http://www.w3.org/2003/05/soap-envelope', 'http://schemas.xmlsoap.org/soap/envelope/'];
-  const addressing = ['http://schemas.xmlsoap.org/ws/2004/08/addressing','http://www.w3.org/2005/08/addressing'];
-  const envelope = child(document,'Envelope',soap);
-  const body = envelope && child(envelope.node,'Body',soap,envelope.ns);
-  const hello = body && child(body.node,'Hello',discoveryNamespaces,body.ns);
-  const endpoint = hello && child(hello.node,'EndpointReference',addressing,hello.ns);
-  const address = endpoint && child(endpoint.node,'Address',addressing,endpoint.ns);
-  const scopes = hello && child(hello.node,'Scopes',discoveryNamespaces,hello.ns);
-  const text = (node:any) => typeof node === 'string' ? node : String(node?.['#text'] || '');
-  if (!address || !/^urn:uuid:[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}$/i.test(text(address.node).trim()) || !scopes || !/onvif:\/\/www\.onvif\.org\//i.test(text(scopes.node))) return false;
-  const header = envelope && child(envelope.node,'Header',soap,envelope.ns);
-  const action = header && child(header.node,'Action',addressing,header.ns);
-  return !action || discoveryNamespaces.some(namespace => text(action.node).trim() === `${namespace}/Hello`);
-}
 
 export interface OnvifProbeMatch {
   endpointUuid?: string;
@@ -178,14 +153,14 @@ export class OnvifDriver {
   }
 
   public static parseHello(xmlPayload: string, senderIp: string): Partial<Device> | null {
-    return this.parseDiscoveryMessage(xmlPayload, senderIp, true);
+    return inspectDiscoveryHello(xmlPayload, senderIp).device;
   }
 
   private static parseDiscoveryMessage(xmlPayload: string, senderIp: string, hello: boolean): Partial<Device> | null {
     try {
       if (!normalizeIPv4(senderIp) || xmlPayload.length > 65507 || /<!DOCTYPE|<!ENTITY/i.test(xmlPayload) || XMLValidator.validate(xmlPayload) !== true) return null;
       if (hello) {
-        if (!validHello(xmlPayload)) return null;
+        return inspectDiscoveryHello(xmlPayload, senderIp).device;
       } else if (!/<(?:\w+:)?ProbeMatch\b/i.test(xmlPayload)) return null;
 
       const endpoint = xmlPayload.match(/<(?:\w+:)?EndpointReference(?:\s[^>]*)?>([\s\S]*?)<\/(?:\w+:)?EndpointReference>/i)?.[1] || '';
@@ -275,7 +250,7 @@ export class OnvifDriver {
         discoveredPhase: 3,
       };
     } catch (err) {
-      console.error('Error parsing ONVIF ProbeMatch:', err);
+      // Malformed discovery data is rejected; receive tracing records the safe reason.
       return null;
     }
   }

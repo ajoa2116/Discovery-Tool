@@ -21,6 +21,7 @@ export interface ReachabilityProvider {
 }
 
 export interface DeviceEnrichmentOptions {
+  onEvidence?: (stage:string) => void;
   signal?: AbortSignal;
   onUpdate?: (device: Device, changedFields: string[]) => void;
 }
@@ -165,12 +166,12 @@ export class WindowsDeviceEnricher implements DeviceEnricher {
     const nic = device.reachability?.discoveryInterface;
     const subnetClassification = nic
       ? classifySubnet(device.network.ipAddress, nic.ipAddress, nic.netmask)
-      : 'UNKNOWN';
+      : device.reachability?.subnetClassification || 'UNKNOWN';
     device.reachability = { ...device.reachability, subnetClassification };
     if (subnetClassification === 'DIFFERENT_SUBNET') device.status = 'DIFFERENT_SUBNET';
     options.onUpdate?.(device, ['subnetClassification']);
 
-    let neighbor = await this.safeNeighborLookup(device.network.ipAddress, nic, options.signal);
+    let neighbor = await this.safeNeighborLookup(device.network.ipAddress, nic, options.signal, options.onEvidence);
     if (neighbor?.macAddress && !device.anchor.macAddress) {
       device.anchor.macAddress = neighbor.macAddress;
       options.onUpdate?.(device, ['macAddress']);
@@ -196,7 +197,7 @@ export class WindowsDeviceEnricher implements DeviceEnricher {
     options.onUpdate?.(device, ['reachability']);
 
     if (!device.anchor.macAddress && !options.signal?.aborted) {
-      neighbor = await this.safeNeighborLookup(device.network.ipAddress, nic, options.signal);
+      neighbor = await this.safeNeighborLookup(device.network.ipAddress, nic, options.signal, options.onEvidence);
       if (neighbor?.macAddress) {
         device.anchor.macAddress = neighbor.macAddress;
         options.onUpdate?.(device, ['macAddress']);
@@ -209,14 +210,19 @@ export class WindowsDeviceEnricher implements DeviceEnricher {
     ipAddress: string,
     nic: ReachabilityEvidence['discoveryInterface'],
     signal?: AbortSignal,
+    onEvidence?: (stage:string) => void,
   ): Promise<NeighborEntry | null> {
     try {
-      return await this.neighbors.lookup(ipAddress, {
+      onEvidence?.('NEIGHBOR_LOOKUP_STARTED');
+      const neighbor=await this.neighbors.lookup(ipAddress, {
         signal,
         interfaceIndex: nic?.interfaceIndex,
         localAddress: nic?.ipAddress,
       });
+      onEvidence?.(neighbor?'NEIGHBOR_MATCHED':'NEIGHBOR_NOT_FOUND');
+      return neighbor;
     } catch {
+      onEvidence?.('NEIGHBOR_LOOKUP_UNAVAILABLE');
       return null;
     }
   }

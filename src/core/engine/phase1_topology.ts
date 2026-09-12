@@ -9,6 +9,7 @@ export class Phase1Topology {
    * Discovers all physical/virtual network adapters, subnets, and broadcast addresses
    */
   public static async execute(): Promise<{ interfaces: NICInfo[]; logs: string[] }> {
+    const startedAt=Date.now();
     const logs: string[] = [];
     logs.push('[Phase 1] Starting NIC enumeration and subnet topology mapping...');
 
@@ -57,6 +58,7 @@ export class Phase1Topology {
       category: 'DISCOVERY',
       level: 'INFO',
       message: `Phase 1 completed: ${interfaces.length} network adapters mapped.`,
+      details:{topologyElapsedMs:Date.now()-startedAt},
     });
 
     return { interfaces, logs };

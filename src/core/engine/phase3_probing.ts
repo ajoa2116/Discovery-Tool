@@ -29,6 +29,8 @@ export class Phase3ActiveProbing {
   }> {
     const eligible = interfaces.filter(nic => !nic.isInternal && Boolean(nic.ipAddress));
     const logs = [`[Phase 3] Sending ONVIF WS-Discovery probes on ${eligible.length} eligible IPv4 adapter(s) via 239.255.255.250:3702.`];
+    const reconciliation: Array<{stage:string;ip:string;status:string;verification?:string}> = [];
+    const record=(stage:string,device:Device)=>{if(reconciliation.length<32)reconciliation.push({stage,ip:device.network.ipAddress,status:device.status,verification:device.sessionVerification})};
     const enrichmentTasks = new Map<string, Promise<void>>();
 
     const result = await transport.discover(eligible, {
@@ -46,18 +48,21 @@ export class Phase3ActiveProbing {
         ));
         if (isNew && options.acceptDevice && !options.acceptDevice(device)) { logs.push('[Phase 3] ONVIF observation excluded by explicit Advanced Scan filters.'); return; }
         const stored = database.upsertDevice(device);
+        record('INVENTORY_RECONCILED',stored);
         options.onDevice?.(stored, isNew);
         const enrichmentKey = stored.anchor.onvifEndpointUuid || stored.anchor.macAddress || stored.id;
         if (!enrichmentTasks.has(enrichmentKey)) {
           const task = enricher.enrich(stored, {
             signal: options.signal,
+            onEvidence: stage => record(stage,stored),
             onUpdate: (updated, changedFields) => {
               const enriched = database.upsertDevice(updated);
+              record('ENRICHMENT_RECONCILED',enriched);
               options.onEnrichment?.(enriched, changedFields);
             },
           }).then(() => undefined).catch(error => {
             if (!options.signal?.aborted) {
-              logs.push(`[Phase 3] [ENRICHMENT WARNING] ${stored.network.ipAddress}: ${error instanceof Error ? error.message : String(error)}`);
+              logs.push(`[Phase 3] [ENRICHMENT WARNING] ${stored.network.ipAddress}: enrichment could not complete; discovery evidence retained.`);
             }
           });
           enrichmentTasks.set(enrichmentKey, task);
@@ -81,7 +86,7 @@ export class Phase3ActiveProbing {
       category: 'DISCOVERY',
       level: result.interfaceErrors.length > 0 ? 'WARNING' : 'INFO',
       message: `Phase 3 ${result.cancelled ? 'cancelled' : 'completed'}: ${result.devices.length} ONVIF device(s), ${result.interfaceErrors.length} interface error(s).`,
-      details: { messageCounts: result.messageCounts, interfaceWarnings: result.interfaceErrors.slice(0,32) },
+      details: { receiveTrace:result.trace, reconciliation, messageCounts: result.messageCounts, interfaceWarnings: result.interfaceErrors.slice(0,32) },
     });
     return { probedDevices: result.devices, logs, cancelled: result.cancelled, interfaceErrors: result.interfaceErrors };
   }
