@@ -1,6 +1,6 @@
 import { PhaseState, NICInfo } from '../../types/index.ts';
 import { Phase1Topology } from './phase1_topology.ts';
-import { DisabledPassiveDiscoveryProvider, PassiveDiscoveryProvider, Phase2PassiveListener } from './phase2_passive.ts';
+import { WindowsNeighborDiscoveryProvider, PassiveDiscoveryProvider, Phase2PassiveListener } from './phase2_passive.ts';
 import { Phase3ActiveProbing } from './phase3_probing.ts';
 import { Phase4IdentityReconciliation } from './phase4_reconcile.ts';
 import { Phase5BatchProvisioning } from './phase5_provision.ts';
@@ -94,7 +94,7 @@ export class BatchExecutionPipeline {
   private readonly phaseDelayMs: number;
 
   constructor(dependencies: PipelineDependencies = {}) {
-    this.passiveDiscovery = dependencies.passiveDiscovery ?? new DisabledPassiveDiscoveryProvider();
+    this.passiveDiscovery = dependencies.passiveDiscovery ?? new WindowsNeighborDiscoveryProvider();
     this.onvifDiscovery = dependencies.onvifDiscovery ?? new NodeOnvifWsDiscoveryTransport();
     this.deviceEnricher = dependencies.deviceEnricher ?? new WindowsDeviceEnricher();
     this.discoveryTimeoutMs = dependencies.discoveryTimeoutMs ?? 3500;
@@ -132,7 +132,7 @@ export class BatchExecutionPipeline {
     return true;
   }
 
-  public async runDiscoveryScan(options: { adapterNames?: string[]; emitTerminalEvent?: boolean; database?: SiteProjectDatabase; emitDeviceEvents?: boolean } = {}): Promise<'COMPLETED'|'CANCELLED'|'BUSY'> {
+  public async runDiscoveryScan(options: { adapterNames?: string[]; discoveryMethods?: string[]; emitTerminalEvent?: boolean; database?: SiteProjectDatabase; emitDeviceEvents?: boolean } = {}): Promise<'COMPLETED'|'CANCELLED'|'BUSY'> {
     if (this.isRunning) return 'BUSY';
     this.isRunning = true;
     this.abortController = new AbortController();
@@ -147,8 +147,8 @@ export class BatchExecutionPipeline {
       const database = options.database || projectDb;
       await this.runPhase1();
       if (options.adapterNames?.length) this.currentInterfaces = this.currentInterfaces.filter(nic => options.adapterNames!.includes(nic.name));
-      if (!signal.aborted) await this.runPhase2(signal, database, options.emitDeviceEvents !== false);
-      if (!signal.aborted) await this.runPhase3(signal, database, options.emitDeviceEvents !== false);
+      if (!signal.aborted && (!options.discoveryMethods || options.discoveryMethods.includes('NEIGHBOR'))) await this.runPhase2(signal, database, options.emitDeviceEvents !== false);
+      if (!signal.aborted && (!options.discoveryMethods || options.discoveryMethods.includes('ONVIF'))) await this.runPhase3(signal, database, options.emitDeviceEvents !== false);
       if (!signal.aborted) await this.runPhase4(database);
 
       if (signal.aborted && options.emitTerminalEvent !== false) {

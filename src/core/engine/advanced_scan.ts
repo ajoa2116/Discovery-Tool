@@ -4,6 +4,8 @@ import { NodeTcpDiagnosticProvider, TcpDiagnosticProvider, WindowsPingProvider, 
 import { PowerShellWindowsNetworkAdapterService, WindowsNetworkAdapterService } from '../network/windows_adapter_service.ts';
 import { LocalHostIdentity } from '../network/local_host_identity.ts';
 import { SiteProjectDatabase, projectDb } from '../storage/project_db.ts';
+import { applyNetworkRelationship } from '../../shared/network_relationship.ts';
+import { appStateDb } from '../storage/app_db.ts';
 
 const PRESETS = { CAMERA_COMMON: [80, 443, 554, 8000, 8080], WEB: [80, 443, 8080, 8443], RTSP: [554] };
 const MAX_TARGETS = 4096;
@@ -116,7 +118,8 @@ export class AdvancedScanService {
     const startedAt = new Date().toISOString();
     this.status = { running: true, mode: 'ADVANCED', startedAt, targetCount: plan.normalizedTargets.length, completedTargets: 0, findings: 0, cancelled: false, message: 'Advanced Scan running' };
     try {
-      const localHost = LocalHostIdentity.fromAdapters(await this.adapters.inspectAdapters());
+      const adapters = await this.adapters.inspectAdapters();
+      const localHost = LocalHostIdentity.fromAdapters(adapters);
       const concurrency = { CONSERVATIVE: 4, NORMAL: 12, FAST: 24 }[plan.request.performance];
       const queue = [...plan.normalizedTargets];
       const worker = async () => {
@@ -130,11 +133,21 @@ export class AdvancedScanService {
           }
           const success = evidence.some(value => value.success);
           if (success && !localHost.isLocal(ip)) {
-            const existing = this.db.getDevices().find(device => device.network.ipAddress === ip);
+            const matching = this.db.getDevices().filter(device => device.network.ipAddress === ip);
+            if (matching.length > 1) {
+              // A transport response on a shared IP cannot identify which device answered.
+              for (const existing of matching) {
+                existing.diagnostics = { ...existing.diagnostics, checks: [...(existing.diagnostics?.checks || []), ...evidence.map(check => ({ ...check, ambiguousIdentity: true }))].slice(-100) };
+                callbacks.onDevice(existing, false);
+              }
+              this.status.findings++; this.status.completedTargets++; continue;
+            }
+            const existing = matching[0];
             const now = new Date().toISOString();
-            const device: Device = existing ? { ...existing, diagnostics: { ...existing.diagnostics, checks: [...(existing.diagnostics?.checks || []), ...evidence] }, lastSeenAt: now } : {
+            const device: Device = existing ? { ...existing, diagnostics: { ...existing.diagnostics, checks: [...(existing.diagnostics?.checks || []), ...evidence].slice(-100) }, lastSeenAt: now } : {
               id: `advanced:${ip}`, anchor: { macAddress: null, vendor: 'Unknown' }, network: { ipAddress: ip, ipAddressHistory: [ip], subnetMask: 'Unknown', port: 0, protocol: 'PASSIVE_SNIFF' }, status: 'UNKNOWN', discoveredPhase: 3, firstSeenAt: now, lastSeenAt: now, sessionVerification: 'NOT_VERIFIED', technician: { name: 'Unknown Device', location: '', notes: '' }, configuredState: { inferred: null, manualOverride: false }, diagnostics: { checks: evidence },
             };
+            applyNetworkRelationship(device, adapters, this.db.getDevices(), plan.adapterIndexes[0]);
             const stored = this.db.upsertDevice(device);
             this.status.findings++;
             callbacks.onDevice(stored, !existing);
@@ -144,6 +157,7 @@ export class AdvancedScanService {
       };
       await Promise.all(Array.from({ length: Math.min(concurrency, Math.max(1, queue.length)) }, worker));
       this.status = { ...this.status, running: false, cancelled: signal.aborted, completedAt: new Date().toISOString(), message: signal.aborted ? 'Advanced Scan cancelled; completed findings were preserved.' : 'Advanced Scan completed.' };
+      appStateDb.logAudit({ id: crypto.randomUUID(), timestamp: this.status.completedAt!, category: 'DISCOVERY', level: 'INFO', message: 'Advanced Scan target checks completed.', details: { targetCount: this.status.targetCount, checkedTargets: this.status.completedTargets, evidenceBackedTargets: this.status.findings, cancelled: this.status.cancelled } });
       callbacks.onComplete(this.getStatus());
       return this.getStatus();
     } finally { this.controller = null; }

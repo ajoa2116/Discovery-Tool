@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { Device, DiagnosticCheckEvidence } from '../../types/index.ts';
 import { X, Video, Server, Activity, Fingerprint, ExternalLink, RefreshCw, AlertTriangle, History } from 'lucide-react';
 import { ProjectHistoryList } from './ProjectHistory.tsx';
+import { DIFFERENT_NETWORK_MESSAGE } from '../../shared/network_relationship.ts';
 
 interface DeviceInspectorDrawerProps {
   isOpen: boolean;
@@ -43,6 +44,7 @@ export const DeviceInspectorDrawer: React.FC<DeviceInspectorDrawerProps> = ({ is
 
       <div className="p-4 overflow-y-auto flex-1 space-y-3 text-xs">
         {activeTab === 'DIAGNOSTICS' && <>
+          {device.reachability?.subnetClassification === 'DIFFERENT_SUBNET' && <p className="rounded border border-purple-700/40 bg-purple-950/30 p-3 text-purple-200">{DIFFERENT_NETWORK_MESSAGE} Verification: {device.sessionVerification === 'VERIFIED' ? 'Verified evidence recorded' : 'Not Verified'}.</p>}
           <div className="grid grid-cols-2 gap-2">
             <div className="p-3 bg-slate-950 rounded-lg border border-slate-800"><span className="text-slate-500">Current status</span><p className="font-bold text-sky-300 mt-1">{device.status.replaceAll('_', ' ')}</p></div>
             <div className="p-3 bg-slate-950 rounded-lg border border-slate-800"><span className="text-slate-500">Last successful contact</span><p className="font-mono text-slate-300 mt-1 text-[10px]">{device.diagnostics?.lastSuccessfulContactAt || device.reachability?.lastSuccessfulResponseAt || 'Unknown'}</p></div>

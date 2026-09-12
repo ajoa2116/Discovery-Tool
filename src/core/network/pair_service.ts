@@ -4,9 +4,11 @@ import { tmpdir } from 'node:os';
 import { Device, PairCandidate, PairSessionState, WindowsAdapterSnapshot } from '../../types/index.ts';
 import { SiteProjectDatabase, projectDb } from '../storage/project_db.ts';
 import { appStateDb } from '../storage/app_db.ts';
-import { DeviceDiagnosticEngine, NodeTcpDiagnosticProvider, WindowsPingProvider } from '../engine/diagnostic_engine.ts';
-import { WindowsNeighborProvider } from '../engine/device_enrichment.ts';
+import { DeviceDiagnosticEngine, NodeTcpDiagnosticProvider, WindowsPingProvider, PingProvider } from '../engine/diagnostic_engine.ts';
+import { WindowsNeighborProvider, NeighborProvider } from '../engine/device_enrichment.ts';
 import { NetworkConfigurationError, PowerShellWindowsNetworkAdapterService, WindowsNetworkAdapterService } from './windows_adapter_service.ts';
+import { pairTargetBlock, applyNetworkRelationship } from '../../shared/network_relationship.ts';
+import { normalizeIPv4 } from '../../shared/address_validation.ts';
 
 export type CandidateAvailability = 'OCCUPIED' | 'AVAILABLE' | 'UNCERTAIN';
 export interface CandidateAddressChecker {
@@ -26,7 +28,7 @@ export class JsonPairRecoveryStore implements PairRecoveryStore {
 }
 
 export class ConservativeCandidateAddressChecker implements CandidateAddressChecker {
-  constructor(private readonly neighbor = new WindowsNeighborProvider(), private readonly ping = new WindowsPingProvider(), private readonly tcp = new NodeTcpDiagnosticProvider()) {}
+  constructor(private readonly neighbor: NeighborProvider = new WindowsNeighborProvider(), private readonly ping: PingProvider = new WindowsPingProvider(), private readonly tcp = new NodeTcpDiagnosticProvider()) {}
   async check(ipAddress: string, options: { signal?: AbortSignal } = {}) {
     const evidence: string[] = [];
     try {
@@ -59,6 +61,7 @@ const ipToNumber = (ip: string): number | null => {
 const numberToIp = (value: number) => [24, 16, 8, 0].map(shift => (value >>> shift) & 255).join('.');
 
 export function subnetMaskToPrefix(mask: string): number | null {
+  if (!normalizeIPv4(mask)) return null;
   const number = ipToNumber(mask); if (number === null) return null;
   const binary = number.toString(2).padStart(32, '0');
   if (!/^1*0*$/.test(binary)) return null;
@@ -95,21 +98,28 @@ export class PairService {
 
   getStatus(): PairSessionState | null { return this.session ? structuredClone(this.session) : null; }
   async getEligibleAdapters(signal?: AbortSignal) { return (await this.adapters.inspectAdapters(signal)).filter(adapter => adapter.eligible); }
+  async getEligibility(deviceId: string): Promise<Device> {
+    const device = this.database.getDeviceById(deviceId);
+    if (!device) throw new NetworkConfigurationError('The selected device no longer exists.', 'DEVICE_NOT_FOUND');
+    return applyNetworkRelationship(structuredClone(device), await this.adapters.inspectAdapters(), this.database.getDevices());
+  }
 
   async prepare(deviceId: string, interfaceIndex: number): Promise<PairSessionState> {
     if (this.session && ['APPLYING', 'VERIFYING', 'PAIRED', 'RESTORING', 'ROLLBACK_REQUIRED'].includes(this.session.state)) throw new NetworkConfigurationError('Restore or resolve the active Pair session before starting another.', 'PAIR_SESSION_ACTIVE');
     const device = this.database.getDeviceById(deviceId);
     if (!device) throw new NetworkConfigurationError('The selected camera no longer exists.', 'DEVICE_NOT_FOUND');
-    if (!device.network.subnetMask) throw new NetworkConfigurationError('The camera subnet is unknown; Pair cannot safely propose an address.', 'SUBNET_UNKNOWN');
-    const prefix = subnetMaskToPrefix(device.network.subnetMask);
-    if (prefix === null || prefix < 1 || prefix > 30) throw new NetworkConfigurationError('The camera subnet mask is invalid or unsupported for Pair.', 'INVALID_SUBNET');
     this.preparationController?.abort();
     this.preparationController = new AbortController();
     const adapters = await this.adapters.inspectAdapters(this.preparationController.signal);
     const adapter = adapters.find(item => item.interfaceIndex === interfaceIndex);
     if (!adapter?.eligible) throw new NetworkConfigurationError(adapter?.eligibilityReason || 'The selected adapter is unavailable.', 'ADAPTER_INELIGIBLE');
+    const block = pairTargetBlock(device, adapters, this.database.getDevices());
+    if (block) throw new NetworkConfigurationError(block, 'UNSAFE_TARGET');
+    const knownMask = device.network.subnetMask && device.network.subnetMask !== 'Unknown' ? device.network.subnetMask : null;
+    const prefix = knownMask ? subnetMaskToPrefix(knownMask) : adapter.ipv4Addresses[0]?.prefixLength;
+    if (prefix === null || prefix === undefined || prefix < 1 || prefix > 30) throw new NetworkConfigurationError('The subnet mask is invalid or unsupported for Pair.', 'INVALID_SUBNET');
     const now = new Date().toISOString();
-    this.session = { id: crypto.randomUUID(), state: 'CHECKING_ADDRESS', deviceId, cameraIp: device.network.ipAddress, cameraSubnetMask: device.network.subnetMask, adapter, originalAdapter: structuredClone(adapter), candidates: [], createdAt: now, updatedAt: now, recoveryAvailable: false };
+    this.session = { id: crypto.randomUUID(), state: 'CHECKING_ADDRESS', deviceId, cameraIp: device.network.ipAddress, cameraSubnetMask: prefixToSubnetMask(prefix), subnetSource: knownMask ? 'CAMERA_EVIDENCE' : 'ADAPTER_PREFIX_PROPOSAL', adapter, originalAdapter: structuredClone(adapter), candidates: [], createdAt: now, updatedAt: now, recoveryAvailable: false };
     const candidates = await this.findCandidates(device, prefix, adapters, this.preparationController.signal);
     if (this.preparationController.signal.aborted) throw new NetworkConfigurationError('Pair preparation was cancelled.', 'CANCELLED');
     if (!candidates.length) { this.session.state = 'FAILED'; this.session.errorCode = 'NO_CONFIDENT_CANDIDATE'; this.session.message = 'No candidate address passed the conservative availability checks.'; throw new NetworkConfigurationError(this.session.message, this.session.errorCode); }
@@ -134,9 +144,13 @@ export class PairService {
     if (!confirmed) throw new NetworkConfigurationError('Explicit technician confirmation is required.', 'CONFIRMATION_REQUIRED');
     if (!this.session || this.session.id !== sessionId || this.session.state !== 'READY_FOR_CONFIRMATION' || !this.session.selectedCandidate) throw new NetworkConfigurationError('Pair preview is missing or no longer current.', 'NOT_READY');
     if (!(await this.adapters.isAdministrator())) throw new NetworkConfigurationError('Administrator privileges are required to Pair this Windows adapter.', 'ADMIN_REQUIRED');
-    const current = (await this.adapters.inspectAdapters()).find(item => item.interfaceIndex === this.session!.adapter.interfaceIndex);
+    const adapters = await this.adapters.inspectAdapters();
+    const current = adapters.find(item => item.interfaceIndex === this.session!.adapter.interfaceIndex);
     if (!current) throw new NetworkConfigurationError('The selected adapter no longer exists.', 'ADAPTER_NOT_FOUND');
     if (snapshotFingerprint(current) !== snapshotFingerprint(this.session.originalAdapter)) throw new NetworkConfigurationError('The adapter configuration changed after preview. Prepare Pair again.', 'BASELINE_CHANGED');
+    const target = this.database.getDeviceById(this.session.deviceId);
+    if (!current.eligible || !target || target.network.ipAddress !== this.session.cameraIp || pairTargetBlock(target, adapters, this.database.getDevices())) throw new NetworkConfigurationError('The Pair target or adapter is no longer safe. Prepare Pair again.', 'UNSAFE_TARGET');
+    if ([...this.database.getDevices().map(device => device.network.ipAddress), ...adapters.flatMap(adapter => adapter.ipv4Addresses.map(address => address.address))].includes(this.session.selectedCandidate.ipAddress)) throw new NetworkConfigurationError('The proposed address is now assigned to a known device or local adapter.', 'CANDIDATE_CHANGED');
     const recheck = await this.checker.check(this.session.selectedCandidate.ipAddress);
     if (recheck.availability !== 'AVAILABLE') throw new NetworkConfigurationError('The proposed address is no longer confidently available.', 'CANDIDATE_CHANGED');
 
@@ -174,7 +188,10 @@ export class PairService {
       const ok = this.verifyRestoration(this.session.originalAdapter, restored);
       if (!ok) throw new NetworkConfigurationError('Windows did not report the complete original adapter configuration after restore.', 'RESTORE_VERIFICATION_FAILED');
       this.session.state = 'RESTORED'; this.session.recoveryAvailable = false; this.session.message = 'Original network configuration restored and verified.'; this.session.updatedAt = new Date().toISOString();
-      await this.recovery.clear(); this.audit('Original adapter configuration restored', { interfaceIndex: restored.interfaceIndex }); return this.getStatus()!;
+      await this.recovery.clear();
+      const device = this.database.getDeviceById(this.session.deviceId);
+      if (device) applyNetworkRelationship(device, [restored], this.database.getDevices(), restored.interfaceIndex);
+      this.audit('Original adapter configuration restored', { interfaceIndex: restored.interfaceIndex }); return this.getStatus()!;
     } catch (error) {
       this.session.state = 'ROLLBACK_REQUIRED'; this.session.errorCode = error instanceof NetworkConfigurationError ? error.code : 'RESTORE_FAILED'; this.session.message = error instanceof Error ? error.message : 'Restore failed.'; this.session.updatedAt = new Date().toISOString(); await this.recovery.save(this.session); throw error;
     }

@@ -2,6 +2,7 @@ import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Activity, Edit2, Globe, Network, Shield, StickyNote, Video } from 'lucide-react';
 import { Device } from '../../types/index.ts';
+import { canOfferPair } from '../../shared/network_relationship.ts';
 
 export interface OverlayPosition { left: number; top: number; opensUpward: boolean }
 export function positionFloatingMenu(anchor: DOMRect | Pick<DOMRect, 'left' | 'right' | 'top' | 'bottom'>, menuWidth: number, menuHeight: number, viewportWidth: number, viewportHeight: number, margin = 8): OverlayPosition {
@@ -30,6 +31,15 @@ interface Props {
 
 export const FloatingDeviceActionsMenu: React.FC<Props> = ({ device, anchor, onClose, onOpen, onDetails, onDiagnose, onPair, onRename, onNotes, onConfigure, projectMode, onRemoveCurrent, onRemoveProject }) => {
   const menu = useRef<HTMLDivElement>(null);
+  const [pairTarget, setPairTarget] = useState(device);
+  useEffect(() => {
+    const controller = new AbortController();
+    setPairTarget(device);
+    fetch(`http://localhost:3001/api/pair/eligibility?deviceId=${encodeURIComponent(device.id)}`, { signal: controller.signal })
+      .then(async response => { if (response.ok) setPairTarget(await response.json()); })
+      .catch(() => {});
+    return () => controller.abort();
+  }, [device.id, device.network.ipAddress]);
   const [position, setPosition] = useState<OverlayPosition>(() => positionFloatingMenu(anchor, 192, 260, window.innerWidth, window.innerHeight));
   useLayoutEffect(() => {
     const rect = menu.current?.getBoundingClientRect();
@@ -57,7 +67,7 @@ export const FloatingDeviceActionsMenu: React.FC<Props> = ({ device, anchor, onC
     <button role="menuitem" onClick={action(onOpen)} className={button}><Globe className="h-3.5 w-3.5 text-sky-400"/>Open</button>
     <button role="menuitem" onClick={action(onDetails)} className={button}><Video className="h-3.5 w-3.5 text-blue-400"/>Details</button>
     <button role="menuitem" onClick={action(onDiagnose)} className={button}><Activity className="h-3.5 w-3.5 text-emerald-400"/>Diagnose</button>
-    {device.status === 'DIFFERENT_SUBNET' && <button role="menuitem" onClick={action(onPair)} className={button}><Network className="h-3.5 w-3.5 text-purple-400"/>Pair PC to Camera Network</button>}
+    {canOfferPair(pairTarget) && <button role="menuitem" onClick={() => { onPair(pairTarget); onClose(); }} className={button}><Network className="h-3.5 w-3.5 text-purple-400"/>Pair PC to Camera Network</button>}
     <div className="my-1 border-t border-slate-800"/>
     <button role="menuitem" onClick={action(onRename)} className={button}><Edit2 className="h-3.5 w-3.5 text-slate-400"/>Rename Device</button>
     <button role="menuitem" onClick={action(onNotes)} className={button}><StickyNote className="h-3.5 w-3.5 text-slate-400"/>Edit Notes</button>

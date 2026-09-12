@@ -55,6 +55,18 @@ export function classifySubnet(deviceIp: string, nicIp: string, netmask: string)
 }
 
 export class WindowsNeighborProvider implements NeighborProvider {
+  public list(signal?: AbortSignal): Promise<NeighborEntry[]> {
+    return new Promise((resolve, reject) => {
+      execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', 'Get-NetNeighbor -AddressFamily IPv4 -ErrorAction Stop | Select-Object IPAddress,LinkLayerAddress,InterfaceIndex,State | ConvertTo-Json -Compress'],
+        { windowsHide: true, timeout: 2500, maxBuffer: 1024 * 1024, signal }, (error, stdout) => {
+          if (error) { if (signal?.aborted) resolve([]); else reject(error); return; }
+          try { const parsed = stdout.trim() ? JSON.parse(stdout) : []; resolve((Array.isArray(parsed) ? parsed : [parsed]).slice(0,4096).flatMap(row => {
+            const macAddress = normalizeMacAddress(row.LinkLayerAddress);
+            return macAddress && ipv4ToUint32(row.IPAddress || '') !== null && !['0','1','Unreachable','Incomplete'].includes(String(row.State)) ? [{ ipAddress: row.IPAddress, macAddress, interfaceIndex: row.InterfaceIndex, state: String(row.State) }] : [];
+          })); } catch (error) { reject(error); }
+        });
+    });
+  }
   public lookup(
     ipAddress: string,
     options: { signal?: AbortSignal; interfaceIndex?: number; localAddress?: string } = {},
@@ -90,7 +102,7 @@ export class WindowsNeighborProvider implements NeighborProvider {
           try {
             const parsed = JSON.parse(output);
             const macAddress = normalizeMacAddress(parsed.LinkLayerAddress);
-            resolve(macAddress ? {
+            resolve(macAddress && !['0','1','Unreachable','Incomplete'].includes(String(parsed.State)) ? {
               ipAddress: parsed.IPAddress,
               macAddress,
               interfaceIndex: Number.isInteger(parsed.InterfaceIndex) ? parsed.InterfaceIndex : undefined,

@@ -19,6 +19,7 @@ import {
 import { FloatingDeviceActionsMenu } from './FloatingDeviceActionsMenu.tsx';
 import { DeviceRemovalDialog } from './DeviceRemovalDialog.tsx';
 import { TableColumnId } from '../preferences.ts';
+import { DeviceSort, DeviceSortColumn, nextDeviceSort, sortDevices } from '../../shared/device_sort.ts';
 
 interface MasterDeviceTableProps {
   devices: Device[];
@@ -68,6 +69,10 @@ export const MasterDeviceTable: React.FC<MasterDeviceTableProps> = ({
   const [openActionMenu, setOpenActionMenu] = useState<{ device: Device; anchor: DOMRect } | null>(null);
   const [removal, setRemoval] = useState<{ device: Device; scope: 'CURRENT' | 'PROJECT' } | null>(null);
   const [removing, setRemoving] = useState(false);
+  const [sort, setSort] = useState<DeviceSort | null>(null);
+  const sortedDevices = sortDevices(devices, sort);
+  const actionDevice = devices.find(device => device.id === openActionMenu?.device.id);
+  const sortHeader = (column: DeviceSortColumn, label: React.ReactNode) => <th className="py-3 px-3" aria-sort={sort?.column === column ? sort.direction === 'asc' ? 'ascending' : 'descending' : 'none'}><button type="button" className="inline-flex items-center gap-1 font-semibold uppercase tracking-wider hover:text-sky-500" onClick={() => setSort(current => nextDeviceSort(current, column))}>{label}<span aria-hidden="true">{sort?.column === column ? sort.direction === 'asc' ? '↑' : '↓' : '↕'}</span></button></th>;
 
   const startEditName = (dev: Device, e?: React.MouseEvent) => {
     e?.stopPropagation();
@@ -188,12 +193,12 @@ export const MasterDeviceTable: React.FC<MasterDeviceTableProps> = ({
                   className="rounded border-slate-700 bg-slate-900 text-sky-500 focus:ring-sky-500 w-4 h-4 cursor-pointer"
                 />
               </th>
-              {visible('NAME')&&<th className="py-3 px-3">Name</th>}
-              {visible('STATUS')&&<th className="py-3 px-3">Status</th>}
-              {visible('IP')&&<th className="py-3 px-3">IP</th>}
-              {visible('LAST_6')&&<th className="py-2 px-3"><span className="inline-flex items-center gap-1"><span>MAC <span className="block text-[9px] font-medium normal-case tracking-normal">(Last 6)</span></span><span title="MAC (Last 6): Shows the last 6 characters of the device MAC address for quick identification. The full MAC address is shown in Device Details."><Info aria-label="MAC column information" className="w-3.5 h-3.5"/></span></span></th>}
-              {visible('CONFIGURED')&&<th className="py-2 px-3"><span className="inline-flex items-center gap-1">Config <span title="Shows the camera's current configured state. This is separate from Online/Offline status. Technician override may change this value."><Info aria-label="Config column information" className="w-3.5 h-3.5"/></span></span></th>}
-              {visible('SERIAL')&&<th className="py-3 px-3">Serial</th>}
+              {visible('NAME')&&sortHeader('NAME', 'Name')}
+              {visible('STATUS')&&sortHeader('STATUS', 'Status')}
+              {visible('IP')&&sortHeader('IP', 'IP')}
+              {visible('LAST_6')&&sortHeader('LAST_6', <span title="MAC (Last 6): Shows the last 6 characters of the device MAC address for quick identification. The full MAC address is shown in Device Details.">MAC <span className="block text-[9px] font-medium normal-case tracking-normal">(Last 6)</span></span>)}
+              {visible('CONFIGURED')&&sortHeader('CONFIGURED', <span title="Shows the camera's current configured state. This is separate from Online/Offline status. Technician override may change this value.">Config <Info aria-label="Config column information" className="inline w-3.5 h-3.5"/></span>)}
+              {visible('SERIAL')&&sortHeader('SERIAL', 'Serial')}
               {visible('NOTES')&&<th className="py-3 px-3">Notes</th>}
               <th className="py-3 px-3 text-right">Actions</th>
             </tr>
@@ -207,7 +212,7 @@ export const MasterDeviceTable: React.FC<MasterDeviceTableProps> = ({
                 </td>
               </tr>
             ) : (
-              devices.map((dev) => {
+              sortedDevices.map((dev) => {
                 const isSelected = selectedDeviceIds.has(dev.id);
                 const isEditingName = editingNameId === dev.id;
                 const isEditingNotes = editingNotesId === dev.id;
@@ -332,7 +337,7 @@ export const MasterDeviceTable: React.FC<MasterDeviceTableProps> = ({
           </tbody>
         </table>
       </div>
-      {openActionMenu && <FloatingDeviceActionsMenu device={openActionMenu.device} anchor={openActionMenu.anchor} onClose={() => setOpenActionMenu(null)} onOpen={device => onOpenBrowser(device, 'SYSTEM')} onDetails={onInspectDevice} onDiagnose={onDiagnose} onPair={onPair} onRename={device => startEditName(device)} onNotes={device => startEditNotes(device)} onConfigure={onConfigureDevice} projectMode={projectMode} onRemoveCurrent={device => setRemoval({ device, scope: 'CURRENT' })} onRemoveProject={device => setRemoval({ device, scope: 'PROJECT' })}/>}
+      {openActionMenu && actionDevice && <FloatingDeviceActionsMenu device={actionDevice} anchor={openActionMenu.anchor} onClose={() => setOpenActionMenu(null)} onOpen={device => onOpenBrowser(device, 'SYSTEM')} onDetails={onInspectDevice} onDiagnose={onDiagnose} onPair={onPair} onRename={device => startEditName(device)} onNotes={device => startEditNotes(device)} onConfigure={onConfigureDevice} projectMode={projectMode} onRemoveCurrent={device => setRemoval({ device, scope: 'CURRENT' })} onRemoveProject={device => setRemoval({ device, scope: 'PROJECT' })}/>}
       {removal && <DeviceRemovalDialog
         device={removal.device}
         scope={removal.scope}

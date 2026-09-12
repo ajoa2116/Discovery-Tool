@@ -98,13 +98,14 @@ async function run() {
       sockets.push(socket);
       return socket;
     },
+    multicastSocketFactory: () => Object.assign(new FakeSocket({}), { addMembership() {} }),
   });
   assert(isolated.interfaceErrors.length === 1 && isolated.devices.length === 1, 'per-interface failure is isolated');
   assert(sockets.every(socket => socket.closed), 'discovery timeout cleans up every socket');
 
   const cancelSocket = new FakeSocket({});
   const controller = new AbortController();
-  const pending = transport.discover([interfaces[0]], { timeoutMs: 1000, signal: controller.signal, socketFactory: () => cancelSocket });
+  const pending = transport.discover([interfaces[0]], { timeoutMs: 1000, signal: controller.signal, socketFactory: () => cancelSocket, multicastSocketFactory: () => Object.assign(new FakeSocket({}), { addMembership() {} }) });
   controller.abort();
   const cancelled = await pending;
   assert(cancelled.cancelled && cancelSocket.closed, 'cancellation closes pending socket');

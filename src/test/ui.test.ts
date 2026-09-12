@@ -23,7 +23,7 @@ assert(app.includes('<Filter')&&app.includes('>Filters</button>'),'Filters butto
 assert(app.includes('Status:')&&app.includes('Type:'),'Status and Type filters remain');
 assert(!app.includes('Config: Any')&&!app.includes('Configured: Any'),'top Config filter remains absent');
 assert(!app.includes("interfaces[0]?.name || 'Ethernet'")&&!app.includes("'192.168.1.50'"),'fake adapter fallback removed');
-const columns=['Name','Status','IP','MAC ','Config ','Serial','Notes'];const positions=columns.map(x=>table.indexOf(`>${x}`));
+const columns=['NAME','STATUS','IP','LAST_6','CONFIGURED','SERIAL','NOTES'];const positions=columns.map(x=>table.indexOf(`{visible('${x}')`));
 assert(positions.every((value,index)=>value>=0&&(index===0||value>positions[index-1])),'approved default column order');
 assert(table.includes('MAC ')&&table.includes('(Last 6)'),'MAC header includes Last 6 helper');
 assert(table.includes('full MAC address is shown in Device Details'),'MAC help points to Device Details');
@@ -35,7 +35,7 @@ assert(table.includes('key={dev.id}')&&table.includes('{ device: dev, anchor: ev
 assert(table.includes("onOpenBrowser(dev, 'SYSTEM')"),'IP remains clickable through Connect');
 assert(table.includes('startEditName(dev, e)')&&table.includes('saveEditName'),'inline Name editing preserved');
 assert(table.includes('startEditNotes(dev, e)')&&table.includes('saveEditNotes'),'inline Notes editing preserved');
-assert(actions.includes("device.status === 'DIFFERENT_SUBNET'")&&actions.includes('onPair'),'Pair remains conditional');
+assert(actions.includes('canOfferPair(pairTarget)')&&actions.includes('onPair'),'Pair remains conditional on topology and safe targeting');
 assert(actions.includes('Device Configuration')&&!actions.includes('Credentials & Parameters'),'contextual Device Configuration label is accurate');
 assert(!app.includes('Task Center\n')&&app.includes('useState<TaskItem[]>([])'),'seeded fake activity removed from primary UI');
 assert(!app.includes('IP Finder (25)')&&!app.includes('Site Survey (15)')&&!app.includes('Consolidated Blueprint'),'development labels absent from main UI');

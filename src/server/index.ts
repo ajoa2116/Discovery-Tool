@@ -8,6 +8,7 @@ import { appStateDb } from '../core/storage/app_db.ts';
 import { osVault } from '../core/storage/vault.ts';
 import { DuplicateRemediationService } from '../core/edge_cases/duplicate_remediation_service.ts';
 import { LegacyHardwareOnboarding } from '../core/edge_cases/legacy_hardware.ts';
+import { applyNetworkRelationship } from '../shared/network_relationship.ts';
 import { BulkNetworkConfigurationService } from '../core/engine/bulk_reip.ts';
 import { ProjectReverificationWorkflow } from '../core/engine/reverification.ts';
 import { ProjectValidationError } from '../core/storage/project_db.ts';
@@ -269,7 +270,7 @@ app.post('/api/discovery/start', async (req, res) => {
 
 app.get('/api/discovery/advanced/adapters',async(_req,res)=>{try{res.json(await advancedScanService.listAdapters())}catch(error){safeError(res,error,500,'ADVANCED_SCAN_ADAPTERS')}});
 app.post('/api/discovery/advanced/validate',async(req,res)=>{try{const plan=await advancedScanService.validate(req.body);res.status(plan.valid?200:400).json(plan)}catch(error){safeError(res,error,400,'ADVANCED_SCAN_VALIDATE')}});
-app.post('/api/discovery/advanced/start',async(req,res)=>{try{await incrementalMonitor.yieldToTechnician();if(pipelineEngine.getIsRunning()||advancedScanService.getStatus().running)return res.status(409).json({error:'A discovery scan is already running.'});const plan=await advancedScanService.validate(req.body);if(!plan.valid)return res.status(400).json(plan);res.status(202).json({plan,message:plan.mode==='QUICK_FALLBACK'?'Standard Quick Scan started.':'Advanced Scan started.'});if(plan.mode==='QUICK_FALLBACK'){void pipelineEngine.runDiscoveryScan();return}const adapters=await advancedScanService.listAdapters(),names=adapters.filter(a=>plan.adapterIndexes.includes(a.interfaceIndex)).map(a=>a.interfaceAlias);void(async()=>{try{if(names.length&&(plan.methods.includes('ONVIF')||plan.methods.includes('NEIGHBOR'))){const pipelineResult=await pipelineEngine.runDiscoveryScan({adapterNames:names,emitTerminalEvent:false});if(pipelineResult==='CANCELLED'){broadcast({type:'SCAN_CANCELLED',data:{project:projectDb.getProject(),scanMode:'ADVANCED'}});return}}await advancedScanService.execute(plan,{onDevice:(device,isNew)=>{projectDb.restoreDiscoveredDevice(device);broadcast({type:'DEVICE_DISCOVERED',data:{device,isNew,project:projectDb.getProject(),scanMode:'ADVANCED'}})},onComplete:status=>broadcast({type:status.cancelled?'SCAN_CANCELLED':'SCAN_COMPLETE',data:{status,project:projectDb.getProject(),scanMode:'ADVANCED'}})})}catch(error){safeBroadcastError('SCAN_FAILED',error,'ADVANCED_SCAN',{scanMode:'ADVANCED'})}})()}catch(error){safeError(res,error,400,'ADVANCED_SCAN_START')}});
+app.post('/api/discovery/advanced/start',async(req,res)=>{try{await incrementalMonitor.yieldToTechnician();if(pipelineEngine.getIsRunning()||advancedScanService.getStatus().running)return res.status(409).json({error:'A discovery scan is already running.'});const plan=await advancedScanService.validate(req.body);if(!plan.valid)return res.status(400).json(plan);res.status(202).json({plan,message:plan.mode==='QUICK_FALLBACK'?'Standard Quick Scan started.':'Advanced Scan started.'});if(plan.mode==='QUICK_FALLBACK'){void pipelineEngine.runDiscoveryScan();return}const adapters=await advancedScanService.listAdapters(),names=adapters.filter(a=>plan.adapterIndexes.includes(a.interfaceIndex)).map(a=>a.interfaceAlias);void(async()=>{try{if((plan.methods.includes('ONVIF')||plan.methods.includes('NEIGHBOR'))){const pipelineResult=await pipelineEngine.runDiscoveryScan({adapterNames:names,discoveryMethods:plan.methods,emitTerminalEvent:false});if(pipelineResult==='CANCELLED'){broadcast({type:'SCAN_CANCELLED',data:{project:projectDb.getProject(),scanMode:'ADVANCED'}});return}}await advancedScanService.execute(plan,{onDevice:(device,isNew)=>{projectDb.restoreDiscoveredDevice(device);broadcast({type:'DEVICE_DISCOVERED',data:{device,isNew,project:projectDb.getProject(),scanMode:'ADVANCED'}})},onComplete:status=>broadcast({type:status.cancelled?'SCAN_CANCELLED':'SCAN_COMPLETE',data:{status,project:projectDb.getProject(),scanMode:'ADVANCED'}})})}catch(error){safeBroadcastError('SCAN_FAILED',error,'ADVANCED_SCAN',{scanMode:'ADVANCED'})}})()}catch(error){safeError(res,error,400,'ADVANCED_SCAN_START')}});
 
 // One production reporting boundary for preview and export prevents renderer drift.
 app.use('/api/reports', createReportRouter({ getSession: () => projectDb.getSession(), getAuditLogs: () => appStateDb.getAuditLogs() }));
@@ -278,9 +279,10 @@ app.post('/api/diagnostics/run', async (req, res) => {
   const ids: string[] = Array.isArray(req.body.deviceIds) ? req.body.deviceIds : [req.body.deviceId].filter(Boolean);
   const devices = ids.map(id => projectDb.getDeviceById(id)).filter((device): device is NonNullable<typeof device> => Boolean(device));
   if (!devices.length) return res.status(404).json({ error: 'No matching devices were found.' });
+  const topology = await advancedScanService.listAdapters().catch(() => []);
   res.status(202).json({ started: devices.map(device => device!.id) });
   for (const device of devices) {
-    const current = device!;
+    const current = applyNetworkRelationship(device!, topology, projectDb.getDevices());
     diagnosticControllers.get(current.id)?.abort();
     const controller = new AbortController();
     diagnosticControllers.set(current.id, controller);
@@ -331,6 +333,10 @@ app.get('/api/pair/adapters', async (req, res) => {
   catch (error) { safeError(res,error,500,'PAIR_ADAPTERS'); }
 });
 app.get('/api/pair/status', (req, res) => res.json(pairService.getStatus()));
+app.get('/api/pair/eligibility', async (req, res) => {
+  try { res.json(await pairService.getEligibility(String(req.query.deviceId || ''))); }
+  catch (error) { safeError(res, error, 400, 'PAIR_ELIGIBILITY'); }
+});
 app.post('/api/pair/prepare', async (req, res) => {
   try {
     const pair = await pairService.prepare(String(req.body.deviceId || ''), Number(req.body.interfaceIndex));
@@ -385,7 +391,7 @@ app.get('/api/system/support-bundle', async (_req, res) => {
     const adapters=await advancedScanService.listAdapters().catch(()=>[]);
     // SupportBundleBuilder recursively filters password|credential|authorization material after this security-event exclusion.
     const supportEvents=appStateDb.getAuditLogs().filter(entry => entry.category !== 'SECURITY');
-    const bundle = supportBundleBuilder.build({application:{name:'CCTV Network Assistant',version:'1.6.0',runtime:process.version,platform:process.platform},readiness:preflight,network:adapters.map(adapter=>({interfaceIndex:adapter.interfaceIndex,interfaceAlias:adapter.interfaceAlias,mediaType:adapter.mediaType,operationalStatus:adapter.operationalStatus,eligible:adapter.eligible,ipv4Addresses:adapter.ipv4Addresses})),monitoring:monitoringState(),discovery:{running:pipelineEngine.getIsRunning(),phases:pipelineEngine.getStates().slice(0,4)},projectSession:projectDb.getSession(),events:supportEvents,pair:pairService.getStatus()?{state:pairService.getStatus()!.state,recoveryAvailable:pairService.getStatus()!.recoveryAvailable,errorCode:pairService.getStatus()!.errorCode}:null});
+    const bundle = supportBundleBuilder.build({application:{name:'CCTV Network Assistant',version:'1.6.0',runtime:process.version,platform:process.platform},readiness:preflight,network:adapters.map(adapter=>({interfaceIndex:adapter.interfaceIndex,interfaceAlias:adapter.interfaceAlias,mediaType:adapter.mediaType,operationalStatus:adapter.operationalStatus,eligible:adapter.eligible,ipv4Addresses:adapter.ipv4Addresses})),monitoring:monitoringState(),discovery:{running:pipelineEngine.getIsRunning(),phases:pipelineEngine.getStates().slice(0,4),advanced:advancedScanService.getStatus()},projectSession:projectDb.getSession(),events:supportEvents,pair:pairService.getStatus()?{state:pairService.getStatus()!.state,recoveryAvailable:pairService.getStatus()!.recoveryAvailable,errorCode:pairService.getStatus()!.errorCode,preview:{cameraIp:pairService.getStatus()!.cameraIp,interfaceIndex:pairService.getStatus()!.adapter.interfaceIndex,subnetSource:pairService.getStatus()!.subnetSource,candidate:pairService.getStatus()!.selectedCandidate}}:null});
     res.setHeader('Content-Disposition', 'attachment; filename="CCTV_Safe_Support_Bundle.json"'); res.json(bundle);
   } catch { res.status(500).json({ error: 'The safe support bundle could not be generated.' }); }
 });
@@ -465,8 +471,8 @@ app.post('/api/edge/rogue-dhcp/test-offer', (req, res) => {
 });
 
 // Section 13.1 Legacy Hardware Onboarding
-app.post('/api/edge/legacy-onboard', (req, res) => {
-  try { const dev = LegacyHardwareOnboarding.onboardLegacyDevice(req.body); broadcast({ type: 'DEVICE_ONBOARDED', data: { device: dev, project: projectDb.getProject() } }); res.json(dev); }
+app.post('/api/edge/legacy-onboard', async (req, res) => {
+  try { const adapters = await advancedScanService.listAdapters().catch(() => []); const dev = LegacyHardwareOnboarding.onboardLegacyDevice(req.body, adapters); broadcast({ type: 'DEVICE_ONBOARDED', data: { device: dev, project: projectDb.getProject() } }); res.json(dev); }
   catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : 'Manual device entry failed.' }); }
 });
 

@@ -1,6 +1,7 @@
 import os from 'os';
 import { NICInfo } from '../../types/index.ts';
 import { appStateDb } from '../storage/app_db.ts';
+import { PowerShellWindowsNetworkAdapterService } from '../network/windows_adapter_service.ts';
 
 export class Phase1Topology {
   /**
@@ -13,6 +14,9 @@ export class Phase1Topology {
 
     const interfaces: NICInfo[] = [];
     const networkInterfaces = os.networkInterfaces();
+    const windowsAdapters = process.platform === 'win32' ? await new PowerShellWindowsNetworkAdapterService().inspectAdapters().catch(() => {
+      logs.push('[Phase 1] [INTERFACE WARNING] Windows adapter indexes unavailable; neighbor entries cannot be safely attributed.'); return [];
+    }) : [];
 
     for (const [name, addrs] of Object.entries(networkInterfaces)) {
       if (!addrs) continue;
@@ -31,6 +35,7 @@ export class Phase1Topology {
             broadcast,
             mac: addr.mac || '00:00:00:00:00:00',
             isInternal: addr.internal,
+            interfaceIndex: windowsAdapters.find(adapter => adapter.ipv4Addresses.some(ip => ip.address === addr.address))?.interfaceIndex,
           };
 
           if (!isEligibleDiscoveryInterface(nic)) {

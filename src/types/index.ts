@@ -122,6 +122,9 @@ export interface NetworkEndpoint {
 }
 
 export interface ReachabilityEvidence {
+  wsDiscoveryAnnouncedAt?: string;
+  relationshipAdapter?: { name: string; ipAddress: string; netmask: string; interfaceIndex?: number };
+  pairEligibility?: { eligible: boolean; reason: string; adapterIndexes: number[]; calculatedAt: string };
   wsDiscoveryRespondedAt?: string;
   httpReachableAt?: string;
   httpsReachableAt?: string;
@@ -367,6 +370,7 @@ export interface PairCandidate {
 }
 
 export interface PairSessionState {
+  subnetSource?: 'CAMERA_EVIDENCE' | 'ADAPTER_PREFIX_PROPOSAL';
   id: string;
   state: PairState;
   deviceId: string;

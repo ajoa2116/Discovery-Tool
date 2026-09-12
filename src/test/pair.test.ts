@@ -69,7 +69,7 @@ async function run() {
   assert(dhcpPreview.selectedCandidate!.ipAddress !== '192.168.10.64', 'candidate avoids camera address');
 
   const avoidance = setup(new FakeAdapterService([adapter(1, { ipv4Addresses: [{ address: '192.168.10.102', prefixLength: 24 }] })]));
-  avoidance.db.upsertDevice(device('camera-2', '192.168.10.139'));
+  avoidance.db.upsertDevice({ ...device('camera-2', '192.168.10.139'), anchor: { macAddress: '00:40:8c:00:00:65', onvifEndpointUuid: 'camera-2', vendor: 'Axis' } });
   const avoidancePreview = await avoidance.service.prepare('camera-1', 1);
   assert(avoidancePreview.candidates.every(item => item.ipAddress !== '192.168.10.102'), 'candidate avoids local adapter address');
   assert(avoidancePreview.candidates.every(item => item.ipAddress !== '192.168.10.139'), 'candidate avoids discovered device address');

@@ -1,6 +1,8 @@
 import dgram, { RemoteInfo } from 'node:dgram';
 import { Device, NICInfo } from '../../types/index.ts';
 import { OnvifDriver } from './onvif.ts';
+import { classifySubnet } from '../engine/device_enrichment.ts';
+import { DIFFERENT_NETWORK_MESSAGE } from '../../shared/network_relationship.ts';
 
 export const ONVIF_MULTICAST_ADDRESS = '239.255.255.250';
 export const ONVIF_DISCOVERY_PORT = 3702;
@@ -8,6 +10,7 @@ export const ONVIF_DISCOVERY_PORT = 3702;
 export interface UdpSocketLike {
   bind(options: { port: number; address: string; exclusive?: boolean }, callback: () => void): void;
   setMulticastInterface(address: string): void;
+  addMembership?(address: string, interfaceAddress: string): void;
   send(message: Uint8Array | string, port: number, address: string, callback: (error?: Error | null) => void): void;
   on(event: 'message', listener: (message: Buffer, remote: RemoteInfo) => void): this;
   on(event: 'error', listener: (error: Error) => void): this;
@@ -22,12 +25,14 @@ export interface WsDiscoveryOptions {
   signal?: AbortSignal;
   onDevice?: (device: Device, isNew: boolean) => void;
   socketFactory?: UdpSocketFactory;
+  multicastSocketFactory?: UdpSocketFactory;
 }
 
 export interface WsDiscoveryResult {
   devices: Device[];
   interfaceErrors: Array<{ interfaceName: string; message: string }>;
   cancelled: boolean;
+  messageCounts?: { acceptedProbeMatches: number; acceptedHellos: number; rejected: number };
 }
 
 export interface OnvifDiscoveryTransport {
@@ -131,14 +136,36 @@ export class NodeOnvifWsDiscoveryTransport implements OnvifDiscoveryTransport {
     const devices: Device[] = [];
     const interfaceErrors: WsDiscoveryResult['interfaceErrors'] = [];
     let cancelled = options.signal?.aborted ?? false;
+    const messageCounts = { acceptedProbeMatches: 0, acceptedHellos: 0, rejected: 0 };
+    const receive = (message: Buffer, remote: RemoteInfo, nic?: NICInfo, announcementOnly = false) => {
+      const xml = message.toString('utf8');
+      const hello = /<(?:\w+:)?Hello\b/.test(xml);
+      const parsed = hello ? OnvifDriver.parseHello(xml, remote.address) : announcementOnly ? null : OnvifDriver.parseProbeMatch(xml, remote.address);
+      if (!parsed?.id || !parsed.anchor || !parsed.network) { messageCounts.rejected++; return; }
+      if (hello) messageCounts.acceptedHellos++; else messageCounts.acceptedProbeMatches++;
+      const now = new Date().toISOString();
+      const subnetClassification = nic ? classifySubnet(remote.address, nic.ipAddress, nic.netmask) : 'UNKNOWN';
+      const device: Device = { ...parsed, id: parsed.id, anchor: parsed.anchor, network: parsed.network,
+        status: subnetClassification === 'DIFFERENT_SUBNET' ? 'DIFFERENT_SUBNET' : hello ? 'UNKNOWN' : 'ONLINE',
+        statusMessage: subnetClassification === 'DIFFERENT_SUBNET' ? DIFFERENT_NETWORK_MESSAGE : parsed.statusMessage,
+        sessionVerification: hello ? 'NOT_VERIFIED' : 'VERIFIED',
+        reachability: { subnetClassification, ...(hello ? { wsDiscoveryAnnouncedAt: now } : { wsDiscoveryRespondedAt: now, lastSuccessfulResponseAt: now }),
+          discoveryInterface: nic ? { name: nic.name, ipAddress: nic.ipAddress, netmask: nic.netmask, interfaceIndex: nic.interfaceIndex } : undefined },
+        discoveredPhase: 3, firstSeenAt: now, lastSeenAt: now };
+      const merged = mergeDiscoveredDevice(devices, device);
+      options.onDevice?.(merged.device, merged.isNew);
+    };
 
     const eligibleInterfaces = interfaces.filter(nic => !nic.isInternal && Boolean(nic.ipAddress));
-    await Promise.all(eligibleInterfaces.map(async nic => {
+    const announcements = this.listenAnnouncements(eligibleInterfaces, timeoutMs, options.multicastSocketFactory ?? socketFactory, options.signal,
+      (message, remote) => {
+        // dgram exposes no receiving interface index. Do not invent one for multi-adapter multicast.
+        const nic = eligibleInterfaces.length === 1 ? eligibleInterfaces[0] : undefined;
+        receive(message, remote, nic, true);
+      }, interfaceErrors);
+    await Promise.all([announcements, ...eligibleInterfaces.map(async nic => {
       try {
-        await this.probeInterface(nic, timeoutMs, socketFactory, options.signal, discovered => {
-          const merged = mergeDiscoveredDevice(devices, discovered);
-          options.onDevice?.(merged.device, merged.isNew);
-        });
+        await this.probeInterface(nic, timeoutMs, socketFactory, options.signal, (message, remote) => receive(message, remote, nic));
       } catch (error) {
         if (options.signal?.aborted) {
           cancelled = true;
@@ -149,9 +176,32 @@ export class NodeOnvifWsDiscoveryTransport implements OnvifDiscoveryTransport {
           message: error instanceof Error ? error.message : String(error),
         });
       }
-    }));
+    })]);
 
-    return { devices, interfaceErrors, cancelled: cancelled || Boolean(options.signal?.aborted) };
+    return { devices, interfaceErrors, messageCounts, cancelled: cancelled || Boolean(options.signal?.aborted) };
+  }
+
+  private listenAnnouncements(interfaces: NICInfo[], timeoutMs: number, factory: UdpSocketFactory, signal: AbortSignal | undefined,
+    receive: (message: Buffer, remote: RemoteInfo) => void, warnings: WsDiscoveryResult['interfaceErrors']): Promise<void> {
+    if (!interfaces.length || signal?.aborted) return Promise.resolve();
+    return new Promise(resolve => {
+      let socket: UdpSocketLike;
+      try { socket = factory(); } catch { warnings.push({ interfaceName: 'Multicast listener', message: 'Unable to create WS-Discovery announcement socket.' }); resolve(); return; }
+      let settled = false;
+      let timer: ReturnType<typeof setTimeout>;
+      const finish = () => { if (settled) return; settled = true; clearTimeout(timer); signal?.removeEventListener('abort', finish); socket.off('message', receive); socket.off('error', failure); try { socket.close(); } catch {} resolve(); };
+      const failure = () => { warnings.push({ interfaceName: 'Multicast listener', message: 'WS-Discovery announcement listener failed; unicast probes remain available.' }); finish(); };
+      socket.on('error', failure); socket.on('message', receive);
+      signal?.addEventListener('abort', finish, { once: true });
+      timer = setTimeout(finish, timeoutMs);
+      try { socket.bind({ port: ONVIF_DISCOVERY_PORT, address: '0.0.0.0', exclusive: false }, () => {
+        if (settled) return;
+        for (const nic of interfaces) {
+          try { if (!socket.addMembership) throw Error('Unsupported'); socket.addMembership(ONVIF_MULTICAST_ADDRESS, nic.ipAddress); }
+          catch { warnings.push({ interfaceName: nic.name, message: 'Unable to join WS-Discovery multicast group on this adapter; unicast probes remain available.' }); }
+        }
+      }); } catch { failure(); }
+    });
   }
 
   private probeInterface(
@@ -159,7 +209,7 @@ export class NodeOnvifWsDiscoveryTransport implements OnvifDiscoveryTransport {
     timeoutMs: number,
     socketFactory: UdpSocketFactory,
     signal: AbortSignal | undefined,
-    onDevice: (device: Device) => void,
+    onDevice: (message: Buffer, remote: RemoteInfo) => void,
   ): Promise<void> {
     return new Promise((resolve, reject) => {
       const socket = socketFactory();
@@ -189,29 +239,7 @@ export class NodeOnvifWsDiscoveryTransport implements OnvifDiscoveryTransport {
       const onAbort = () => finish();
       const onError = (error: Error) => finish(error);
       const onMessage = (message: Buffer, remote: RemoteInfo) => {
-        const parsed = OnvifDriver.parseProbeMatch(message.toString('utf8'), remote.address);
-        if (!parsed?.id || !parsed.anchor || !parsed.network) return;
-        const now = new Date().toISOString();
-        onDevice({
-          ...parsed,
-          anchor: parsed.anchor,
-          network: parsed.network,
-          id: parsed.id,
-          status: 'ONLINE',
-          reachability: {
-            wsDiscoveryRespondedAt: now,
-            lastSuccessfulResponseAt: now,
-            discoveryInterface: {
-              name: nic.name,
-              ipAddress: nic.ipAddress,
-              netmask: nic.netmask,
-              interfaceIndex: nic.interfaceIndex,
-            },
-          },
-          discoveredPhase: 3,
-          firstSeenAt: now,
-          lastSeenAt: now,
-        } as Device);
+        if (!settled) onDevice(message, remote);
       };
 
       socket.on('message', onMessage);

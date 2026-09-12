@@ -5,6 +5,7 @@ import net from 'node:net';
 import { TLSSocket } from 'node:tls';
 import { Device, DiagnosticCheckEvidence, DiagnosticErrorCategory } from '../../types/index.ts';
 import { DEFAULT_MONITORING_INTERVAL_MS } from './incremental_discovery_monitor.ts';
+import { DIFFERENT_NETWORK_MESSAGE } from '../../shared/network_relationship.ts';
 
 export interface PingProvider {
   check(ipAddress: string, options: { timeoutMs: number; signal?: AbortSignal }): Promise<DiagnosticCheckEvidence>;
@@ -50,17 +51,23 @@ function safeErrorMessage(category: DiagnosticErrorCategory): string {
 }
 
 export class WindowsPingProvider implements PingProvider {
+  constructor(private readonly runPing: typeof execFile = execFile) {}
+
   public check(ipAddress: string, options: { timeoutMs: number; signal?: AbortSignal }): Promise<DiagnosticCheckEvidence> {
     const started = performance.now();
     return new Promise(resolve => {
-      execFile('ping.exe', ['-n', '1', '-w', String(options.timeoutMs), ipAddress], { windowsHide: true, timeout: options.timeoutMs + 750, signal: options.signal, maxBuffer: 64 * 1024 }, (error, stdout) => {
+      this.runPing('ping.exe', ['-n', '1', '-w', String(options.timeoutMs), ipAddress], { windowsHide: true, timeout: options.timeoutMs + 750, signal: options.signal, maxBuffer: 64 * 1024 }, (error, stdout) => {
         const timestamp = new Date().toISOString();
-        if (!error) {
-          const match = stdout.match(/time[=<]\s*(\d+)ms/i);
+        // Windows can exit successfully for an ICMP error from a gateway.
+        // Require the target address and an IPv4 echo-reply TTL on the same line.
+        const reply = stdout.split(/\r?\n/).find(line =>
+          line.match(/\b(?:\d{1,3}\.){3}\d{1,3}\b/g)?.includes(ipAddress) && /\bTTL=\s*\d+\b/i.test(line));
+        if (!error && reply && !options.signal?.aborted) {
+          const match = reply.match(/time[=<]\s*(\d+)ms/i);
           resolve({ type: 'PING', targetIp: ipAddress, protocol: 'ICMP', success: true, transportReachable: true, responseTimeMs: match ? Number(match[1]) : Math.round(performance.now() - started), timestamp });
           return;
         }
-        const category = options.signal?.aborted ? 'CANCELLED' : stdout.includes('Request timed out') ? 'TIMEOUT' : categoryFor(error, false);
+        const category = options.signal?.aborted ? 'CANCELLED' : stdout.includes('Request timed out') ? 'TIMEOUT' : error ? categoryFor(error, false) : 'MALFORMED_RESPONSE';
         resolve({ type: 'PING', targetIp: ipAddress, protocol: 'ICMP', success: false, timeout: category === 'TIMEOUT', errorCategory: category, errorMessage: safeErrorMessage(category), timestamp });
       });
     });
@@ -136,7 +143,7 @@ export class DeviceDiagnosticEngine {
 
   public async diagnose(device: Device, options: DiagnosticRunOptions = {}): Promise<Device> {
     const startedAt = new Date().toISOString();
-    const adapter = device.reachability?.discoveryInterface;
+    const adapter = device.reachability?.relationshipAdapter || device.reachability?.discoveryInterface;
     const runEvidence: DiagnosticCheckEvidence[] = [];
     const alreadyReachableThisSession = device.sessionVerification !== 'NOT_VERIFIED' && (
       device.status === 'ONLINE' || device.status === 'AUTHENTICATED' || Boolean(device.reachability?.lastSuccessfulResponseAt)
@@ -177,7 +184,7 @@ export class DeviceDiagnosticEngine {
 
   public deriveStatus(device: Device, evidence: DiagnosticCheckEvidence[], isRefresh: boolean): void {
     if (device.status === 'COLLISION') return;
-    if (device.reachability?.subnetClassification === 'DIFFERENT_SUBNET') { device.status = 'DIFFERENT_SUBNET'; return; }
+    if (device.reachability?.subnetClassification === 'DIFFERENT_SUBNET') { device.status = 'DIFFERENT_SUBNET'; device.statusMessage = DIFFERENT_NETWORK_MESSAGE; return; }
     const positive = evidence.some(check => check.success && !check.ambiguousIdentity);
     const supported = evidence.filter(check => check.type !== 'PING' && check.type !== 'ONVIF_WS_DISCOVERY' && !check.ambiguousIdentity);
     if (positive) {

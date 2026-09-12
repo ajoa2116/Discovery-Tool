@@ -27,7 +27,7 @@ assert(overlay.includes('callback(device); onClose();'), 'action selection uses 
 assert(overlay.includes("event.key === 'Escape'") && overlay.includes("document.addEventListener('mousedown', outside)"), 'Escape and outside click close the menu');
 assert(overlay.includes("window.addEventListener('resize', invalidate)") && overlay.includes("window.addEventListener('scroll', invalidate, true)"), 'resize and any relevant scroll close safely');
 assert(overlay.includes("return () => {") && overlay.includes("removeEventListener('keydown', key)"), 'overlay listeners are cleaned up on unmount');
-assert(overlay.includes("device.status === 'DIFFERENT_SUBNET'") && ['Open', 'Details', 'Diagnose', 'Rename Device', 'Edit Notes', 'Device Configuration'].every(label => overlay.includes(label)), 'existing action eligibility and content remain unchanged');
+assert(overlay.includes('canOfferPair(pairTarget)') && ['Open', 'Details', 'Diagnose', 'Rename Device', 'Edit Notes', 'Device Configuration'].every(label => overlay.includes(label)), 'Pair uses topology eligibility while existing action content remains available');
 assert(table.includes('<tr') && table.includes('<FloatingDeviceActionsMenu'), 'device row remains rendered behind the independent overlay');
 
 console.log(`\nActions overlay summary: ${passed} passed, ${failed} failed`);

@@ -152,7 +152,7 @@ export class SiteProjectDatabase {
         network: { ...existing.network, ...device.network, ipAddressHistory: history },
         technician: { ...existing.technician, ...device.technician },
         reachability: { ...existing.reachability, ...device.reachability },
-        sessionVerification: device.reachability ? 'VERIFIED' : existing.sessionVerification,
+        sessionVerification: device.sessionVerification ?? (device.reachability?.lastSuccessfulResponseAt || device.reachability?.wsDiscoveryRespondedAt ? 'VERIFIED' : existing.sessionVerification),
         lastSeenAt: new Date().toISOString(),
       };
       storedDevice = devices[existingIndex];

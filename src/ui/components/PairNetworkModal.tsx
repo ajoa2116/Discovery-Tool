@@ -14,8 +14,8 @@ export const PairNetworkModal: React.FC<Props> = ({ isOpen, device, pair, onClos
     if (!isOpen) return;
     fetch('http://localhost:3001/api/pair/adapters').then(async response => {
       const data = await response.json(); if (!response.ok) throw new Error(data.error); return data as WindowsAdapterSnapshot[];
-    }).then(data => { setAdapters(data); if (data.length === 1) setInterfaceIndex(data[0].interfaceIndex); }).catch(err => setError(err.message));
-  }, [isOpen]);
+    }).then(data => { setAdapters(data); setInterfaceIndex(device?.reachability?.pairEligibility?.adapterIndexes[0] ?? (data.length === 1 ? data[0].interfaceIndex : '')); }).catch(err => setError(err.message));
+  }, [isOpen, device?.id]);
   if (!isOpen) return null;
 
   const action = async (path: string, body: Record<string, unknown> = {}) => {
@@ -61,6 +61,7 @@ export const PairNetworkModal: React.FC<Props> = ({ isOpen, device, pair, onClos
 
           {ready && selected && <div className="space-y-3">
             <h3 className="font-bold text-sm">Confirmation preview</h3>
+            {currentPair.subnetSource === 'ADAPTER_PREFIX_PROPOSAL' && <p className="rounded border border-amber-700/50 bg-amber-950/30 p-3 text-amber-200">Camera subnet mask is unknown. The temporary /{selected.prefixLength} subnet is proposed from the selected adapter's current prefix; it is not a verified camera setting. Review it before confirming. Camera addressing, credentials, and ONVIF settings will not change.</p>}
             <div className="grid grid-cols-2 gap-3">
               <div className="p-3 bg-slate-950 border border-slate-800 rounded-xl space-y-1"><strong className="text-slate-300">Before — preserved</strong><p>Adapter: {currentPair.originalAdapter.interfaceAlias}</p><p>DHCP: {currentPair.originalAdapter.dhcpEnabled ? 'Enabled' : 'Disabled'}</p><p>IPv4: {currentPair.originalAdapter.ipv4Addresses.map(ip => `${ip.address}/${ip.prefixLength}`).join(', ') || 'None'}</p><p>Gateway: {currentPair.originalAdapter.defaultGateways.join(', ') || 'None'}</p><p>DNS: {currentPair.originalAdapter.dnsAutomatic ? 'Automatic' : currentPair.originalAdapter.dnsServers.join(', ') || 'None'}</p></div>
               <div className="p-3 bg-sky-950/30 border border-sky-700/40 rounded-xl space-y-1"><strong className="text-sky-300">Temporary Pair</strong><p>IPv4: {selected.ipAddress}/{selected.prefixLength}</p><p>Subnet: {currentPair.cameraSubnetMask}</p><p>Gateway: None added</p><p>DNS: No new DNS configured</p><p>Camera: {currentPair.cameraIp}</p></div>

@@ -79,6 +79,7 @@ export class Phase3ActiveProbing {
       category: 'DISCOVERY',
       level: result.interfaceErrors.length > 0 ? 'WARNING' : 'INFO',
       message: `Phase 3 ${result.cancelled ? 'cancelled' : 'completed'}: ${result.devices.length} ONVIF device(s), ${result.interfaceErrors.length} interface error(s).`,
+      details: { messageCounts: result.messageCounts, interfaceWarnings: result.interfaceErrors.slice(0,32) },
     });
     return { probedDevices: result.devices, logs, cancelled: result.cancelled, interfaceErrors: result.interfaceErrors };
   }
