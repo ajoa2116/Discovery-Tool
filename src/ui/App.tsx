@@ -1,3 +1,5 @@
+import { connectProgress, ProgressConnectionState } from './progress_connection.ts';
+import { requestJson } from './bounded_request.ts';
 import { discoveryNotification } from '../shared/discovery_evidence.ts';
 import React, { useState, useEffect, useRef } from 'react';
 import {
@@ -61,6 +63,10 @@ export default function App() {
   const openProjectInput = useRef<HTMLInputElement>(null);
   const addExistingProjectInput = useRef<HTMLInputElement>(null);
   const [interfaces, setInterfaces] = useState<NICInfo[]>([]);
+  const [progressConnection, setProgressConnection] = useState<ProgressConnectionState>('CONNECTING');
+  const [scanStatusUnavailable, setScanStatusUnavailable] = useState(false);
+  const scanEpoch = useRef(0);
+  const quickStartPending = useRef(false);
   const [isScanning, setIsScanning] = useState(false);
   const [advancedScanOpen, setAdvancedScanOpen] = useState(false);
   const [projectReverifyOpen, setProjectReverifyOpen] = useState(false);
@@ -128,8 +134,7 @@ export default function App() {
     fetchData();
 
     // WebSocket real-time updates
-    const ws = new WebSocket('ws://localhost:3001/ws');
-    ws.onmessage = (event) => {
+    return connectProgress((event) => {
       try {
         const data = JSON.parse(event.data);
         if (data.type === 'PHASE_COMPLETE' && data.phaseNumber === 1 && data.data?.interfaces) {
@@ -170,14 +175,30 @@ export default function App() {
           fetchData();
         }
       } catch (err) {
-        console.error('WS parse error:', err);
+        // Ignore malformed events; HTTP status remains available without per-message console spam.
       }
-    };
-
-    return () => {
-      ws.close();
-    };
+    }, state => { setProgressConnection(state); if (state === 'CONNECTED') void fetchData(); });
   }, []);
+
+  useEffect(() => {
+    // Read-only reconciliation covers a lost terminal event and initial/reconnected sessions.
+    const controller = new AbortController(); let active = true;
+    let timer: ReturnType<typeof setTimeout>;
+    const poll = async () => {
+      const epoch = scanEpoch.current;
+      try {
+        const { response, body } = await requestJson('http://localhost:3001/api/discovery/status', { signal: controller.signal }, fetch, 5000);
+        if (!response.ok || !body || typeof body !== 'object' || !('running' in body) || typeof body.running !== 'boolean') throw Error('Invalid status');
+        if (active && epoch === scanEpoch.current && !quickStartPending.current) {
+          setScanStatusUnavailable(false); setIsScanning(body.running);
+          if (isScanning && !body.running) void fetchData();
+        }
+      } catch { if (active) setScanStatusUnavailable(true); }
+      finally { if (active) timer = setTimeout(poll, 3000); }
+    };
+    void poll();
+    return () => { active = false; clearTimeout(timer); controller.abort(); };
+  }, [isScanning, progressConnection]);
 
   useEffect(() => {
     preferencesRef.current=preferences;
@@ -278,14 +299,14 @@ export default function App() {
       return;
     }
 
-    setIsScanning(true);
+    quickStartPending.current = true; scanEpoch.current++; setIsScanning(true);
     try {
       const response = await fetch('http://localhost:3001/api/discovery/start', { method: 'POST' });
       if (!response.ok) throw new Error(`Unable to start discovery (${response.status})`);
     } catch (error) {
       setIsScanning(false);
       throw error;
-    }
+    } finally { quickStartPending.current = false; }
   };
 
   // Section 6: Inline Device Name Update
@@ -401,6 +422,7 @@ export default function App() {
 
   return (
     <div className="min-h-screen flex flex-col bg-[#f4f6f8] text-slate-800 dark:bg-slate-950 dark:text-slate-100 font-sans antialiased">
+      {(progressConnection !== 'CONNECTED' || scanStatusUnavailable) && <div role="status" className="shrink-0 border-b border-amber-200 bg-amber-50 px-4 py-2 text-xs text-amber-800">{scanStatusUnavailable ? 'Scan status is unavailable. The backend may still be scanning. Check the local server connection; status checks will retry automatically.' : 'Live updates are reconnecting. Scan status is checked over HTTP; device updates may be delayed.'}</div>}
       {/* ─────────────────────────────────────────────────────────────
           ZONE 1: CLEAN TOP HEADER CONTROL (Sections 3 & 4)
       ───────────────────────────────────────────────────────────── */}
@@ -625,7 +647,7 @@ export default function App() {
         />
         </>
       )}
-      <AdvancedScanModal open={advancedScanOpen} onClose={()=>setAdvancedScanOpen(false)} onStarted={()=>{setIsScanning(true);setHasCompletedScan(false)}}/>
+      <AdvancedScanModal open={advancedScanOpen} onClose={()=>setAdvancedScanOpen(false)} onStarted={()=>{scanEpoch.current++; setIsScanning(true);setHasCompletedScan(false)}}/>
       <ProjectReverifyModal isOpen={projectReverifyOpen} onClose={()=>setProjectReverifyOpen(false)} onChanged={fetchData}/>
       <ProjectHistoryModal open={projectHistoryOpen} onClose={()=>setProjectHistoryOpen(false)}/>
 
