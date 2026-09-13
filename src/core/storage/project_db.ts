@@ -71,6 +71,10 @@ function prepareLoadedDevice(device: Device): Device {
 }
 
 export class SiteProjectDatabase {
+  constructor(private readonly isolation: 'TECHNICIAN' | 'ISOLATED_TEST' = 'TECHNICIAN') {}
+  public acceptsEvidence(device: Device): boolean {
+    return device.evidenceProvenance === undefined || device.evidenceProvenance === 'PHYSICAL_NETWORK' || this.isolation === 'ISOLATED_TEST';
+  }
   private session: ProjectSession = { mode: 'QUICK_WORK', project: makeProject('Quick Work'), dirty: false };
   private hiddenCurrentDeviceIds = new Set<string>();
   private currentOnlyDeviceIds = new Set<string>();
@@ -117,6 +121,7 @@ export class SiteProjectDatabase {
   }
 
   public upsertDevice(device: Device, membershipHistory: 'DEVICE_ADDED'|'DEVICE_RE_ADDED' = 'DEVICE_ADDED'): Device {
+    if (!this.acceptsEvidence(device)) throw new ProjectValidationError('Nonphysical discovery evidence requires an isolated test inventory.');
     const devices = this.session.project.devices;
     const mac = device.anchor.macAddress?.toLowerCase();
     const uuid = device.anchor.onvifEndpointUuid?.toLowerCase();
@@ -340,6 +345,7 @@ export class SiteProjectDatabase {
     const loaded = sanitize(clone(project)) as SiteProject;
     loaded.auditLogs = ProjectHistoryService.bounded(Array.isArray(loaded.auditLogs) ? loaded.auditLogs : []);
     loaded.totalDevices = loaded.devices.length;
+    if (loaded.devices.some(device=>!this.acceptsEvidence(device))) throw new ProjectValidationError('Nonphysical evidence cannot be opened in technician inventory.');
     loaded.devices = loaded.devices.map(prepareLoadedDevice);
     return loaded;
   }

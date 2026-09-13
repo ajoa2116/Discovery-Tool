@@ -1,3 +1,4 @@
+import { packetProvenance } from '../../shared/evidence_provenance.ts';
 import { createHash } from 'node:crypto';
 import { XMLParser, XMLValidator } from 'fast-xml-parser';
 import { Device } from '../../types/index.ts';
@@ -64,7 +65,7 @@ export function inspectDiscoveryHello(xml:string,senderIp:string):HelloInspectio
     const chosen=validUrls[0],version=Number(text(child(hello,'MetadataVersion',[discoveryNamespace])));const metadataVersion=Number.isSafeInteger(version)&&version>=0&&text(child(hello,'MetadataVersion',[discoveryNamespace]))!==''?version:undefined;
     const id=mac?`mac:${mac}`:uuid?`onvif:${uuid}`:serialNumber?`serial:${encodeURIComponent(serialNumber)}`:`session:${createHash('sha256').update(`${senderIp}|${chosen.value}`).digest('hex').slice(0,32)}`;
     stages.push('CANDIDATE_CREATED');
-    return {reason:'ACCEPTED',stages,metadataVersion,hasUuid:Boolean(uuid),hasTypes:types.length>0,hasScopes:Boolean(scopes.trim()),device:{id,anchor:{macAddress:mac,onvifEndpointUuid:uuid,serialNumber,vendor,model},network:{ipAddress:chosen.ip,senderIp,subnetMask:null,port:chosen.port,protocol:'ONVIF',xAddr:chosen.value,xAddrs:[...new Set(validUrls.map(url=>url.value))]},status:'DISCOVERED',sessionVerification:'NOT_VERIFIED',statusMessage:'Observed an ONVIF WS-Discovery Hello announcement; unicast communication is not verified.',discoveredPhase:3}};
+    return {reason:'ACCEPTED',stages,metadataVersion,hasUuid:Boolean(uuid),hasTypes:types.length>0,hasScopes:Boolean(scopes.trim()),device:{evidenceProvenance:packetProvenance(xml),id,anchor:{macAddress:mac,onvifEndpointUuid:uuid,serialNumber,vendor,model},network:{ipAddress:chosen.ip,senderIp,subnetMask:null,port:chosen.port,protocol:'ONVIF',xAddr:chosen.value,xAddrs:[...new Set(validUrls.map(url=>url.value))]},status:'DISCOVERED',sessionVerification:'NOT_VERIFIED',statusMessage:'Observed an ONVIF WS-Discovery Hello announcement; unicast communication is not verified.',discoveredPhase:3}};
   }catch{return reject('MALFORMED_DISCOVERY_XML')}
 }
 

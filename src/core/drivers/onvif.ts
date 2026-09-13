@@ -1,3 +1,4 @@
+import { packetProvenance } from '../../shared/evidence_provenance.ts';
 import { inspectDiscoveryHello } from './ws_discovery_hello.ts';
 import { Device, OnvifCustomConfig, OnvifVideoStreamProfile, OnvifImagingSettings, OnvifPtzCapabilities } from '../../types/index.ts';
 import { appStateDb } from '../storage/app_db.ts';
@@ -228,6 +229,7 @@ export class OnvifDriver {
           : `session:${senderIp}:${encodeURIComponent(xAddr || '')}`;
 
       return {
+        evidenceProvenance: packetProvenance(xmlPayload),
         id,
         anchor: {
           macAddress: mac,

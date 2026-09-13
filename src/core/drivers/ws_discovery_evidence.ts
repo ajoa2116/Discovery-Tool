@@ -2,6 +2,7 @@ import { DiscoveryContext } from '../../shared/discovery_session.ts';
 import { NICInfo } from '../../types/index.ts';
 export const TRACE_LIMITS = { sessions:20, datagrams:50, parserEvents:50, eventsPerSession:128, socketsPerSession:32, adaptersPerSession:32 };
 export interface TransportSession {
+  provenance?: string; strategy?: string; processId?:number; externalSourceIPs:string[];
   windowId:string; sessionId:string; origin:string; purpose:string; openedAt:string; closedAt?:string; durationMs?:number; closeReason?:string;
   timeoutMs:number; multicastGroup:string; multicastPort:number; adapters:Array<{alias:string;interfaceIndex?:number;ipv4:string}>;
   firstSelfProbeAt?:string; firstExternalDatagramAt?:string; firstHelloAt?:string;
@@ -15,7 +16,7 @@ export class WsDiscoveryEvidence {
   private previousClosedAt?:string;
   begin(context:DiscoveryContext|undefined, adapters:NICInfo[], timeoutMs:number, purpose='DISCOVERY') {
     const windowId=crypto.randomUUID(),openedAt=new Date().toISOString();
-    const session:TransportSession={windowId,sessionId:context?.sessionId||windowId,origin:context?.origin||'INTERNAL',purpose,openedAt,timeoutMs,multicastGroup:'239.255.255.250',multicastPort:3702,adapters:adapters.slice(0,32).map(n=>({alias:n.name.slice(0,80),interfaceIndex:n.interfaceIndex,ipv4:n.ipAddress})),counters:{candidatesCreated:0,inventoryReconciliations:0,inventoryVisibleObservations:0,datagramsReceived:0,selfDatagrams:0,externalDatagrams:0,helloCount:0,probeMatchCount:0,rejectedCount:0,parseErrorCount:0,socketErrorCount:0},sockets:[],events:[],droppedEvents:0,lastStage:'SESSION_START',lastSuccessfulStage:'SESSION_START'};
+    const session:TransportSession={externalSourceIPs:[],windowId,sessionId:context?.sessionId||windowId,origin:context?.origin||'INTERNAL',purpose,openedAt,timeoutMs,multicastGroup:'239.255.255.250',multicastPort:3702,adapters:adapters.slice(0,32).map(n=>({alias:n.name.slice(0,80),interfaceIndex:n.interfaceIndex,ipv4:n.ipAddress})),counters:{candidatesCreated:0,inventoryReconciliations:0,inventoryVisibleObservations:0,datagramsReceived:0,selfDatagrams:0,externalDatagrams:0,helloCount:0,probeMatchCount:0,rejectedCount:0,parseErrorCount:0,socketErrorCount:0},sockets:[],events:[],droppedEvents:0,lastStage:'SESSION_START',lastSuccessfulStage:'SESSION_START'};
     this.sessions.push(session);if(this.sessions.length>20)this.sessions.shift();
     this.event(windowId,'SESSION_START',{previousClosedAt:this.previousClosedAt,gapSincePreviousSessionMs:this.previousClosedAt?Date.parse(openedAt)-Date.parse(this.previousClosedAt):undefined});
     return session;

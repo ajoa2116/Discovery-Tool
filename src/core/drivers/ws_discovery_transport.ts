@@ -1,3 +1,5 @@
+import os from 'node:os';
+import { EvidenceProvenance, packetProvenance } from '../../shared/evidence_provenance.ts';
 import { DiscoveryContext } from '../../shared/discovery_session.ts';
 import { wsDiscoveryEvidence, WsDiscoveryEvidence, safeSocketCode } from './ws_discovery_evidence.ts';
 import { isUtf8 } from 'node:buffer';
@@ -30,6 +32,9 @@ export interface UdpSocketLike {
 export type UdpSocketFactory = () => UdpSocketLike;
 
 export interface WsDiscoveryOptions {
+  provenance?: EvidenceProvenance;
+  strategy?: 'WILDCARD_SELECTED' | 'WILDCARD_ALL' | 'ADAPTER_SPECIFIC';
+  localAddresses?: string[];
   context?: DiscoveryContext;
   evidence?: WsDiscoveryEvidence;
   purpose?: 'DISCOVERY' | 'RECEIVE_TRACE_ONLY';
@@ -83,7 +88,7 @@ export function mergeDiscoveredDevice(
   devices: Device[],
   incoming: Device,
 ): { device: Device; isNew: boolean } {
-  const existingIndex = devices.findIndex(device => sameIdentity(device, incoming));
+  const existingIndex = devices.findIndex(device => (device.evidenceProvenance || 'PHYSICAL_NETWORK') === (incoming.evidenceProvenance || 'PHYSICAL_NETWORK') && sameIdentity(device, incoming));
   if (existingIndex < 0) {
     devices.push(incoming);
     return { device: incoming, isNew: true };
@@ -147,8 +152,15 @@ export function mergeDiscoveredDevice(
 export class NodeOnvifWsDiscoveryTransport implements OnvifDiscoveryTransport {
   public async discover(interfaces: NICInfo[], options: WsDiscoveryOptions = {}): Promise<WsDiscoveryResult> {
     const timeoutMs = Math.min(30_000, Math.max(1, options.timeoutMs ?? DEFAULT_DISCOVERY_WINDOW_MS));
+    const provenance:EvidenceProvenance=options.provenance || (options.purpose==='RECEIVE_TRACE_ONLY'?'SUPPORT_DIAGNOSTIC':options.socketFactory||options.multicastSocketFactory?'SYNTHETIC_TEST':'PHYSICAL_NETWORK');
+    const localAddresses=new Set([...interfaces.map(n=>n.ipAddress),...(options.localAddresses||[])]);
+    try {for(const nic of Object.values(os.networkInterfaces()).flat())if(nic?.family==='IPv4')localAddresses.add(nic.address);}catch {}
+    const isLocal=(address:string)=>localAddresses.has(address)||/^127\./.test(address);
+    const strategy=options.strategy || (interfaces.length>1?'WILDCARD_ALL':'WILDCARD_SELECTED');
+    if(strategy==='ADAPTER_SPECIFIC'&&(options.purpose!=='RECEIVE_TRACE_ONLY'||interfaces.length!==1))throw Error('Adapter-specific binding requires a single-adapter support session.');
     const evidence=options.evidence || wsDiscoveryEvidence;
     const session=evidence.begin(options.context,interfaces,timeoutMs,options.purpose);
+    session.provenance=provenance;session.strategy=strategy;session.processId=process.pid;
     options.onTraceSession?.(session.windowId);
     const localProbeIds=new Set<string>();
     const started=Date.now();
@@ -165,7 +177,9 @@ export class NodeOnvifWsDiscoveryTransport implements OnvifDiscoveryTransport {
         session.counters.datagramsReceived++;
         const xml=isUtf8(message)?message.toString('utf8'):null,xmlLike=xml!==null&&xml.trimStart().startsWith('<');
         const metadata=xmlLike?inspectDiscoveryMetadata(xml!):{soapParsed:false,actionFound:false,kind:'UNKNOWN',messageId:''};
-        const self=interfaces.some(n=>n.ipAddress===remote.address)||(metadata.kind==='PROBE'&&localProbeIds.has(metadata.messageId));
+        const self=isLocal(remote.address);
+        const packetOrigin=packetProvenance(xml||'',provenance);
+        if(!self&&!session.externalSourceIPs.includes(remote.address)&&session.externalSourceIPs.length<16)session.externalSourceIPs.push(remote.address);
         if(self)session.counters.selfDatagrams++;else {session.counters.externalDatagrams++;session.firstExternalDatagramAt ||= new Date().toISOString();}
         if(self&&metadata.kind==='PROBE')session.firstSelfProbeAt ||= new Date().toISOString();
         if(metadata.kind==='HELLO')session.firstHelloAt ||= new Date().toISOString();
@@ -173,7 +187,7 @@ export class NodeOnvifWsDiscoveryTransport implements OnvifDiscoveryTransport {
         if(metadata.kind==='PROBE_MATCH')session.counters.probeMatchCount++;
         if(!metadata.soapParsed)session.counters.parseErrorCount++;
         const {messageId: _privateMessageId,...safeMetadata}=metadata;
-        const datagram={socketId,sequence:session.counters.datagramsReceived,sourceIp:remote.address,sourcePort:remote.port,bytes:message.length,classification:xml===null?'UNKNOWN':xmlLike?'XML':'NON_XML',appearsSoap:Boolean(xml&&/<(?:[\w.-]+:)?Envelope\b/.test(xml)),selfTraffic:self,adapterAlias:nic?.name.slice(0,80),interfaceIndex:nic?.interfaceIndex,configuredAdapterIPv4:nic?.ipAddress,ingressInterface:'NOT_EXPOSED_BY_NODE',listenerMulticastGroup:ONVIF_MULTICAST_ADDRESS,listenerLocalPort:details.localPort,destinationAddress:'NOT_EXPOSED_BY_NODE',...safeMetadata};
+        const datagram={provenance:packetOrigin,correlatedOwnProbe:metadata.kind==='PROBE'&&localProbeIds.has(metadata.messageId),stage:'UDP_DATAGRAM_RECEIVED',socketId,sequence:session.counters.datagramsReceived,sourceIp:remote.address,sourcePort:remote.port,bytes:message.length,classification:xml===null?'UNKNOWN':xmlLike?'XML':'NON_XML',appearsSoap:Boolean(xml&&/<(?:[\w.-]+:)?Envelope\b/.test(xml)),selfTraffic:self,adapterAlias:nic?.name.slice(0,80),interfaceIndex:nic?.interfaceIndex,configuredAdapterIPv4:nic?.ipAddress,ingressInterface:'NOT_EXPOSED_BY_NODE',listenerMulticastGroup:ONVIF_MULTICAST_ADDRESS,listenerLocalPort:details.localPort,destinationAddress:'NOT_EXPOSED_BY_NODE',...safeMetadata};
         evidence.datagram(session.windowId,datagram);event('UDP_DATAGRAM_RECEIVED',{sourceIp:remote.address,bytes:message.length,selfTraffic:self,sequence:session.counters.datagramsReceived});
         if(metadata.soapParsed)evidence.parser(session.windowId,'SOAP_PARSED',{sequence:session.counters.datagramsReceived});
         evidence.parser(session.windowId,'ACTION_CLASSIFIED',{sequence:session.counters.datagramsReceived,...safeMetadata});
@@ -203,6 +217,7 @@ export class NodeOnvifWsDiscoveryTransport implements OnvifDiscoveryTransport {
       record('UDP_RECEIVED',metadata);
       if(!isUtf8(message)){messageCounts.rejected++;session.counters.rejectedCount++;evidence.parser(session.windowId,'CANDIDATE_REJECTED',{reason:'INVALID_UTF8'});record('CANDIDATE_REJECTED',{...metadata,reason:'INVALID_UTF8'});return;}
       const xml = message.toString('utf8');
+      const packetOrigin=packetProvenance(xml,provenance);
       const kind=discoveryMessageKind(xml);
       const hello=kind==='HELLO'||(kind==='UNKNOWN'&&/<(?:[A-Za-z_][\w.-]*:)?Hello\b/.test(xml));
       const inspection=hello?inspectDiscoveryHello(xml,remote.address):null;
@@ -210,13 +225,13 @@ export class NodeOnvifWsDiscoveryTransport implements OnvifDiscoveryTransport {
       const legacyProbe=kind==='UNKNOWN'&&!/<(?:[A-Za-z_][\w.-]*:)?Action\b/.test(xml)&&/<(?:[A-Za-z_][\w.-]*:)?ProbeMatch\b/.test(xml);
       const parsed=inspection?.device || (!announcementOnly&&(kind==='PROBE_MATCH'||legacyProbe)?OnvifDriver.parseProbeMatch(xml,remote.address):null);
       if (!parsed?.id || !parsed.anchor || !parsed.network) { messageCounts.rejected++;session.counters.rejectedCount++;evidence.parser(session.windowId,'CANDIDATE_REJECTED',{reason:inspection?.reason || 'UNSUPPORTED_OR_MALFORMED_MESSAGE',sourceIp:remote.address,sequence:session.counters.datagramsReceived});record('CANDIDATE_REJECTED',{...metadata,reason:inspection?.reason || 'UNSUPPORTED_OR_MALFORMED_MESSAGE'});return; }
-      if(interfaces.some(local=>local.ipAddress===parsed.network!.ipAddress || local.ipAddress===remote.address)){messageCounts.rejected++;session.counters.rejectedCount++;evidence.parser(session.windowId,'CANDIDATE_REJECTED',{reason:'LOCAL_HOST',sequence:session.counters.datagramsReceived});record('CANDIDATE_REJECTED',{...metadata,reason:'LOCAL_HOST'});return;}
+      if(isLocal(parsed.network.ipAddress) || (isLocal(remote.address)&&packetOrigin==='PHYSICAL_NETWORK')){messageCounts.rejected++;session.counters.rejectedCount++;evidence.parser(session.windowId,'CANDIDATE_REJECTED',{reason:'LOCAL_HOST',sequence:session.counters.datagramsReceived});record('CANDIDATE_REJECTED',{...metadata,reason:'LOCAL_HOST'});return;}
       if (hello) messageCounts.acceptedHellos++; else messageCounts.acceptedProbeMatches++;
       const now = new Date().toISOString();
       // Compare the advertised endpoint, not the UDP sender. Multi-NIC reception does not identify an ingress NIC.
       const subnetClassification = nic ? classifySubnet(parsed.network.ipAddress, nic.ipAddress, nic.netmask)
         : interfaces.length && interfaces.every(local=>classifySubnet(parsed.network!.ipAddress,local.ipAddress,local.netmask)==='DIFFERENT_SUBNET') ? 'DIFFERENT_SUBNET' : 'UNKNOWN';
-      const device: Device = { ...parsed, id: parsed.id, anchor: parsed.anchor, network: parsed.network,
+      const device: Device = { ...parsed, evidenceProvenance:packetOrigin, id: parsed.id, anchor: parsed.anchor, network: parsed.network,
         status: subnetClassification === 'DIFFERENT_SUBNET' ? 'DIFFERENT_SUBNET' : hello ? 'UNKNOWN' : 'ONLINE',
         statusMessage: subnetClassification === 'DIFFERENT_SUBNET' ? DIFFERENT_NETWORK_MESSAGE : parsed.statusMessage,
         sessionVerification: hello ? 'NOT_VERIFIED' : 'VERIFIED',
@@ -226,10 +241,10 @@ export class NodeOnvifWsDiscoveryTransport implements OnvifDiscoveryTransport {
       const merged = mergeDiscoveredDevice(devices, device);
       evidence.parser(session.windowId,hello?'HELLO_PARSED':'PROBE_MATCH_PARSED',{sequence:session.counters.datagramsReceived});
       evidence.parser(session.windowId,'XADDR_EXTRACTED',{address:device.network.ipAddress,sequence:session.counters.datagramsReceived});
-      evidence.parser(session.windowId,'CANDIDATE_CREATED',{address:device.network.ipAddress,classification:device.status,verification:device.sessionVerification,sequence:session.counters.datagramsReceived});
+      evidence.parser(session.windowId,'CANDIDATE_CREATED',{provenance:packetOrigin,address:device.network.ipAddress,classification:device.status,verification:device.sessionVerification,sequence:session.counters.datagramsReceived});
       if(options.purpose==='RECEIVE_TRACE_ONLY')evidence.parser(session.windowId,'INVENTORY_NOT_REQUESTED',{reason:'SUPPORT_RECEIVE_TRACE_ONLY'});
       record('CANDIDATE_ACCEPTED',{...metadata,address:device.network.ipAddress,classification:device.reachability?.subnetClassification});
-      try{options.onDevice?.(merged.device, merged.isNew)}catch{evidence.parser(session.windowId,'INVENTORY_REJECTED',{reason:'PIPELINE_CALLBACK_FAILED'});record('DELIVERY_FAILED',{...metadata,reason:'PIPELINE_CALLBACK_FAILED'});interfaceErrors.push({interfaceName:nic?.name || 'Multicast listener',message:'A discovery candidate could not be delivered to the inventory pipeline.'})}
+      try{if(options.purpose!=='RECEIVE_TRACE_ONLY')options.onDevice?.(merged.device, merged.isNew)}catch{evidence.parser(session.windowId,'INVENTORY_REJECTED',{reason:'PIPELINE_CALLBACK_FAILED'});record('DELIVERY_FAILED',{...metadata,reason:'PIPELINE_CALLBACK_FAILED'});interfaceErrors.push({interfaceName:nic?.name || 'Multicast listener',message:'A discovery candidate could not be delivered to the inventory pipeline.'})}
     };
 
     const eligibleInterfaces = interfaces.filter(nic => !nic.isInternal && Boolean(nic.ipAddress));
@@ -238,7 +253,7 @@ export class NodeOnvifWsDiscoveryTransport implements OnvifDiscoveryTransport {
         // dgram exposes no receiving interface index. Do not invent one for multi-adapter multicast.
         const nic = eligibleInterfaces.length === 1 ? eligibleInterfaces[0] : undefined;
         receive(message, remote, nic, true);
-      }, interfaceErrors, record);
+      }, interfaceErrors, record, strategy==='ADAPTER_SPECIFIC'?eligibleInterfaces[0]?.ipAddress:'0.0.0.0');
     await Promise.all([announcements, ...(options.announcementOnly ? [] : eligibleInterfaces).map(async nic => {
       try {
         await this.probeInterface(nic, timeoutMs, trackedFactory(socketFactory,'PROBE',nic), options.signal, (message, remote) => receive(message, remote, nic), record);
@@ -260,7 +275,7 @@ export class NodeOnvifWsDiscoveryTransport implements OnvifDiscoveryTransport {
   }
 
   private listenAnnouncements(interfaces: NICInfo[], timeoutMs: number, factory: UdpSocketFactory, signal: AbortSignal | undefined,
-    receive: (message: Buffer, remote: RemoteInfo) => void, warnings: WsDiscoveryResult['interfaceErrors'], record:(stage:string,fields?:Omit<DiscoveryTraceEvent,'stage'|'elapsedMs'>)=>void): Promise<void> {
+    receive: (message: Buffer, remote: RemoteInfo) => void, warnings: WsDiscoveryResult['interfaceErrors'], record:(stage:string,fields?:Omit<DiscoveryTraceEvent,'stage'|'elapsedMs'>)=>void, bindAddress='0.0.0.0'): Promise<void> {
     if (!interfaces.length || signal?.aborted) return Promise.resolve();
     return new Promise(resolve => {
       let socket: UdpSocketLike;
@@ -272,9 +287,9 @@ export class NodeOnvifWsDiscoveryTransport implements OnvifDiscoveryTransport {
       socket.on('error', failure); socket.on('message', receive);
       signal?.addEventListener('abort', finish, { once: true });
       timer = setTimeout(finish, timeoutMs);
-      try { socket.bind({ port: ONVIF_DISCOVERY_PORT, address: '0.0.0.0', exclusive: false }, () => {
+      try { socket.bind({ port: ONVIF_DISCOVERY_PORT, address: bindAddress, exclusive: false }, () => {
         if (settled) return;
-        record('WINDOW_OPENED',{socket:'ANNOUNCEMENT',address:'0.0.0.0'});
+        record('WINDOW_OPENED',{socket:'ANNOUNCEMENT',address:bindAddress});
         for (const nic of interfaces) {
           try { if (!socket.addMembership) throw Error('Unsupported'); socket.addMembership(ONVIF_MULTICAST_ADDRESS, nic.ipAddress);record('MEMBERSHIP_JOINED',{socket:'ANNOUNCEMENT',adapter:nic.name.slice(0,80),address:nic.ipAddress}); }
           catch { record('MEMBERSHIP_FAILED',{socket:'ANNOUNCEMENT',adapter:nic.name.slice(0,80),reason:'JOIN_FAILED'}); warnings.push({ interfaceName: nic.name, message: 'Unable to join WS-Discovery multicast group on this adapter; unicast probes remain available.' }); }

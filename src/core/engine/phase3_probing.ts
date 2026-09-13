@@ -37,12 +37,13 @@ export class Phase3ActiveProbing {
     const enrichmentTasks = new Map<string, Promise<void>>();
 
     let windowId: string | undefined;
-    const traceStage=(stage:string,device:Device,reason?:string)=>{if(windowId)wsDiscoveryEvidence.parser(windowId,stage,{address:device.network.ipAddress,verification:device.sessionVerification,reason});};
+    const traceStage=(stage:string,device:Device,reason?:string)=>{if(windowId)wsDiscoveryEvidence.parser(windowId,stage,{address:device.network.ipAddress,verification:device.sessionVerification,provenance:device.evidenceProvenance,reason});};
     const result = await transport.discover(eligible, {
       context: options.context, onTraceSession:id=>{windowId=id;},
       signal: options.signal,
       timeoutMs: options.timeoutMs,
       onDevice: (device) => {
+        if (!database.acceptsEvidence(device)) { traceStage('INVENTORY_REJECTED',device,'NONPHYSICAL_EVIDENCE'); return; }
         if (!localHost.isRemoteDevice(device)) {
           traceStage('INVENTORY_REJECTED',device,'LOCAL_HOST');
           logs.push(`[Phase 3] Ignored local-host response at ${device.network.ipAddress}.`);
@@ -64,7 +65,7 @@ export class Phase3ActiveProbing {
             signal: options.signal,
             onEvidence: stage => record(stage,stored),
             onUpdate: (updated, changedFields) => {
-              const enriched = database.upsertDevice(updated);
+              const enriched = database.upsertDevice({...updated,evidenceProvenance:stored.evidenceProvenance});
               record('ENRICHMENT_RECONCILED',enriched);
               options.onEnrichment?.(enriched, changedFields);
             },
@@ -79,13 +80,14 @@ export class Phase3ActiveProbing {
     });
     await Promise.allSettled(enrichmentTasks.values());
 
+    const inventoryEligibleDevices=result.devices.filter(device=>database.acceptsEvidence(device));
     for (const failure of result.interfaceErrors) {
       logs.push(`[Phase 3] [INTERFACE WARNING] ${failure.interfaceName}: ${failure.message}`);
     }
     logs.push(result.cancelled
-      ? `[Phase 3] Discovery cancelled after retaining ${result.devices.length} discovered device(s).`
-      : `[Phase 3] Discovery timeout completed with ${result.devices.length} unique ONVIF device(s).`);
-    if (!result.cancelled && result.devices.length === 0) logs.push('[Phase 3] No ONVIF responses received. Verify the camera is connected to a reachable network and that ONVIF/WS-Discovery is enabled. Interface warnings above may identify binding, multicast-send, adapter, or permission failures; zero responses alone do not prove a firewall cause.');
+      ? `[Phase 3] Discovery cancelled after retaining ${inventoryEligibleDevices.length} discovered device(s).`
+      : `[Phase 3] Discovery timeout completed with ${inventoryEligibleDevices.length} unique ONVIF device(s).`);
+    if (!result.cancelled && inventoryEligibleDevices.length === 0) logs.push('[Phase 3] No ONVIF responses received. Verify the camera is connected to a reachable network and that ONVIF/WS-Discovery is enabled. Interface warnings above may identify binding, multicast-send, adapter, or permission failures; zero responses alone do not prove a firewall cause.');
 
     appStateDb.logAudit({
       id: crypto.randomUUID(),
@@ -93,9 +95,9 @@ export class Phase3ActiveProbing {
       phase: 3,
       category: 'DISCOVERY',
       level: result.interfaceErrors.length > 0 ? 'WARNING' : 'INFO',
-      message: `Phase 3 ${result.cancelled ? 'cancelled' : 'completed'}: ${result.devices.length} ONVIF device(s), ${result.interfaceErrors.length} interface error(s).`,
+      message: `Phase 3 ${result.cancelled ? 'cancelled' : 'completed'}: ${inventoryEligibleDevices.length} ONVIF device(s), ${result.interfaceErrors.length} interface error(s).`,
       details: { receiveTrace:result.trace, reconciliation, messageCounts: result.messageCounts, interfaceWarnings: result.interfaceErrors.slice(0,32) },
     });
-    return { probedDevices: result.devices, logs, cancelled: result.cancelled, interfaceErrors: result.interfaceErrors };
+    return { probedDevices: inventoryEligibleDevices, logs, cancelled: result.cancelled, interfaceErrors: result.interfaceErrors };
   }
 }

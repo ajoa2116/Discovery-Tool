@@ -37,7 +37,7 @@ async function run(){
  check(isForegroundSnapshot(newer)&&foregroundActive(newer.session),'typed snapshot preserves Advanced foreground semantics');sessions.finish(second.context.sessionId,'COMPLETED');
  const reboot={epoch:'new-server',revision:0,session:null};check(reconcileForeground(newer,reboot)===reboot,'HTTP recovery accepts new backend epoch without stale running state');
 
- const db=new SiteProjectDatabase();db.startQuickWork();const sockets:Socket[]=[],events:any[]=[],windows:number[]=[];let windowMs=5000,announce=true;
+ const db=new SiteProjectDatabase('ISOLATED_TEST');db.startQuickWork();const sockets:Socket[]=[],events:any[]=[],windows:number[]=[];let windowMs=5000,announce=true;
  const transport={discover:(nics:any,options:any)=>{windows.push(options.timeoutMs);return new NodeOnvifWsDiscoveryTransport().discover(nics,{...options,timeoutMs:windowMs,multicastSocketFactory:()=>{const s=new Socket();if(!announce)s.addMembership=()=>{};sockets.push(s);return s},socketFactory:()=>{const s=new Socket();sockets.push(s);return s}})}};
  const pipeline=new BatchExecutionPipeline({onvifDiscovery:transport,passiveDiscovery:{discover:async()=>[]} as any,deviceEnricher:new NoopDeviceEnricher()});
  pipeline.runPhase1=async()=>{(pipeline as any).currentInterfaces=[fieldNic()]};pipeline.subscribe(e=>events.push(e));

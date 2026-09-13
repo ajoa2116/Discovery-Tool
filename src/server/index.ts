@@ -1,3 +1,4 @@
+import { readDiscoveryPortOwners } from '../core/readiness/udp_port_owners.ts';
 import { createReceiveTraceRouter } from './ws_discovery_trace_routes.ts';
 import { NodeOnvifWsDiscoveryTransport } from '../core/drivers/ws_discovery_transport.ts';
 import { wsDiscoveryEvidence } from '../core/drivers/ws_discovery_evidence.ts';
@@ -400,7 +401,7 @@ app.delete('/api/connect/:deviceId/credentials/:credentialId', async(req,res)=>{
 
 app.get('/api/system/about', (_req, res) => res.json({ application: 'CCTV Network Assistant', version: '1.6.0', runtime: process.version, platform: process.platform }));
 app.get('/api/system/preflight', async (_req, res) => { try { res.json(await getPreflight()); } catch { res.status(500).json({ error: 'Application readiness checks could not be completed.' }); } });
-app.use('/api/support/ws-discovery/receive-trace',createReceiveTraceRouter({foreground:foregroundDiscovery,yieldMonitoring:()=>incrementalMonitor.yieldToTechnician(),busy:()=>reverifyWorkflow.isRunning()||(pipelineEngine.getIsRunning()&&!incrementalMonitor.getState().running),adapters:()=>advancedScanService.listAdapters(),transport:new NodeOnvifWsDiscoveryTransport(),evidence:wsDiscoveryEvidence}));
+app.use('/api/support/ws-discovery/receive-trace',createReceiveTraceRouter({portOwners:readDiscoveryPortOwners,foreground:foregroundDiscovery,yieldMonitoring:()=>incrementalMonitor.yieldToTechnician(),busy:()=>reverifyWorkflow.isRunning()||(pipelineEngine.getIsRunning()&&!incrementalMonitor.getState().running),adapters:()=>advancedScanService.listAdapters(),transport:new NodeOnvifWsDiscoveryTransport(),evidence:wsDiscoveryEvidence}));
 app.get('/api/system/support-bundle', async (_req, res) => {
   try {
     const preflight = await getPreflight();

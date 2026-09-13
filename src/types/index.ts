@@ -216,6 +216,7 @@ export interface IdentityConflict {
 }
 
 export interface Device {
+  evidenceProvenance?: import('../shared/evidence_provenance.ts').EvidenceProvenance;
   id: string;                   // Derived from MAC/Serial anchor
   anchor: DevicePhysicalAnchor;
   network: NetworkEndpoint;

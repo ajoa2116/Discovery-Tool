@@ -50,7 +50,7 @@ async function run(){
   a(rejection.devices.length===0&&rejection.messageCounts?.rejected===1,'rejected UDP packet creates no device and increments safe count');
   const multi=await transport.discover([fieldNic(),{...fieldNic(),name:'Wi-Fi',ipAddress:'192.168.40.166',interfaceIndex:9}],{timeoutMs:5,socketFactory:()=>new Socket(),multicastSocketFactory:()=>new Socket(hello)});
   a(multi.devices.length===1&&!multi.devices[0].reachability?.discoveryInterface,'multi-adapter multicast does not invent receiving interface');
-  const db=new SiteProjectDatabase();db.startQuickWork();
+  const db=new SiteProjectDatabase('ISOLATED_TEST');db.startQuickWork();
   await Phase3ActiveProbing.execute([fieldNic()],{discover:async(_interfaces,options)=>{for(const device of result.devices)options?.onDevice?.(device,true);return result}},new NoopDeviceEnricher(),{},LocalHostIdentity.fromInterfaces([fieldNic()]),db);
   a(db.getDevices().length===1&&db.getDevices()[0].id==='mac:e4:30:22:cd:68:85','announcement reuses existing inventory reconciliation');
   a(db.getDevices()[0].sessionVerification==='NOT_VERIFIED','enrichment/storage retain announcement verification boundary');
