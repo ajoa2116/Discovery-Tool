@@ -1,3 +1,4 @@
+import { SupportTraceLease } from '../core/readiness/support_trace_lease.ts';
 import { ReceiveMatrix } from '../core/readiness/receive_matrix.ts';
 import { createReceiveMatrixRouter } from './receive_matrix_routes.ts';
 import { readDiscoveryPortOwners } from '../core/readiness/udp_port_owners.ts';
@@ -98,12 +99,13 @@ diagnosticMonitor.start();
 const foregroundDiscovery = new ForegroundDiscovery(foreground => broadcast({ type: 'FOREGROUND_SCAN_STATE', context: foreground.session && { origin: foreground.session.origin, sessionId: foreground.session.sessionId }, data: { foreground } }));
 const monitoringAudit = (event: string, message: string) => appStateDb.logAudit({ id: crypto.randomUUID(), timestamp: new Date().toISOString(), category: 'DISCOVERY', level: event === 'CYCLE_FAILED' ? 'WARNING' : 'INFO', message });
 let receiveMatrix:ReceiveMatrix | undefined;
+const supportTrace = new SupportTraceLease(()=>broadcast({type:'MONITORING_STATE',context:{origin:'MONITORING'},data:{monitoring:monitoringState()}}));
 const incrementalMonitor = new IncrementalDiscoveryMonitor({
   runCycle: async sessionId => { await pipelineEngine.runDiscoveryScan({ context: { origin: 'MONITORING', sessionId }, emitTerminalEvent: false }); },
   cancelCycle: sessionId => { pipelineEngine.stopDiscovery(sessionId); },
   changed: state => broadcast({ type:'MONITORING_STATE', context:{origin:'MONITORING',sessionId:state.sessionId}, data:{monitoring:monitoringState()} }),
   canRun: () => {
-    if(receiveMatrix?.isActive())return {allowed:false,reason:'Support receive matrix owns discovery.'};
+    if((receiveMatrix?.isActive() || supportTrace.isActive()))return {allowed:false,reason:'Support receive matrix owns discovery.'};
     if (foregroundDiscovery.isActive()) return { allowed:false, reason:'Background discovery is deferred while the foreground scan owns discovery.' };
     if (reverifyWorkflow?.isRunning()) return { allowed: false, reason: 'Discovery cycle skipped because Project reverification is active.' };
     if (pipelineEngine.getIsRunning()) return { allowed: false, reason: 'Discovery cycle skipped because a manual scan is active.' };
@@ -226,7 +228,7 @@ app.post('/api/project/save', async (req, res) => {
 app.post('/api/project/reverify', async (_req, res) => {
   try {
     await incrementalMonitor.yieldToTechnician();
-    if (foregroundDiscovery.isActive() || receiveMatrix?.isActive()) return res.status(409).json({ error: 'Project reverification cannot start while a foreground scan is active.' });
+    if (foregroundDiscovery.isActive() || (receiveMatrix?.isActive() || supportTrace.isActive())) return res.status(409).json({ error: 'Project reverification cannot start while a foreground scan is active.' });
     const result = await reverifyWorkflow.run();
     broadcast({ type: 'PROJECT_REVERIFIED', data: { result, project: projectDb.getProject() } });
     res.json({ result, project: projectDb.getProject() });
@@ -274,7 +276,7 @@ app.use('/api/discovery/advanced',createAdvancedScanRouter(advancedScanService,s
 app.use('/api/discovery', createForegroundDiscoveryRouter({
   foreground: foregroundDiscovery,
   yieldMonitoring: () => incrementalMonitor.yieldToTechnician(),
-  busy: () => Boolean(receiveMatrix?.isActive()) || reverifyWorkflow.isRunning() || (pipelineEngine.getIsRunning() && !incrementalMonitor.getState().running),
+  busy: () => Boolean(receiveMatrix?.isActive() || supportTrace.isActive()) || reverifyWorkflow.isRunning() || (pipelineEngine.getIsRunning() && !incrementalMonitor.getState().running),
   quick: async (context, signal) => {
     const result = await pipelineEngine.runDiscoveryScan({ context, signal, emitTerminalEvent: false });
     if (result === 'BUSY') throw Error('Discovery ownership could not be acquired.');
@@ -339,10 +341,10 @@ app.post('/api/diagnostics/cancel', (req, res) => {
 });
 
 function monitoringState() {
-  const diagnosticRefresh=diagnosticMonitor.getState(),incrementalDiscovery={...incrementalMonitor.getState(), pausedForForeground:foregroundDiscovery.isActive(),pausedForSupport:Boolean(receiveMatrix?.isActive())};
+  const diagnosticRefresh=diagnosticMonitor.getState(),incrementalDiscovery={...incrementalMonitor.getState(), pausedForForeground:foregroundDiscovery.isActive(),pausedForSupport:Boolean(receiveMatrix?.isActive() || supportTrace.isActive())};
   const enabled=diagnosticRefresh.enabled&&incrementalDiscovery.enabled;
   const running=diagnosticRefresh.running||incrementalDiscovery.running;
-  const deferred=!running&&(Boolean(receiveMatrix?.isActive())||(Boolean(incrementalDiscovery.lastSkippedAt)&&(!incrementalDiscovery.lastRunAt||incrementalDiscovery.lastSkippedAt!>incrementalDiscovery.lastRunAt)));
+  const deferred=!running&&(Boolean(receiveMatrix?.isActive() || supportTrace.isActive())||(Boolean(incrementalDiscovery.lastSkippedAt)&&(!incrementalDiscovery.lastRunAt||incrementalDiscovery.lastSkippedAt!>incrementalDiscovery.lastRunAt)));
   return { ...diagnosticRefresh, enabled, running, intervalMs:diagnosticRefresh.intervalMs, status:!enabled?'OFF':running?'ACTIVE':deferred?'DEFERRED':'WAITING', diagnosticRefresh, incrementalDiscovery };
 };
 app.get('/api/diagnostics/refresh', (req, res) => res.json(monitoringState()));
@@ -405,16 +407,16 @@ app.delete('/api/connect/:deviceId/credentials/:credentialId', async(req,res)=>{
 
 app.get('/api/system/about', (_req, res) => res.json({ application: 'CCTV Network Assistant', version: '1.6.0', runtime: process.version, platform: process.platform }));
 app.get('/api/system/preflight', async (_req, res) => { try { res.json(await getPreflight()); } catch { res.status(500).json({ error: 'Application readiness checks could not be completed.' }); } });
-receiveMatrix=new ReceiveMatrix({busy:()=>foregroundDiscovery.isActive()||reverifyWorkflow.isRunning()||(pipelineEngine.getIsRunning()&&!incrementalMonitor.getState().running),pause:()=>incrementalMonitor.yieldToTechnician(),adapters:()=>advancedScanService.listAdapters(),owners:readDiscoveryPortOwners,transport:new NodeOnvifWsDiscoveryTransport(),evidence:wsDiscoveryEvidence,changed:()=>broadcast({type:'MONITORING_STATE',context:{origin:'MONITORING'},data:{monitoring:monitoringState()}})});
+receiveMatrix=new ReceiveMatrix({busy:()=>supportTrace.isActive()||foregroundDiscovery.isActive()||reverifyWorkflow.isRunning()||(pipelineEngine.getIsRunning()&&!incrementalMonitor.getState().running),pause:()=>incrementalMonitor.yieldToTechnician(),adapters:()=>advancedScanService.listAdapters(),owners:readDiscoveryPortOwners,transport:new NodeOnvifWsDiscoveryTransport(),evidence:wsDiscoveryEvidence,changed:()=>broadcast({type:'MONITORING_STATE',context:{origin:'MONITORING'},data:{monitoring:monitoringState()}})});
 app.use('/api/support/ws-discovery/matrix',createReceiveMatrixRouter(receiveMatrix));
-app.use('/api/support/ws-discovery/receive-trace',createReceiveTraceRouter({portOwners:readDiscoveryPortOwners,foreground:foregroundDiscovery,yieldMonitoring:()=>incrementalMonitor.yieldToTechnician(),busy:()=>Boolean(receiveMatrix?.isActive())||reverifyWorkflow.isRunning()||(pipelineEngine.getIsRunning()&&!incrementalMonitor.getState().running),adapters:()=>advancedScanService.listAdapters(),transport:new NodeOnvifWsDiscoveryTransport(),evidence:wsDiscoveryEvidence}));
+app.use('/api/support/ws-discovery/receive-trace',createReceiveTraceRouter({support:supportTrace,portOwners:readDiscoveryPortOwners,foreground:foregroundDiscovery,yieldMonitoring:()=>incrementalMonitor.yieldToTechnician(),busy:()=>Boolean(receiveMatrix?.isActive() || supportTrace.isActive())||reverifyWorkflow.isRunning()||(pipelineEngine.getIsRunning()&&!incrementalMonitor.getState().running),adapters:()=>advancedScanService.listAdapters(),transport:new NodeOnvifWsDiscoveryTransport(),evidence:wsDiscoveryEvidence}));
 app.get('/api/system/support-bundle', async (_req, res) => {
   try {
     const preflight = await getPreflight();
     const adapters=await advancedScanService.listAdapters().catch(()=>[]);
     // SupportBundleBuilder recursively filters password|credential|authorization material after this security-event exclusion.
     const supportEvents=appStateDb.getAuditLogs().filter(entry => entry.category !== 'SECURITY');
-    const bundle = supportBundleBuilder.build({wsDiscoveryTransport:{...wsDiscoveryEvidence.snapshot(),matrix:receiveMatrix?.snapshot()},application:{name:'CCTV Network Assistant',version:'1.6.0',runtime:process.version,platform:process.platform},readiness:preflight,network:adapters.map(adapter=>({interfaceIndex:adapter.interfaceIndex,interfaceAlias:adapter.interfaceAlias,mediaType:adapter.mediaType,operationalStatus:adapter.operationalStatus,eligible:adapter.eligible,ipv4Addresses:adapter.ipv4Addresses})),monitoring:monitoringState(),discovery:{foreground:foregroundDiscovery.getState(),running:foregroundDiscovery.isActive(),engineRunning:pipelineEngine.getIsRunning(),phases:pipelineEngine.getStates().slice(0,4),advanced:advancedScanService.getStatus()},projectSession:projectDb.getSession(),events:supportEvents,pair:pairService.getStatus()?{state:pairService.getStatus()!.state,recoveryAvailable:pairService.getStatus()!.recoveryAvailable,errorCode:pairService.getStatus()!.errorCode,preview:{cameraIp:pairService.getStatus()!.cameraIp,interfaceIndex:pairService.getStatus()!.adapter.interfaceIndex,subnetSource:pairService.getStatus()!.subnetSource,candidate:pairService.getStatus()!.selectedCandidate}}:null});
+    const bundle = supportBundleBuilder.build({wsDiscoveryTransport:{...wsDiscoveryEvidence.snapshot(),matrix:receiveMatrix?.snapshot(),supportTrace:supportTrace.snapshot()},application:{name:'CCTV Network Assistant',version:'1.6.0',runtime:process.version,platform:process.platform},readiness:preflight,network:adapters.map(adapter=>({interfaceIndex:adapter.interfaceIndex,interfaceAlias:adapter.interfaceAlias,mediaType:adapter.mediaType,operationalStatus:adapter.operationalStatus,eligible:adapter.eligible,ipv4Addresses:adapter.ipv4Addresses})),monitoring:monitoringState(),discovery:{foreground:foregroundDiscovery.getState(),running:foregroundDiscovery.isActive(),engineRunning:pipelineEngine.getIsRunning(),phases:pipelineEngine.getStates().slice(0,4),advanced:advancedScanService.getStatus()},projectSession:projectDb.getSession(),events:supportEvents,pair:pairService.getStatus()?{state:pairService.getStatus()!.state,recoveryAvailable:pairService.getStatus()!.recoveryAvailable,errorCode:pairService.getStatus()!.errorCode,preview:{cameraIp:pairService.getStatus()!.cameraIp,interfaceIndex:pairService.getStatus()!.adapter.interfaceIndex,subnetSource:pairService.getStatus()!.subnetSource,candidate:pairService.getStatus()!.selectedCandidate}}:null});
     res.setHeader('Content-Disposition', 'attachment; filename="CCTV_Safe_Support_Bundle.json"'); res.json(bundle);
   } catch { res.status(500).json({ error: 'The safe support bundle could not be generated.' }); }
 });
@@ -520,7 +522,7 @@ server.listen(PORT, () => {
 });
 
 const activeControllers = function* () { yield* diagnosticControllers.values(); yield* connectRecheckControllers.values(); yield* cameraNetworkControllers.values(); };
-const combinedMonitor = { stop: () => { diagnosticMonitor.stop(); incrementalMonitor.stop(); }, cancelCurrent: () => { diagnosticMonitor.cancelCurrent(); receiveMatrix?.stop(receiveMatrix.snapshot()?.sessionId); foregroundDiscovery.stop(foregroundDiscovery.getState().session?.sessionId); pipelineEngine.stopDiscovery(); } };
+const combinedMonitor = { stop: () => { diagnosticMonitor.stop(); incrementalMonitor.stop(); }, cancelCurrent: () => { diagnosticMonitor.cancelCurrent(); supportTrace.stop(supportTrace.snapshot()?.sessionId); receiveMatrix?.stop(receiveMatrix.snapshot()?.sessionId); foregroundDiscovery.stop(foregroundDiscovery.getState().session?.sessionId); pipelineEngine.stopDiscovery(); } };
 const shutdown = new ShutdownCoordinator(
   pipelineEngine,
   combinedMonitor,

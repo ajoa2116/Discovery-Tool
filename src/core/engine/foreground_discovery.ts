@@ -11,7 +11,7 @@ export class ForegroundDiscovery {
     if (this.isActive()) throw Error('A foreground discovery session is already running.');
     this.controller = new AbortController();
     const context: DiscoveryContext & { origin: ForegroundSession['origin'] } = { origin, sessionId: crypto.randomUUID() };
-    this.snapshot.session = { ...context, state: 'PREPARING' }; this.publish();
+    this.snapshot.session = { ...context, sessionClass: origin === 'MANUAL' ? 'USER_SCAN' : 'ADVANCED_SCAN', purpose: origin === 'MANUAL' ? 'QUICK_SCAN' : 'ADVANCED_SCAN', visibility: 'TECHNICIAN', state: 'PREPARING' }; this.publish();
     return { context, signal: this.controller.signal };
   }
   scanning(sessionId: string) {
@@ -26,6 +26,7 @@ export class ForegroundDiscovery {
   finish(sessionId: string, state: 'COMPLETED' | 'CANCELLED' | 'FAILED') {
     if (this.snapshot.session?.sessionId !== sessionId || !this.isActive()) return;
     this.snapshot.session.state = this.controller?.signal.aborted ? 'CANCELLED' : state;
+    if (this.snapshot.session.state === 'FAILED') this.snapshot.session.failureReason = 'DISCOVERY_OPERATION_FAILED';
     this.controller = null; this.publish();
   }
   private publish() { this.snapshot.revision++; this.changed(this.getState()); }

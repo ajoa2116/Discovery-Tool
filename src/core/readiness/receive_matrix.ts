@@ -16,7 +16,7 @@ export class ReceiveMatrix {
   if(this.active||this.d.busy())throw Error('DISCOVERY_BUSY');
   input={interfaceIndex:input.interfaceIndex,localAddress:input.localAddress,durationMs:input.durationMs,sendProbe:input.sendProbe,strategies:[...input.strategies]};
   this.active=true;this.controller=new AbortController();const sessionId=crypto.randomUUID();
-  this.state={sessionId,purpose:'RECEIVE_TRACE_ONLY',provenance:'SUPPORT_DIAGNOSTIC',state:'PREPARING',processId:process.pid,executablePath:process.execPath,runtime:process.version,input:structuredClone(input),pauseRequestedAt:new Date().toISOString(),results:[]};this.d.changed?.();
+  this.state={sessionId,sessionClass:'SUPPORT_DIAGNOSTIC',visibility:'SUPPORT',origin:'INTERNAL',purpose:'RECEIVE_TRACE_ONLY',provenance:'SUPPORT_DIAGNOSTIC',state:'PREPARING',processId:process.pid,executablePath:process.execPath,runtime:process.version,input:structuredClone(input),pauseRequestedAt:new Date().toISOString(),results:[]};this.d.changed?.();
   void this.run(input,this.controller.signal);return sessionId;
  }
  stop(id:unknown){if(!this.active||id!==this.state?.sessionId)return false;this.controller?.abort();return true;}

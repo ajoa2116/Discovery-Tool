@@ -1,4 +1,4 @@
-import { ForegroundSnapshot, foregroundActive, isForegroundSnapshot, reconcileForeground } from '../shared/discovery_session.ts';
+import { ForegroundSnapshot, foregroundFailed, foregroundActive, isForegroundSnapshot, reconcileForeground } from '../shared/discovery_session.ts';
 import { connectProgress, ProgressConnectionState } from './progress_connection.ts';
 import { requestJson } from './bounded_request.ts';
 import { discoveryNotification } from '../shared/discovery_evidence.ts';
@@ -138,12 +138,15 @@ export default function App() {
     }
   };
 
-  const acceptForeground = (value: unknown) => {
-    const next = reconcileForeground(foregroundRef.current, value);
+  const retiredForegroundEpochs = useRef(new Set<string>());
+  const acceptForeground = (value: unknown, source: 'HTTP' | 'WS' = 'HTTP') => {
+    const next = reconcileForeground(foregroundRef.current, value, source, retiredForegroundEpochs.current);
     if (next === foregroundRef.current) return;
+    if (foregroundRef.current && next?.epoch !== foregroundRef.current.epoch) retiredForegroundEpochs.current.add(foregroundRef.current.epoch);
     foregroundRef.current = next; setForegroundScan(next);
-    if (foregroundActive(next?.session ?? null)) setHasCompletedScan(false);
-    else if (next?.session) { if (next.session.state === 'FAILED') setScanActionError('Foreground scan failed. Check Diagnostics/Support before retrying.'); setHasCompletedScan(next.session.state === 'COMPLETED'); void fetchData(); }
+    setScanActionError('');
+    setHasCompletedScan(next?.session?.state === 'COMPLETED');
+    if (next?.session && !foregroundActive(next.session)) void fetchData();
   };
 
   useEffect(() => {
@@ -179,7 +182,7 @@ export default function App() {
         if (data.type === 'MONITORING_STATE' && data.context?.origin === 'MONITORING' && data.data?.monitoring) setDiagnosticRefresh(data.data.monitoring);
         if (data.type === 'FOREGROUND_SCAN_STATE' && isForegroundSnapshot(data.data?.foreground)
           && data.context?.sessionId === data.data.foreground.session?.sessionId
-          && data.context?.origin === data.data.foreground.session?.origin) acceptForeground(data.data.foreground);
+          && data.context?.origin === data.data.foreground.session?.origin) acceptForeground(data.data.foreground, 'WS');
         if (
           data.type === 'PHASE_COMPLETE' ||
           data.type === 'PIPELINE_COMPLETE' ||
@@ -447,7 +450,7 @@ export default function App() {
   return (
     <div className="min-h-screen flex flex-col bg-[#f4f6f8] text-slate-800 dark:bg-slate-950 dark:text-slate-100 font-sans antialiased">
       {(progressConnection !== 'CONNECTED' || scanStatusUnavailable) && <div role="status" className="shrink-0 border-b border-amber-200 bg-amber-50 px-4 py-2 text-xs text-amber-800">{scanStatusUnavailable ? 'Scan status is unavailable. The backend may still be scanning. Check the local server connection; status checks will retry automatically.' : 'Live updates are reconnecting. Scan status is checked over HTTP; device updates may be delayed.'}</div>}
-      {scanActionError && <p role="alert" className="px-4 py-2 text-xs text-amber-700">{scanActionError}</p>}
+      {(foregroundFailed(foregroundScan) || scanActionError) && <p role="alert" className="px-4 py-2 text-xs text-amber-700">{foregroundFailed(foregroundScan) ? 'Foreground scan failed. Check Diagnostics/Support before retrying.' : scanActionError}</p>}
       {/* ─────────────────────────────────────────────────────────────
           ZONE 1: CLEAN TOP HEADER CONTROL (Sections 3 & 4)
       ───────────────────────────────────────────────────────────── */}

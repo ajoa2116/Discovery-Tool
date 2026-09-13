@@ -1,3 +1,6 @@
+import { SupportTraceLease } from '../core/readiness/support_trace_lease.ts';
+import { createReceiveTraceRouter } from '../server/ws_discovery_trace_routes.ts';
+import { WsDiscoveryEvidence } from '../core/drivers/ws_discovery_evidence.ts';
 import { strict as assert } from 'node:assert';
 import { EventEmitter } from 'node:events';
 import express from 'express';
@@ -11,14 +14,13 @@ import { NoopDeviceEnricher } from '../core/engine/device_enrichment.ts';
 import { SiteProjectDatabase } from '../core/storage/project_db.ts';
 import { AdvancedScanPlanner, AdvancedScanService } from '../core/engine/advanced_scan.ts';
 import { emptyAdvancedScanRequest } from '../shared/advanced_scan.ts';
-import { fieldNic, fieldEthernet } from './support/first_camera_field.ts';
-import { hanwhaHello } from './support/hanwha_hello.ts';
+import { fieldNic, fieldEthernet, fieldHello } from './support/first_camera_field.ts';
 let passed=0;const check=(v:unknown,name:string)=>{assert.ok(v,name);passed++;console.log(`PASS: ${name}`)};
 const until=async(test:()=>boolean)=>{const limit=Date.now()+2000;while(!test()){if(Date.now()>limit)throw Error('Timed out waiting for test state');await new Promise(r=>setTimeout(r,1))}};
 class Socket extends EventEmitter implements UdpSocketLike {
  closed=0;memberships=0;
  bind(_options:any,callback:()=>void){callback()}
- addMembership(){this.memberships++;queueMicrotask(()=>this.emit('message',Buffer.from(hanwhaHello({uuid:true})),{address:'192.168.1.100',port:3702}))}
+ addMembership(){this.memberships++;queueMicrotask(()=>this.emit('message',Buffer.from(fieldHello()),{address:'192.168.1.100',port:3702}))}
  setMulticastInterface(){}
  send(_m:unknown,_p:number,_a:string,cb:(error?:Error|null)=>void){cb()}
  close(){this.closed++}
@@ -38,11 +40,11 @@ async function run(){
  const reboot={epoch:'new-server',revision:0,session:null};check(reconcileForeground(newer,reboot)===reboot,'HTTP recovery accepts new backend epoch without stale running state');
 
  const db=new SiteProjectDatabase('ISOLATED_TEST');db.startQuickWork();const sockets:Socket[]=[],events:any[]=[],windows:number[]=[];let windowMs=5000,announce=true;
- const transport={discover:(nics:any,options:any)=>{windows.push(options.timeoutMs);return new NodeOnvifWsDiscoveryTransport().discover(nics,{...options,timeoutMs:windowMs,multicastSocketFactory:()=>{const s=new Socket();if(!announce)s.addMembership=()=>{};sockets.push(s);return s},socketFactory:()=>{const s=new Socket();sockets.push(s);return s}})}};
+ const transport={discover:(nics:any,options:any)=>{windows.push(options.timeoutMs);return new NodeOnvifWsDiscoveryTransport().discover(nics,{...options,provenance:'PHYSICAL_NETWORK',timeoutMs:windowMs,multicastSocketFactory:()=>{const s=new Socket();if(!announce)s.addMembership=()=>{};sockets.push(s);return s},socketFactory:()=>{const s=new Socket();sockets.push(s);return s}})}};
  const pipeline=new BatchExecutionPipeline({onvifDiscovery:transport,passiveDiscovery:{discover:async()=>[]} as any,deviceEnricher:new NoopDeviceEnricher()});
  pipeline.runPhase1=async()=>{(pipeline as any).currentInterfaces=[fieldNic()]};pipeline.subscribe(e=>events.push(e));
- const foreground=new ForegroundDiscovery();let timer:(()=>void)|undefined,clears=0,diagnosticsRunning=true;
- const monitor=new IncrementalDiscoveryMonitor({runCycle:id=>pipeline.runDiscoveryScan({context:{origin:'MONITORING',sessionId:id},database:db,emitTerminalEvent:false}),cancelCycle:id=>{pipeline.stopDiscovery(id)},canRun:()=>({allowed:!foreground.isActive()&&!pipeline.getIsRunning()}),setTimer:cb=>{timer=cb;return {unref(){}} as any},clearTimer:()=>{clears++}});monitor.start();
+ const foreground=new ForegroundDiscovery(), support=new SupportTraceLease();let timer:(()=>void)|undefined,clears=0,diagnosticsRunning=true;
+ const monitor=new IncrementalDiscoveryMonitor({runCycle:id=>pipeline.runDiscoveryScan({context:{origin:'MONITORING',sessionId:id},database:db,emitTerminalEvent:false}),cancelCycle:id=>{pipeline.stopDiscovery(id)},canRun:()=>({allowed:!support.isActive()&&!foreground.isActive()&&!pipeline.getIsRunning()}),setTimer:cb=>{timer=cb;return {unref(){}} as any},clearTimer:()=>{clears++}});monitor.start();
  const cycle=monitor.runNow();await until(()=>events.some(e=>e.type==='DEVICE_DISCOVERED'));
  check(monitor.getState().running&&monitor.getState().enabled&&!foreground.isActive(),'monitor cycle is independent of foreground state');
  check(events.find(e=>e.type==='DEVICE_DISCOVERED').context.origin==='MONITORING','real Hello discovery event carries monitoring origin');
@@ -57,6 +59,7 @@ async function run(){
  quick:async(context,signal)=>{if(failRun)throw Error('injected');await pipeline.runDiscoveryScan({context,signal,database:db,emitTerminalEvent:false})},
  prepare:async()=>{prepareEntered=true;if(failPrepare)throw Error('injected');if(prepareHold)await new Promise<void>(resolve=>{prepareHold=resolve});return prepared},
  advanced:async(_p,context,signal)=>{await pipeline.runDiscoveryScan({context,signal,database:db,emitTerminalEvent:false})},monitoring:()=>({...monitor.getState(),diagnosticsRunning}),details:()=>({engineRunning:pipeline.getIsRunning()}),error:(res,_error,status)=>res.status(status).json({error:'safe'}),failed:()=>{}}));
+ app.use('/trace',createReceiveTraceRouter({foreground,support,evidence:new WsDiscoveryEvidence(),busy:()=>false,yieldMonitoring:()=>monitor.yieldToTechnician(),adapters:async()=>[fieldEthernet()],transport:{discover:async()=>({devices:[],interfaceErrors:[],cancelled:false})}}));
  const server=app.listen(0,'127.0.0.1');await new Promise<void>(r=>server.once('listening',r));const base=`http://127.0.0.1:${(server.address() as any).port}/discovery`;
  const post=(path:string,body:unknown={})=>fetch(base+path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
  try {
@@ -83,6 +86,13 @@ async function run(){
   await post('/stop',{sessionId:pending.session!.sessionId});prepareHold!();await preparing;prepareHold=null;check(foreground.getState().session?.state==='CANCELLED','preflight cancellation prevents listener start');
   failPrepare=true;check((await post('/advanced/start',request)).status===500&&!foreground.isActive(),'failed preparation releases reservation');failPrepare=false;
   failRun=true;await post('/start');await until(()=>!foreground.isActive());check(foreground.getState().session?.state==='FAILED','failed execution releases foreground reservation');failRun=false;
+  // Injected physical-like Hello through the production parser/reconciler, not new hardware proof.
+  const beforeSupport=JSON.stringify(foreground.getState());windowMs=5000;const handoffCycle=monitor.runNow();await until(()=>monitor.getState().running);
+  const traceResponse=await fetch(base.replace('/discovery','/trace'),{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({interfaceIndex:8})});await handoffCycle;
+  check(traceResponse.status===202,'support handoff drains physical-like monitoring receive cycle');await until(()=>!support.isActive());
+  check(JSON.stringify(foreground.getState())===beforeSupport,'support handoff preserves authoritative foreground lifecycle');windowMs=5;await monitor.runNow();
+  const physical=db.getDevices()[0];check(db.getDevices().length===1&&physical.network.ipAddress==='192.168.1.100','Hello inventory remains unique across support handoff');
+  check(physical.evidenceProvenance==='PHYSICAL_NETWORK'&&physical.status==='DIFFERENT_SUBNET'&&physical.sessionVerification==='NOT_VERIFIED','physical-like off-subnet Hello promotion needs no ping verification');
   announce=false;windowMs=5;await monitor.runNow();check(db.getDevices().length===1,'silent monitor cannot invent a target row');
   check(sockets.every(s=>s.closed===1),'all owned socket pairs close exactly once after terminal work');
   monitor.stop();timer?.();await Promise.resolve();check(clears===1&&!monitor.getState().enabled&&!pipeline.getIsRunning(),'shutdown clears scheduler and stale timer does not start orphan cycle');

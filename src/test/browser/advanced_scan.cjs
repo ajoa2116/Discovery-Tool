@@ -8,7 +8,7 @@ async function mock(page) {
   const native = window.fetch.bind(window);
   const adapter = {interfaceIndex:8,interfaceAlias:'Ethernet',operationalStatus:'Up',eligible:true,mediaType:'ETHERNET',hardwareInterface:true,physicalMediaType:'802.3',dhcpEnabled:true,ipv4Addresses:[{address:'192.168.0.124',prefixLength:24}],defaultGateways:[],dnsAutomatic:true,dnsServers:[],capturedAt:'now'};
   const test = window.__test = { mode:'ok', startMode:'ok', adapterMode:'ok', validations:0, starts:0, aborts:0, pending:[], running:null, sockets:[], statusMode:'ok', foreground:{epoch:'test-server',revision:0,session:null}, monitoring:{enabled:true,running:false,intervalMs:30000,status:'WAITING'}, requests:[] };
-  test.advance = (origin,state,sessionId) => { test.foreground={epoch:'test-server',revision:test.foreground.revision+1,session:{origin,state,sessionId:sessionId||('scan-'+(test.foreground.revision+1))}};return test.foreground; };
+  test.advance = (origin,state,sessionId) => { test.foreground={epoch:'test-server',revision:test.foreground.revision+1,session:{origin,state,sessionClass:origin==='MANUAL'?'USER_SCAN':'ADVANCED_SCAN',purpose:origin==='MANUAL'?'QUICK_SCAN':'ADVANCED_SCAN',visibility:'TECHNICIAN',sessionId:sessionId||('scan-'+(test.foreground.revision+1))}};return test.foreground; };
   test.emit = event => test.sockets.at(-1)?.onmessage?.({data:JSON.stringify(event)});
   const json = (body,status=200) => new Response(JSON.stringify(body),{status,headers:{'Content-Type':'application/json'}});
   const plan = request => ({mode:request.adapterIndexes.length?'ADVANCED':'QUICK_FALLBACK',request,adapterIndexes:request.adapterIndexes,normalizedTargets:[],methods:request.methods,ports:request.customPorts,routeSummary:[],estimatedTargetCount:request.targets.length,maximumTcpChecks:0,warnings:[],valid:true,errors:[]});
@@ -23,7 +23,7 @@ async function mock(page) {
    else if(path.endsWith('/discovery/stop')) { const id=JSON.parse(options.body).sessionId;if(id!==test.foreground.session?.sessionId)return json({foreground:test.foreground},409);body={foreground:test.advance(test.foreground.session.origin,'CANCELLED',id)}; }
    else if(path.endsWith('/discovery/status')) {mode=test.statusMode;if(test.running!==null&&Boolean(test.running)!==Boolean(test.foreground.session&&['PREPARING','SCANNING','STOPPING'].includes(test.foreground.session.state)))test.advance('MANUAL',test.running?'SCANNING':'COMPLETED');body={running:test.running??false,foreground:test.foreground,monitoring:{...test.monitoring,incrementalDiscovery:{...test.monitoring.incrementalDiscovery,pausedForForeground:Boolean(test.foreground.session&&['PREPARING','SCANNING','STOPPING'].includes(test.foreground.session.state))}}};}
    else if(path.endsWith('/diagnostics/refresh')||path.endsWith('/monitoring/preferences'))body=test.monitoring;
-   else if(path.endsWith('/project/session')) body={mode:'QUICK_WORK',dirty:false,project:null};
+   else if(path.endsWith('/project/session')) body={mode:'QUICK_WORK',dirty:false,project:test.project||null};
    else if(path.endsWith('/pair/status')) body=null;
    if(mode==='throw') throw Error('Injected frontend request exception');
    if(mode==='network') return Promise.reject(new TypeError('Failed to fetch'));
