@@ -1,6 +1,7 @@
 export const DEFAULT_MONITORING_INTERVAL_MS = 30_000;
 
 export interface IncrementalDiscoveryStatus {
+  sessionId?: string;
   enabled: boolean;
   running: boolean;
   intervalMs: number;
@@ -12,9 +13,10 @@ export interface IncrementalDiscoveryStatus {
 }
 
 export interface IncrementalDiscoveryDependencies {
-  runCycle: () => Promise<unknown>;
+  runCycle: (sessionId: string) => Promise<unknown>;
   canRun: () => { allowed: boolean; reason?: string };
-  cancelCycle?: () => void;
+  cancelCycle?: (sessionId: string) => void;
+  changed?: (status: IncrementalDiscoveryStatus) => void;
   now?: () => Date;
   setTimer?: (callback: () => void, intervalMs: number) => ReturnType<typeof setInterval>;
   clearTimer?: (timer: ReturnType<typeof setInterval>) => void;
@@ -26,6 +28,7 @@ const safeMonitoringError = () => 'Incremental discovery could not complete. Mon
 export class IncrementalDiscoveryMonitor {
   private timer: ReturnType<typeof setInterval> | null = null;
   private running = false;
+  private sessionId?: string;
   private activeCycle: Promise<'COMPLETED' | 'FAILED'> | null = null;
   private lastRunAt?: string;
   private nextRunAt?: string;
@@ -48,7 +51,7 @@ export class IncrementalDiscoveryMonitor {
     if (this.timer) (this.dependencies.clearTimer ?? clearInterval)(this.timer);
     this.timer = null;
     this.nextRunAt = undefined;
-    if (this.running) this.dependencies.cancelCycle?.();
+    if (this.running && this.sessionId) this.dependencies.cancelCycle?.(this.sessionId);
     this.dependencies.log?.('STOPPED', 'Incremental discovery monitoring stopped.');
   }
 
@@ -67,7 +70,9 @@ export class IncrementalDiscoveryMonitor {
     const coordination = this.dependencies.canRun();
     if (!coordination.allowed) return this.skip(coordination.reason || 'An active technician operation has priority.');
     this.running = true;
+    this.sessionId = crypto.randomUUID();
     this.lastError = undefined;
+    this.dependencies.changed?.(this.getState());
     this.dependencies.log?.('CYCLE_STARTED', 'Incremental discovery cycle started.');
     this.activeCycle = this.executeCycle();
     return this.activeCycle;
@@ -75,13 +80,13 @@ export class IncrementalDiscoveryMonitor {
 
   public async yieldToTechnician(): Promise<void> {
     if (!this.activeCycle) return;
-    this.dependencies.cancelCycle?.();
+    if (this.sessionId) this.dependencies.cancelCycle?.(this.sessionId);
     await this.activeCycle;
   }
 
   private async executeCycle(): Promise<'COMPLETED' | 'FAILED'> {
     try {
-      await this.dependencies.runCycle();
+      await this.dependencies.runCycle(this.sessionId!);
       this.lastRunAt = this.dependencies.now?.().toISOString() ?? new Date().toISOString();
       this.dependencies.log?.('CYCLE_COMPLETED', 'Incremental discovery cycle completed.');
       return 'COMPLETED';
@@ -94,11 +99,12 @@ export class IncrementalDiscoveryMonitor {
       this.running = false;
       this.activeCycle = null;
       if (this.timer) this.nextRunAt = this.at(this.intervalMs);
+      this.dependencies.changed?.(this.getState());
     }
   }
 
   public getState(): IncrementalDiscoveryStatus {
-    return { enabled: Boolean(this.timer), running: this.running, intervalMs: this.intervalMs, lastRunAt: this.lastRunAt, nextRunAt: this.nextRunAt, lastSkippedAt: this.lastSkippedAt, lastSkipReason: this.lastSkipReason, lastError: this.lastError };
+    return { sessionId: this.sessionId, enabled: Boolean(this.timer), running: this.running, intervalMs: this.intervalMs, lastRunAt: this.lastRunAt, nextRunAt: this.nextRunAt, lastSkippedAt: this.lastSkippedAt, lastSkipReason: this.lastSkipReason, lastError: this.lastError };
   }
 
   private skip(reason: string): 'SKIPPED' {

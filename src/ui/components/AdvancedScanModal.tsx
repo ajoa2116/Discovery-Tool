@@ -1,3 +1,4 @@
+import { ForegroundSnapshot, isForegroundSnapshot } from '../../shared/discovery_session.ts';
 import React, { useEffect, useMemo, useState, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { requestJson } from '../bounded_request.ts';
@@ -9,7 +10,7 @@ import { loadAdvancedAdapters, validateAdvancedRequest } from '../advanced_scan_
 import { WindowsAdapterSnapshot } from '../../types/index.ts';
 import { canonicalIPv4, IPv4Input, splitIPv4 } from './IPv4Input.tsx';
 
-interface Props { open: boolean; onClose: () => void; onStarted: (quickFallback: boolean) => void }
+interface Props { open: boolean; onClose: () => void; onStarted: (quickFallback: boolean, foreground: ForegroundSnapshot) => void }
 interface TargetRow { type: 'CIDR' | 'RANGE'; first: string; second: string; prefix: string; prefixSource: 'BLANK' | 'SUGGESTED' | 'EDITED' }
 
 const methodLabels: Record<AdvancedScanMethod, string> = { ONVIF: 'ONVIF / WS-Discovery', NEIGHBOR: 'Windows Neighbor / ARP evidence', PING: 'ICMP / Ping', TCP: 'TCP Port Check' };
@@ -109,8 +110,8 @@ export const AdvancedScanModal: React.FC<Props> = ({ open, onClose, onStarted })
     try {
       const { response, body: data } = await requestJson('http://localhost:3001/api/discovery/advanced/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload), signal: controller.signal }, fetch, 30000);
       if (controller.signal.aborted) return;
-      if (!response.ok || !isRecord(data) || !isAdvancedPlan(data.plan) || !data.plan.valid) throw Error('Advanced Scan could not start. Retry validation or inspect Diagnostics/Support.');
-      onStarted(data.plan.mode === 'QUICK_FALLBACK'); onClose();
+      if (!response.ok || !isRecord(data) || !isAdvancedPlan(data.plan) || !data.plan.valid || !isForegroundSnapshot(data.foreground)) throw Error('Advanced Scan could not start. Retry validation or inspect Diagnostics/Support.');
+      onStarted(data.plan.mode === 'QUICK_FALLBACK', data.foreground); onClose();
     } catch (reason) {
       if (!controller.signal.aborted) setError(reason instanceof DOMException && reason.name === 'TimeoutError'
         ? 'Preparation timed out. The scan may still start on the backend. Close this dialog and check scan status before retrying.'
@@ -134,7 +135,7 @@ export const AdvancedScanModal: React.FC<Props> = ({ open, onClose, onStarted })
       <h3 className="mt-4 text-xs font-bold uppercase text-slate-500">Performance</h3><select aria-label="Performance" value={request.performance} onChange={event => setRequest(value => ({ ...value, performance: event.target.value as AdvancedScanRequest['performance'] }))} className="mt-2 rounded border bg-transparent p-2 text-xs"><option value="CONSERVATIVE">Conservative</option><option value="NORMAL">Normal</option><option value="FAST">Fast</option></select>
       <div className="mt-4 rounded border border-blue-200 bg-blue-50 p-3 text-xs dark:border-blue-900 dark:bg-blue-950/30"><strong>Workload Summary</strong>{draft.state !== 'READY' ? <p className="mt-1 text-amber-700">{draft.message}</p> : plan?.mode === 'QUICK_FALLBACK' ? <p className="mt-1">No advanced options selected. Standard Quick Scan will be used.</p> : <p className="mt-1">{plan?.adapterIndexes.length || 0} adapters · {payload.targets.length} ranges · {plan?.estimatedTargetCount || 0} unique addresses · {plan?.ports.length || 0} TCP ports<br/>Maximum targeted TCP checks: {plan?.maximumTcpChecks || 0}</p>}{plan?.warnings.map(warning => <p key={warning} className="mt-1 text-amber-700">{warning}</p>)}</div>
     </section></div></fieldset>
-    <div ref={feedbackRef} className="mt-3">{busy && <p role="status" aria-live="polite" className="px-4 pb-2 text-xs text-blue-600">Preparing scan... Checking adapters and scan preflight. Please wait for preparation to complete.</p>}
+    <div ref={feedbackRef} className="mt-3">{busy && <p role="status" aria-live="polite" className="px-4 pb-2 text-xs text-blue-600">Preparing scan... Background discovery yields while this scan runs and resumes afterward. Checking adapters and scan preflight.</p>}
     {validation.key === validationKey && validation.message && <p role="status" className="px-4 text-xs text-amber-700">{validation.message}<button className="ml-2 underline" disabled={busy} onClick={() => setRetryValidation(value => value + 1)}>Retry Validation</button></p>}{validation.key === validationKey && validation.state === 'VALIDATING' && <p role="status" className="px-4 text-xs">Validating configuration...</p>}{error && <p className="px-4 pb-2 text-xs text-rose-600">{error}</p>}</div></div><footer className="flex shrink-0 justify-end gap-2 border-t border-slate-200 p-4 dark:border-slate-700"><button disabled={busy} onClick={onClose} className="rounded border px-4 py-2 text-xs">Cancel</button><button disabled={busy || !canStart} onClick={start} className="rounded bg-blue-600 px-4 py-2 text-xs font-bold text-white disabled:bg-slate-400">{busy ? 'Preparing scan...' : <>{advancedIntent ? 'Start Advanced Scan' : 'Start Quick Scan'}</>}</button></footer>
   </div></div>;
   return typeof document === 'undefined' ? content : createPortal(content, document.body);

@@ -7,17 +7,22 @@ async function mock(page) {
  await page.addInitScript(() => {
   const native = window.fetch.bind(window);
   const adapter = {interfaceIndex:8,interfaceAlias:'Ethernet',operationalStatus:'Up',eligible:true,mediaType:'ETHERNET',hardwareInterface:true,physicalMediaType:'802.3',dhcpEnabled:true,ipv4Addresses:[{address:'192.168.0.124',prefixLength:24}],defaultGateways:[],dnsAutomatic:true,dnsServers:[],capturedAt:'now'};
-  const test = window.__test = { mode:'ok', startMode:'ok', adapterMode:'ok', validations:0, starts:0, aborts:0, pending:[], running:false, sockets:[], statusMode:'ok' };
+  const test = window.__test = { mode:'ok', startMode:'ok', adapterMode:'ok', validations:0, starts:0, aborts:0, pending:[], running:null, sockets:[], statusMode:'ok', foreground:{epoch:'test-server',revision:0,session:null}, monitoring:{enabled:true,running:false,intervalMs:30000,status:'WAITING'}, requests:[] };
+  test.advance = (origin,state,sessionId) => { test.foreground={epoch:'test-server',revision:test.foreground.revision+1,session:{origin,state,sessionId:sessionId||('scan-'+(test.foreground.revision+1))}};return test.foreground; };
+  test.emit = event => test.sockets.at(-1)?.onmessage?.({data:JSON.stringify(event)});
   const json = (body,status=200) => new Response(JSON.stringify(body),{status,headers:{'Content-Type':'application/json'}});
   const plan = request => ({mode:request.adapterIndexes.length?'ADVANCED':'QUICK_FALLBACK',request,adapterIndexes:request.adapterIndexes,normalizedTargets:[],methods:request.methods,ports:request.customPorts,routeSummary:[],estimatedTargetCount:request.targets.length,maximumTcpChecks:0,warnings:[],valid:true,errors:[]});
   window.fetch = async (url, options={}) => {
    if (!String(url).startsWith('http://localhost:3001/')) return native(url,options);
-   const path = new URL(url).pathname;
+   const path = new URL(url).pathname;test.requests.push({path,body:options.body?JSON.parse(options.body):null});
    let mode = 'ok', body = {};
    if(path.endsWith('/advanced/adapters')) { mode=test.adapterMode;body=[adapter]; }
    else if(path.endsWith('/advanced/validate')) { test.validations++; mode=test.mode;body=plan(JSON.parse(options.body)); }
-   else if(path.endsWith('/advanced/start')) { test.starts++;mode=test.startMode;body={plan:plan(JSON.parse(options.body))}; }
-   else if(path.endsWith('/discovery/status')) {mode=test.statusMode;body={running:test.running};}
+   else if(path.endsWith('/advanced/start')) { test.starts++;mode=test.startMode;body={plan:plan(JSON.parse(options.body)),foreground:test.advance('ADVANCED','SCANNING')}; }
+   else if(path.endsWith('/discovery/start')) {mode=test.quickMode||'ok';body={foreground:test.advance('MANUAL','SCANNING')};}
+   else if(path.endsWith('/discovery/stop')) { const id=JSON.parse(options.body).sessionId;if(id!==test.foreground.session?.sessionId)return json({foreground:test.foreground},409);body={foreground:test.advance(test.foreground.session.origin,'CANCELLED',id)}; }
+   else if(path.endsWith('/discovery/status')) {mode=test.statusMode;if(test.running!==null&&Boolean(test.running)!==Boolean(test.foreground.session&&['PREPARING','SCANNING','STOPPING'].includes(test.foreground.session.state)))test.advance('MANUAL',test.running?'SCANNING':'COMPLETED');body={running:test.running??false,foreground:test.foreground,monitoring:{...test.monitoring,incrementalDiscovery:{pausedForForeground:Boolean(test.foreground.session&&['PREPARING','SCANNING','STOPPING'].includes(test.foreground.session.state))}}};}
+   else if(path.endsWith('/diagnostics/refresh')||path.endsWith('/monitoring/preferences'))body=test.monitoring;
    else if(path.endsWith('/project/session')) body={mode:'QUICK_WORK',dirty:false,project:null};
    else if(path.endsWith('/pair/status')) body=null;
    if(mode==='throw') throw Error('Injected frontend request exception');
@@ -48,7 +53,7 @@ async function configure(page) {
  for(const label of ['ONVIF / WS-Discovery','Windows Neighbor / ARP evidence','ICMP / Ping','TCP Port Check','Camera Common']) await page.getByLabel(label,{exact:true}).check();
  await valid(page);
 }
-(async()=>{
+async function run(){
  const browser=await chromium.launch({channel:process.env.BROWSER_CHANNEL||'msedge',headless:true});
  try {
  for(const viewport of [{width:1280,height:720},{width:700,height:720},{width:700,height:760},{width:560,height:576}]) {
@@ -121,4 +126,6 @@ async function configure(page) {
  await app.evaluate(()=>document.dispatchEvent(new Event('unmount-test')));await app.clock.runFor(20000);check(await app.evaluate(()=>__test.sockets.every(s=>s.closed===1)),'app unmount closes owned sockets without orphan reconnect');await app.close();
  console.log(`Advanced Scan browser: ${passed} passed, 0 failed, 0 skipped`);
  } finally {await browser.close();}
-})().catch(error=>{console.error(error);process.exitCode=1});
+}
+module.exports={mock,open,configure,valid};
+if(require.main===module)run().catch(error=>{console.error(error);process.exitCode=1});

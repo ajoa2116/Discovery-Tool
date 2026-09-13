@@ -1,3 +1,4 @@
+import { ForegroundSnapshot, foregroundActive, isForegroundSnapshot, reconcileForeground } from '../shared/discovery_session.ts';
 import { connectProgress, ProgressConnectionState } from './progress_connection.ts';
 import { requestJson } from './bounded_request.ts';
 import { discoveryNotification } from '../shared/discovery_evidence.ts';
@@ -67,7 +68,14 @@ export default function App() {
   const [scanStatusUnavailable, setScanStatusUnavailable] = useState(false);
   const scanEpoch = useRef(0);
   const quickStartPending = useRef(false);
-  const [isScanning, setIsScanning] = useState(false);
+  const scanRequest = useRef<AbortController | null>(null);
+  useEffect(() => () => { scanRequest.current?.abort(); scanRequest.current = null; }, []);
+  const [foregroundScan, setForegroundScan] = useState<ForegroundSnapshot | null>(null);
+  const foregroundRef = useRef<ForegroundSnapshot | null>(null);
+  const [scanStarting, setScanStarting] = useState(false);
+  const [stopPending, setStopPending] = useState(false);
+  const [scanActionError, setScanActionError] = useState('');
+  const isScanning = scanStarting || foregroundActive(foregroundScan?.session ?? null);
   const [advancedScanOpen, setAdvancedScanOpen] = useState(false);
   const [projectReverifyOpen, setProjectReverifyOpen] = useState(false);
   const [projectHistoryOpen, setProjectHistoryOpen] = useState(false);
@@ -130,6 +138,14 @@ export default function App() {
     }
   };
 
+  const acceptForeground = (value: unknown) => {
+    const next = reconcileForeground(foregroundRef.current, value);
+    if (next === foregroundRef.current) return;
+    foregroundRef.current = next; setForegroundScan(next);
+    if (foregroundActive(next?.session ?? null)) setHasCompletedScan(false);
+    else if (next?.session) { if (next.session.state === 'FAILED') setScanActionError('Foreground scan failed. Check Diagnostics/Support before retrying.'); setHasCompletedScan(next.session.state === 'COMPLETED'); void fetchData(); }
+  };
+
   useEffect(() => {
     fetchData();
 
@@ -160,11 +176,10 @@ export default function App() {
           setProjectSession(data.data.session);
           setProject(data.data.session.project);
         }
-        if (data.type === 'SCAN_COMPLETE' || data.type === 'SCAN_CANCELLED' || data.type === 'SCAN_FAILED') {
-          setIsScanning(false);
-          if (data.type === 'SCAN_COMPLETE') setHasCompletedScan(true);
-          fetchData();
-        }
+        if (data.type === 'MONITORING_STATE' && data.context?.origin === 'MONITORING' && data.data?.monitoring) setDiagnosticRefresh(data.data.monitoring);
+        if (data.type === 'FOREGROUND_SCAN_STATE' && isForegroundSnapshot(data.data?.foreground)
+          && data.context?.sessionId === data.data.foreground.session?.sessionId
+          && data.context?.origin === data.data.foreground.session?.origin) acceptForeground(data.data.foreground);
         if (
           data.type === 'PHASE_COMPLETE' ||
           data.type === 'PIPELINE_COMPLETE' ||
@@ -188,10 +203,10 @@ export default function App() {
       const epoch = scanEpoch.current;
       try {
         const { response, body } = await requestJson('http://localhost:3001/api/discovery/status', { signal: controller.signal }, fetch, 5000);
-        if (!response.ok || !body || typeof body !== 'object' || !('running' in body) || typeof body.running !== 'boolean') throw Error('Invalid status');
+        if (!response.ok || !body || typeof body !== 'object' || !('foreground' in body) || !isForegroundSnapshot(body.foreground)) throw Error('Invalid foreground status');
         if (active && epoch === scanEpoch.current && !quickStartPending.current) {
-          setScanStatusUnavailable(false); setIsScanning(body.running);
-          if (isScanning && !body.running) void fetchData();
+          setScanStatusUnavailable(false); acceptForeground(body.foreground);
+          if ('monitoring' in body && body.monitoring && typeof body.monitoring === 'object' && 'enabled' in body.monitoring && typeof body.monitoring.enabled === 'boolean' && 'running' in body.monitoring && typeof body.monitoring.running === 'boolean' && 'intervalMs' in body.monitoring && typeof body.monitoring.intervalMs === 'number') setDiagnosticRefresh(body.monitoring as UiMonitoringStatus);
         }
       } catch { if (active) setScanStatusUnavailable(true); }
       finally { if (active) timer = setTimeout(poll, 3000); }
@@ -291,22 +306,31 @@ export default function App() {
 
   // Section 14: Fast Scan Trigger
   const handleScanNetwork = async () => {
+    if (quickStartPending.current || stopPending || scanRequest.current) return;
+    const controller = new AbortController(); scanRequest.current = controller;
+    setScanActionError('');
     if (isScanning) {
-      const stopResponse = await fetch('http://localhost:3001/api/discovery/stop', { method: 'POST' });
-      if (!stopResponse.ok && stopResponse.status !== 409) {
-        throw new Error(`Unable to stop discovery (${stopResponse.status})`);
-      }
+      const sessionId = foregroundRef.current?.session?.sessionId;
+      if (!sessionId) { scanRequest.current = null; return; }
+      setStopPending(true);
+      try {
+        const { response, body } = await requestJson('http://localhost:3001/api/discovery/stop', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({sessionId}), signal:controller.signal });
+        if (controller.signal.aborted) return;
+        if (!body || typeof body !== 'object' || !('foreground' in body) || !isForegroundSnapshot(body.foreground)) throw Error();
+        acceptForeground(body.foreground);
+        if (!response.ok) setScanActionError('That scan is no longer active. Current foreground status has been refreshed.');
+      } catch { if (!controller.signal.aborted) setScanActionError('Stop could not be confirmed. Check foreground status before retrying.'); }
+      finally { if (scanRequest.current === controller) scanRequest.current = null; if (!controller.signal.aborted) setStopPending(false); }
       return;
     }
-
-    quickStartPending.current = true; scanEpoch.current++; setIsScanning(true);
+    quickStartPending.current = true; scanEpoch.current++; setScanStarting(true); setHasCompletedScan(false);
     try {
-      const response = await fetch('http://localhost:3001/api/discovery/start', { method: 'POST' });
-      if (!response.ok) throw new Error(`Unable to start discovery (${response.status})`);
-    } catch (error) {
-      setIsScanning(false);
-      throw error;
-    } finally { quickStartPending.current = false; }
+      const { response, body } = await requestJson('http://localhost:3001/api/discovery/start', { method:'POST', signal:controller.signal });
+      if (controller.signal.aborted) return;
+      if (!response.ok || !body || typeof body !== 'object' || !('foreground' in body) || !isForegroundSnapshot(body.foreground)) throw Error();
+      acceptForeground(body.foreground);
+    } catch { if (!controller.signal.aborted) setScanActionError('Scan start could not be confirmed. Status checks will reconcile the foreground session; check status before retrying.'); }
+    finally { if (scanRequest.current === controller) scanRequest.current = null; quickStartPending.current = false; if (!controller.signal.aborted) setScanStarting(false); }
   };
 
   // Section 6: Inline Device Name Update
@@ -423,6 +447,7 @@ export default function App() {
   return (
     <div className="min-h-screen flex flex-col bg-[#f4f6f8] text-slate-800 dark:bg-slate-950 dark:text-slate-100 font-sans antialiased">
       {(progressConnection !== 'CONNECTED' || scanStatusUnavailable) && <div role="status" className="shrink-0 border-b border-amber-200 bg-amber-50 px-4 py-2 text-xs text-amber-800">{scanStatusUnavailable ? 'Scan status is unavailable. The backend may still be scanning. Check the local server connection; status checks will retry automatically.' : 'Live updates are reconnecting. Scan status is checked over HTTP; device updates may be delayed.'}</div>}
+      {scanActionError && <p role="alert" className="px-4 py-2 text-xs text-amber-700">{scanActionError}</p>}
       {/* ─────────────────────────────────────────────────────────────
           ZONE 1: CLEAN TOP HEADER CONTROL (Sections 3 & 4)
       ───────────────────────────────────────────────────────────── */}
@@ -466,7 +491,7 @@ export default function App() {
         <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg p-2 space-y-2">
           <div className="flex items-center gap-2">
           <div className="relative flex shrink-0" onMouseDown={event=>event.stopPropagation()}>
-            <button onClick={handleScanNetwork} className={`h-9 flex items-center gap-2 rounded-l-md px-4 font-bold text-xs text-white ${isScanning?'bg-red-600 hover:bg-red-500':'bg-blue-600 hover:bg-blue-500'}`}>{isScanning?<><RefreshCw className="w-4 h-4 animate-spin"/>Stop</>:<><Play className="w-4 h-4 fill-current"/>Scan</>}</button>
+            <button disabled={scanStarting || stopPending} onClick={handleScanNetwork} className={`h-9 flex items-center gap-2 rounded-l-md px-4 font-bold text-xs text-white ${isScanning?'bg-red-600 hover:bg-red-500':'bg-blue-600 hover:bg-blue-500'}`}>{isScanning?<><RefreshCw className="w-4 h-4 animate-spin"/>Stop</>:<><Play className="w-4 h-4 fill-current"/>Scan</>}</button>
             {!isScanning&&<button aria-label="Scan choices" aria-haspopup="menu" aria-expanded={openMenu==='SCAN'} onClick={()=>setOpenMenu(openMenu==='SCAN'?null:'SCAN')} className="h-9 rounded-r-md border-l border-blue-500 bg-blue-600 px-2 text-white hover:bg-blue-500"><ChevronDown className="w-4 h-4"/></button>}
             {openMenu==='SCAN'&&!isScanning&&<div role="menu" aria-label="Scan choices" className="ui-menu left-0 right-auto top-10 min-w-72"><button onClick={()=>{void handleScanNetwork();setOpenMenu(null)}}><span className="block font-semibold">Quick Scan <span className="font-normal text-blue-600">· Default</span></span><span className="block text-[10px] text-slate-500">Fast discovery on local network</span></button><button onClick={()=>{setAdvancedScanOpen(true);setOpenMenu(null)}}><span className="block font-semibold">Advanced Scan</span><span className="block text-[10px] text-slate-500">Customize adapters, ranges, ports, and discovery methods</span></button></div>}
           </div>
@@ -596,7 +621,7 @@ export default function App() {
           <span>•</span><span>{isScanning?'Scanning…':'Ready'}</span>{projectSession?.dirty&&<><span>•</span><span className="text-amber-600">Unsaved changes</span></>}
         </div>
 
-        <span className="text-[11px]">Monitor: {diagnosticRefresh.enabled ? `${Math.round(diagnosticRefresh.intervalMs / 1000)}s` : 'Paused'}</span>
+        <span className="text-[11px]">Monitor: {diagnosticRefresh.enabled ? `${Math.round(diagnosticRefresh.intervalMs / 1000)}s${diagnosticRefresh.incrementalDiscovery?.pausedForForeground ? ' - discovery deferred' : ''}` : 'Paused'}</span>
       </footer>
 
       {/* ─────────────────────────────────────────────────────────────
@@ -647,7 +672,7 @@ export default function App() {
         />
         </>
       )}
-      <AdvancedScanModal open={advancedScanOpen} onClose={()=>setAdvancedScanOpen(false)} onStarted={()=>{scanEpoch.current++; setIsScanning(true);setHasCompletedScan(false)}}/>
+      <AdvancedScanModal open={advancedScanOpen} onClose={()=>setAdvancedScanOpen(false)} onStarted={(_quick, foreground)=>{scanEpoch.current++; acceptForeground(foreground)}}/>
       <ProjectReverifyModal isOpen={projectReverifyOpen} onClose={()=>setProjectReverifyOpen(false)} onChanged={fetchData}/>
       <ProjectHistoryModal open={projectHistoryOpen} onClose={()=>setProjectHistoryOpen(false)}/>
 

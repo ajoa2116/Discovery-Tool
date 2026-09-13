@@ -116,12 +116,14 @@ export class AdvancedScanService {
   public async validate(request: AdvancedScanRequest) { return (await this.prepare(request)).plan; }
   public getStatus() { return structuredClone(this.status); }
   public stop() { if (!this.controller) return false; this.controller.abort(); return true; }
-  public async execute(plan: AdvancedScanPlan, callbacks: AdvancedScanCallbacks) {
+  public async execute(plan: AdvancedScanPlan, callbacks: AdvancedScanCallbacks, parentSignal?: AbortSignal) {
     if (!plan.valid) throw new AdvancedScanValidationError(plan.errors.join(' '), 'INVALID_PLAN');
     if (plan.mode !== 'ADVANCED') throw new AdvancedScanValidationError('Quick fallback must use the standard Quick Scan pipeline.', 'QUICK_FALLBACK');
     if (this.controller) throw new AdvancedScanValidationError('An Advanced Scan is already running.', 'SCAN_RUNNING');
     this.controller = new AbortController();
-    const signal = this.controller.signal;
+    const controller = this.controller, signal = controller.signal;
+    const cancel = () => controller.abort();
+    if (parentSignal?.aborted) cancel(); else parentSignal?.addEventListener('abort', cancel, { once: true });
     const startedAt = new Date().toISOString();
     this.status = { running: true, mode: 'ADVANCED', startedAt, targetCount: plan.normalizedTargets.length, completedTargets: 0, findings: 0, cancelled: false, message: 'Advanced Scan running' };
     try {
@@ -170,6 +172,6 @@ export class AdvancedScanService {
       appStateDb.logAudit({ id: crypto.randomUUID(), timestamp: this.status.completedAt!, category: 'DISCOVERY', level: 'INFO', message: 'Advanced Scan target checks completed.', details: { targetCount: this.status.targetCount, checkedTargets: this.status.completedTargets, evidenceBackedTargets: this.status.findings, filteredCount, filteredObservations, cancelled: this.status.cancelled } });
       callbacks.onComplete(this.getStatus());
       return this.getStatus();
-    } finally { this.controller = null; }
+    } finally { parentSignal?.removeEventListener('abort', cancel); this.controller = null; this.status.running = false; }
   }
 }

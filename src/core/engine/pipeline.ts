@@ -1,3 +1,4 @@
+import { DiscoveryContext } from '../../shared/discovery_session.ts';
 import { hasCctvEvidence, matchesAdvancedScanFilters, sameDiscoveryIdentity } from '../../shared/discovery_evidence.ts';
 import { AdvancedScanRequest } from '../../shared/advanced_scan.ts';
 import { appStateDb } from '../storage/app_db.ts';
@@ -15,6 +16,7 @@ import { LocalHostIdentity } from '../network/local_host_identity.ts';
 
 export type PipelineEventCallback = (event: {
   type: 'PHASE_START' | 'PHASE_PROGRESS' | 'PHASE_COMPLETE' | 'PIPELINE_COMPLETE' | 'DEVICE_DISCOVERED' | 'DEVICE_ENRICHED' | 'SCAN_COMPLETE' | 'SCAN_CANCELLED' | 'LOG';
+  context?: DiscoveryContext;
   phaseNumber?: number;
   data?: any;
 }) => void;
@@ -86,6 +88,7 @@ export class BatchExecutionPipeline {
   ];
 
   private isRunning = false;
+  private context: DiscoveryContext | null = null;
   private currentInterfaces: NICInfo[] = [];
   private localHost = LocalHostIdentity.fromAddresses([]);
   private callbacks: PipelineEventCallback[] = [];
@@ -114,7 +117,7 @@ export class BatchExecutionPipeline {
   private emit(event: any): void {
     for (const cb of this.callbacks) {
       try {
-        cb(event);
+        cb({ ...event, context: this.context || { origin: 'INTERNAL', sessionId: 'unscoped' } });
       } catch (err) {
         console.error('Callback error:', err);
       }
@@ -129,16 +132,21 @@ export class BatchExecutionPipeline {
     return this.isRunning;
   }
 
-  public stopDiscovery(): boolean {
+  public stopDiscovery(sessionId?: string): boolean {
+    if (sessionId !== undefined && this.context?.sessionId !== sessionId) return false;
     if (!this.abortController || this.abortController.signal.aborted) return false;
     this.abortController.abort();
     return true;
   }
 
-  public async runDiscoveryScan(options: { adapterNames?: string[]; filters?: AdvancedScanRequest['filters']; discoveryMethods?: string[]; emitTerminalEvent?: boolean; database?: SiteProjectDatabase; emitDeviceEvents?: boolean } = {}): Promise<'COMPLETED'|'CANCELLED'|'BUSY'> {
+  public async runDiscoveryScan(options: { context?: DiscoveryContext; signal?: AbortSignal; adapterNames?: string[]; filters?: AdvancedScanRequest['filters']; discoveryMethods?: string[]; emitTerminalEvent?: boolean; database?: SiteProjectDatabase; emitDeviceEvents?: boolean } = {}): Promise<'COMPLETED'|'CANCELLED'|'BUSY'> {
     if (this.isRunning) return 'BUSY';
     this.isRunning = true;
+    this.context = options.context || { origin: 'MANUAL', sessionId: crypto.randomUUID() };
     this.abortController = new AbortController();
+    const sessionId = this.context.sessionId;
+    const cancel = () => this.stopDiscovery(sessionId);
+    if (options.signal?.aborted) cancel(); else options.signal?.addEventListener('abort', cancel, { once: true });
     const signal = this.abortController.signal;
     try {
       for (const p of this.phases.slice(0, 4)) {
@@ -148,7 +156,7 @@ export class BatchExecutionPipeline {
         p.logs = [];
       }
       const database = options.database || projectDb;
-      await this.runPhase1();
+      if (!signal.aborted) await this.runPhase1();
       if (options.adapterNames?.length) this.currentInterfaces = this.currentInterfaces.filter(nic => options.adapterNames!.includes(nic.name));
       if (!signal.aborted && (!options.discoveryMethods || options.discoveryMethods.includes('NEIGHBOR'))) await this.runPhase2(signal, database, options.emitDeviceEvents !== false, options.filters);
       if (!signal.aborted && (!options.discoveryMethods || options.discoveryMethods.includes('ONVIF'))) await this.runPhase3(signal, database, options.emitDeviceEvents !== false, options.filters);
@@ -161,7 +169,8 @@ export class BatchExecutionPipeline {
       }
       return signal.aborted ? 'CANCELLED' : 'COMPLETED';
     } finally {
-      this.abortController = null;
+      options.signal?.removeEventListener('abort', cancel);
+      this.abortController = null; this.context = null;
       this.isRunning = false;
     }
   }
