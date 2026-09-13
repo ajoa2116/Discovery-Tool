@@ -1,3 +1,4 @@
+import { pairAdapterInterfaces } from '../shared/pair_adapter.ts';
 import { ForegroundSnapshot, foregroundFailed, foregroundActive, isForegroundSnapshot, reconcileForeground } from '../shared/discovery_session.ts';
 import { connectProgress, ProgressConnectionState } from './progress_connection.ts';
 import { requestJson } from './bounded_request.ts';
@@ -64,6 +65,8 @@ export default function App() {
   const openProjectInput = useRef<HTMLInputElement>(null);
   const addExistingProjectInput = useRef<HTMLInputElement>(null);
   const [interfaces, setInterfaces] = useState<NICInfo[]>([]);
+  const currentPairRef = useRef<PairSessionState | null>(null);
+  const acceptPair = (pair:PairSessionState|null) => { const changed=JSON.stringify(currentPairRef.current)!==JSON.stringify(pair);currentPairRef.current=pair;setPairSession(pair);if(changed)setInterfaces(value=>pairAdapterInterfaces(value,pair)); };
   const [progressConnection, setProgressConnection] = useState<ProgressConnectionState>('CONNECTING');
   const [scanStatusUnavailable, setScanStatusUnavailable] = useState(false);
   const scanEpoch = useRef(0);
@@ -117,6 +120,7 @@ export default function App() {
 
   // Fetch initial data
   const fetchData = async () => {
+    const pairAtRequest = currentPairRef.current;
     try {
       const [sessionRes, refreshRes, pairRes] = await Promise.all([
         fetch('http://localhost:3001/api/project/session'),
@@ -126,11 +130,10 @@ export default function App() {
 
       if (sessionRes.ok) {
         const session = await sessionRes.json() as ProjectSession;
-        setProjectSession(session);
-        setProject(session.project);
+        if(pairAtRequest===currentPairRef.current){setProjectSession(session);setProject(session.project);}
       }
       if (refreshRes.ok) setDiagnosticRefresh(await refreshRes.json());
-      if (pairRes.ok) setPairSession(await pairRes.json());
+      if (pairRes.ok) { const pair=await pairRes.json();if(pairAtRequest===currentPairRef.current)acceptPair(pair); }
       const readinessRes = await fetch('http://localhost:3001/api/system/preflight');
       if (readinessRes.ok) setPreflight(await readinessRes.json());
     } catch (err) {
@@ -157,7 +160,7 @@ export default function App() {
       try {
         const data = JSON.parse(event.data);
         if (data.type === 'PHASE_COMPLETE' && data.phaseNumber === 1 && data.data?.interfaces) {
-          setInterfaces(data.data.interfaces);
+          setInterfaces(pairAdapterInterfaces(data.data.interfaces,currentPairRef.current?.state==='RESTORED'?null:currentPairRef.current));
         }
         if ((data.type === 'DEVICE_DISCOVERED' || data.type === 'DEVICE_ENRICHED') && data.data?.project) {
           setProject(data.data.project);
@@ -172,7 +175,7 @@ export default function App() {
           if (data.data.refresh) setDiagnosticRefresh(data.data.refresh);
         }
         if (data.type === 'PAIR_STATE_CHANGED') {
-          setPairSession(data.data?.pair || null);
+          acceptPair(data.data?.pair || null);
           if (data.data?.project) setProject(data.data.project);
         }
         if ((data.type === 'PROJECT_SESSION_CHANGED' || data.type === 'PROJECT_SAVED') && data.data?.session) {
@@ -652,7 +655,7 @@ export default function App() {
         device={pairDevice || project?.devices.find(device => device.id === pairSession?.deviceId) || null}
         pair={pairSession}
         onClose={() => { setPairDevice(null); setPairModalDismissed(true); }}
-        onPairUpdated={(pair) => { setPairSession(pair); if (pair.state === 'RESTORED' || pair.state === 'CANCELLED') setPairDevice(null); fetchData(); }}
+        onPairUpdated={(pair) => { acceptPair(pair); if (pair.state === 'RESTORED' || pair.state === 'CANCELLED') setPairDevice(null); fetchData(); }}
       />
 
       {/* Milestone 8: backend-authoritative bulk network configuration */}

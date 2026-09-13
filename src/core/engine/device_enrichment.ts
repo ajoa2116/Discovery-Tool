@@ -32,7 +32,8 @@ export interface DeviceEnricher {
 
 export function normalizeMacAddress(value: string | null | undefined): string | null {
   if (!value) return null;
-  const hex = value.trim().toLowerCase().replace(/[^0-9a-f]/g, '');
+  if (!/^(?:[0-9a-f]{12}|(?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2}|(?:[0-9a-f]{4}\.){2}[0-9a-f]{4})$/i.test(value.trim())) return null;
+  const hex = value.trim().toLowerCase().replace(/[:.\-]/g, '');
   if (hex.length !== 12 || !/^[0-9a-f]{12}$/.test(hex)) return null;
   if (hex === '000000000000' || hex === 'ffffffffffff') return null;
   if ((parseInt(hex.slice(0, 2), 16) & 1) === 1) return null;
@@ -55,67 +56,42 @@ export function classifySubnet(deviceIp: string, nicIp: string, netmask: string)
   return ((device & mask) >>> 0) === ((nic & mask) >>> 0) ? 'LOCAL' : 'DIFFERENT_SUBNET';
 }
 
+export type NeighborCommand = (script:string,signal?:AbortSignal)=>Promise<string>;
+const runNeighborCommand:NeighborCommand = (script,signal)=>new Promise((resolve,reject)=>{
+  execFile('powershell.exe',['-NoProfile','-NonInteractive','-Command',script],{windowsHide:true,timeout:2500,maxBuffer:1024*1024,signal},(error,stdout)=>{
+    if(error){if(signal?.aborted)resolve('');else reject(error);}else resolve(stdout);
+  });
+});
+const neighborStates = ['Unreachable','Incomplete','Probe','Delay','Stale','Reachable','Permanent'];
+export function parseWindowsNeighbors(output:string):NeighborEntry[] {
+  const parsed=output.trim()?JSON.parse(output):[];
+  return (Array.isArray(parsed)?parsed:[parsed]).slice(0,4096).flatMap(row=>{
+    if(!row||typeof row!=='object')return [];
+    const state=neighborStates[Number(row.State)] || neighborStates.find(value=>value.toLowerCase()===String(row.State).toLowerCase());
+    const macAddress=normalizeMacAddress(typeof row.LinkLayerAddress==='string'?row.LinkLayerAddress:null);
+    const ipAddress=typeof row.IPAddress==='string'?row.IPAddress.trim():'';
+    const index=Number(row.InterfaceIndex);
+    return macAddress && ipv4ToUint32(ipAddress)!==null && Number.isInteger(index) && index>0 && state && !['Unreachable','Incomplete'].includes(state)
+      && (row.AddressFamily===undefined || ['IPv4','2'].includes(String(row.AddressFamily)))
+      ? [{ipAddress,macAddress,interfaceIndex:index,state}]:[];
+  });
+}
 export class WindowsNeighborProvider implements NeighborProvider {
-  public list(signal?: AbortSignal): Promise<NeighborEntry[]> {
-    return new Promise((resolve, reject) => {
-      execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', 'Get-NetNeighbor -AddressFamily IPv4 -ErrorAction Stop | Select-Object IPAddress,LinkLayerAddress,InterfaceIndex,State | ConvertTo-Json -Compress'],
-        { windowsHide: true, timeout: 2500, maxBuffer: 1024 * 1024, signal }, (error, stdout) => {
-          if (error) { if (signal?.aborted) resolve([]); else reject(error); return; }
-          try { const parsed = stdout.trim() ? JSON.parse(stdout) : []; resolve((Array.isArray(parsed) ? parsed : [parsed]).slice(0,4096).flatMap(row => {
-            const macAddress = normalizeMacAddress(row.LinkLayerAddress);
-            return macAddress && ipv4ToUint32(row.IPAddress || '') !== null && !['0','1','Unreachable','Incomplete'].includes(String(row.State)) ? [{ ipAddress: row.IPAddress, macAddress, interfaceIndex: row.InterfaceIndex, state: String(row.State) }] : [];
-          })); } catch (error) { reject(error); }
-        });
-    });
+  constructor(private readonly run:NeighborCommand=runNeighborCommand){}
+  async list(signal?:AbortSignal):Promise<NeighborEntry[]> {
+    return parseWindowsNeighbors(await this.run('Get-NetNeighbor -AddressFamily IPv4 -ErrorAction Stop | Select-Object IPAddress,LinkLayerAddress,InterfaceIndex,State,AddressFamily | ConvertTo-Json -Compress',signal));
   }
-  public lookup(
-    ipAddress: string,
-    options: { signal?: AbortSignal; interfaceIndex?: number; localAddress?: string } = {},
-  ): Promise<NeighborEntry | null> {
-    if (ipv4ToUint32(ipAddress) === null) return Promise.resolve(null);
-    const escapedIp = ipAddress.replace(/'/g, "''");
-    const localAddress = options.localAddress && ipv4ToUint32(options.localAddress) !== null
-      ? options.localAddress.replace(/'/g, "''")
-      : undefined;
-    const interfaceSetup = options.interfaceIndex !== undefined
-      ? `$ifIndex = ${options.interfaceIndex}; `
-      : localAddress
-        ? `$ifIndex = (Get-NetIPAddress -AddressFamily IPv4 -IPAddress '${localAddress}' -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty InterfaceIndex); `
-        : '$ifIndex = $null; ';
-    const script = `${interfaceSetup}$entries = Get-NetNeighbor -AddressFamily IPv4 -IPAddress '${escapedIp}' -ErrorAction SilentlyContinue; if ($ifIndex) { $entries = $entries | Where-Object InterfaceIndex -eq $ifIndex }; $entry = $entries | Select-Object -First 1 IPAddress,LinkLayerAddress,InterfaceIndex,State; if ($entry) { $entry | ConvertTo-Json -Compress }`;
-
-    return new Promise((resolve, reject) => {
-      const child = execFile(
-        'powershell.exe',
-        ['-NoProfile', '-NonInteractive', '-Command', script],
-        { windowsHide: true, timeout: 2500, maxBuffer: 64 * 1024, signal: options.signal },
-        (error, stdout) => {
-          if (error) {
-            if (options.signal?.aborted) resolve(null);
-            else reject(error);
-            return;
-          }
-          const output = stdout.trim();
-          if (!output) {
-            resolve(null);
-            return;
-          }
-          try {
-            const parsed = JSON.parse(output);
-            const macAddress = normalizeMacAddress(parsed.LinkLayerAddress);
-            resolve(macAddress && !['0','1','Unreachable','Incomplete'].includes(String(parsed.State)) ? {
-              ipAddress: parsed.IPAddress,
-              macAddress,
-              interfaceIndex: Number.isInteger(parsed.InterfaceIndex) ? parsed.InterfaceIndex : undefined,
-              state: parsed.State !== undefined ? String(parsed.State) : undefined,
-            } : null);
-          } catch (parseError) {
-            reject(parseError);
-          }
-        },
-      );
-      if (options.signal?.aborted) child.kill();
-    });
+  async lookup(ipAddress:string,options:{signal?:AbortSignal;interfaceIndex?:number;localAddress?:string}={}):Promise<NeighborEntry|null>{
+    if(ipv4ToUint32(ipAddress)===null)return null;
+    if(options.interfaceIndex!==undefined&&(!Number.isInteger(options.interfaceIndex)||options.interfaceIndex<1))return null;
+    if(options.localAddress!==undefined&&ipv4ToUint32(options.localAddress)===null)return null;
+    const setup=options.interfaceIndex!==undefined?`$ifIndex = ${options.interfaceIndex}; `:options.localAddress
+      ? `$ifIndex = (Get-NetIPAddress -AddressFamily IPv4 -IPAddress '${options.localAddress}' -ErrorAction Stop | Select-Object -First 1 -ExpandProperty InterfaceIndex); if (!$ifIndex) { throw 'ADAPTER_NOT_FOUND' }; `:'$ifIndex = $null; ';
+    // Select all matching rows before validation: an incomplete first row must not hide a valid Stale row.
+    const script=setup+`$entries = Get-NetNeighbor -AddressFamily IPv4 -IPAddress '${ipAddress}' -ErrorAction SilentlyContinue; if ($ifIndex) { $entries = $entries | Where-Object InterfaceIndex -eq $ifIndex }; $entries | Select-Object IPAddress,LinkLayerAddress,InterfaceIndex,State,AddressFamily | ConvertTo-Json -Compress`;
+    const matches=parseWindowsNeighbors(await this.run(script,options.signal)).filter(row=>row.ipAddress===ipAddress&&(options.interfaceIndex===undefined||row.interfaceIndex===options.interfaceIndex));
+    if(new Set(matches.map(row=>row.macAddress)).size!==1)return null;
+    return matches[0]||null;
   }
 }
 
@@ -163,7 +139,7 @@ export class WindowsDeviceEnricher implements DeviceEnricher {
   ) {}
 
   public async enrich(device: Device, options: DeviceEnrichmentOptions = {}): Promise<Device> {
-    const nic = device.reachability?.discoveryInterface;
+    const nic = device.reachability?.relationshipAdapter || device.reachability?.discoveryInterface;
     const subnetClassification = nic
       ? classifySubnet(device.network.ipAddress, nic.ipAddress, nic.netmask)
       : device.reachability?.subnetClassification || 'UNKNOWN';

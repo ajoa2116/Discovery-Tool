@@ -44,7 +44,7 @@ const server = createServer(app);
 const wss = new WebSocketServer({ server, path: '/ws' });
 const diagnosticEngine = new DeviceDiagnosticEngine();
 const diagnosticControllers = new Map<string, AbortController>();
-const pairService = new PairService();
+const pairService = new PairService(undefined,undefined,undefined,undefined,undefined,{changed:pair=>{if(['APPLYING','RESTORING'].includes(pair.state))diagnosticMonitor.cancelCurrent();broadcast({type:'PAIR_STATE_CHANGED',data:{pair,project:projectDb.getProject()}})}});
 const connectService = new ConnectService();
 const connectRecheckControllers = new Map<string, AbortController>();
 const cameraNetworkService = new CameraNetworkConfigurationService();
@@ -87,7 +87,7 @@ const safeBroadcastError=(type:string,error:unknown,operation:string,extra:Recor
 
 const diagnosticMonitor = new DiagnosticRefreshMonitor(
   diagnosticEngine,
-  () => projectDb.getDevices(),
+  () => projectDb.getDevices().filter(device=>{const pair=pairService.getStatus();return pair?.deviceId!==device.id||!['APPLYING','VERIFYING','RESTORING'].includes(pair.state);}),
   device => {
     projectDb.upsertDevice(device);
     broadcast({ type: 'DEVICE_DIAGNOSTICS_UPDATED', context: { origin: 'DIAGNOSTICS' }, data: { device, project: projectDb.getProject(), refresh: monitoringState() } });
@@ -383,12 +383,14 @@ app.post('/api/pair/candidate', (req, res) => {
 });
 app.post('/api/pair/confirm', async (req, res) => {
   try {
+    if(foregroundDiscovery.isActive()||receiveMatrix?.isActive()||supportTrace.isActive())return res.status(409).json({error:'Finish the active discovery operation before Pair.'});
+    await incrementalMonitor.yieldToTechnician();
     const pair = await pairService.confirmAndApply(String(req.body.sessionId || ''), req.body.confirmed === true);
     broadcast({ type: 'PAIR_STATE_CHANGED', data: { pair, project: projectDb.getProject() } }); res.json(pair);
   } catch (error: any) { const pair = pairService.getStatus(); broadcast({ type: 'PAIR_STATE_CHANGED', data: { pair } }); safeError(res,error,error?.code === 'ADMIN_REQUIRED' ? 403 : 400,'PAIR_APPLY',pair?.deviceId); }
 });
 app.post('/api/pair/restore', async (req, res) => {
-  try { const pair = await pairService.restore(); broadcast({ type: 'PAIR_STATE_CHANGED', data: { pair } }); res.json(pair); }
+  try { const pair = await pairService.restore(); broadcast({ type: 'PAIR_STATE_CHANGED', data: { pair, project: projectDb.getProject() } }); res.json(pair); }
   catch (error: any) { const pair = pairService.getStatus(); broadcast({ type: 'PAIR_STATE_CHANGED', data: { pair } }); safeError(res,error,400,'PAIR_RESTORE',pair?.deviceId); }
 });
 app.post('/api/pair/cancel', (req, res) => { const pair = pairService.cancelPreparation(); broadcast({ type: 'PAIR_STATE_CHANGED', data: { pair } }); res.json(pair); });
@@ -416,7 +418,7 @@ app.get('/api/system/support-bundle', async (_req, res) => {
     const adapters=await advancedScanService.listAdapters().catch(()=>[]);
     // SupportBundleBuilder recursively filters password|credential|authorization material after this security-event exclusion.
     const supportEvents=appStateDb.getAuditLogs().filter(entry => entry.category !== 'SECURITY');
-    const bundle = supportBundleBuilder.build({wsDiscoveryTransport:{...wsDiscoveryEvidence.snapshot(),matrix:receiveMatrix?.snapshot(),supportTrace:supportTrace.snapshot()},application:{name:'CCTV Network Assistant',version:'1.6.0',runtime:process.version,platform:process.platform},readiness:preflight,network:adapters.map(adapter=>({interfaceIndex:adapter.interfaceIndex,interfaceAlias:adapter.interfaceAlias,mediaType:adapter.mediaType,operationalStatus:adapter.operationalStatus,eligible:adapter.eligible,ipv4Addresses:adapter.ipv4Addresses})),monitoring:monitoringState(),discovery:{foreground:foregroundDiscovery.getState(),running:foregroundDiscovery.isActive(),engineRunning:pipelineEngine.getIsRunning(),phases:pipelineEngine.getStates().slice(0,4),advanced:advancedScanService.getStatus()},projectSession:projectDb.getSession(),events:supportEvents,pair:pairService.getStatus()?{state:pairService.getStatus()!.state,recoveryAvailable:pairService.getStatus()!.recoveryAvailable,errorCode:pairService.getStatus()!.errorCode,preview:{cameraIp:pairService.getStatus()!.cameraIp,interfaceIndex:pairService.getStatus()!.adapter.interfaceIndex,subnetSource:pairService.getStatus()!.subnetSource,candidate:pairService.getStatus()!.selectedCandidate}}:null});
+    const bundle = supportBundleBuilder.build({wsDiscoveryTransport:{...wsDiscoveryEvidence.snapshot(),matrix:receiveMatrix?.snapshot(),supportTrace:supportTrace.snapshot()},application:{name:'CCTV Network Assistant',version:'1.6.0',runtime:process.version,platform:process.platform},readiness:preflight,network:adapters.map(adapter=>({interfaceIndex:adapter.interfaceIndex,interfaceAlias:adapter.interfaceAlias,mediaType:adapter.mediaType,operationalStatus:adapter.operationalStatus,eligible:adapter.eligible,ipv4Addresses:adapter.ipv4Addresses})),monitoring:monitoringState(),discovery:{foreground:foregroundDiscovery.getState(),running:foregroundDiscovery.isActive(),engineRunning:pipelineEngine.getIsRunning(),phases:pipelineEngine.getStates().slice(0,4),advanced:advancedScanService.getStatus()},projectSession:projectDb.getSession(),events:supportEvents,pair:pairService.getStatus()?{verification:pairService.getStatus()!.verification,cameraResponded:pairService.getStatus()!.cameraReachabilityVerified,adapter:pairService.getStatus()!.adapter,state:pairService.getStatus()!.state,recoveryAvailable:pairService.getStatus()!.recoveryAvailable,errorCode:pairService.getStatus()!.errorCode,preview:{cameraIp:pairService.getStatus()!.cameraIp,interfaceIndex:pairService.getStatus()!.adapter.interfaceIndex,subnetSource:pairService.getStatus()!.subnetSource,candidate:pairService.getStatus()!.selectedCandidate}}:null});
     res.setHeader('Content-Disposition', 'attachment; filename="CCTV_Safe_Support_Bundle.json"'); res.json(bundle);
   } catch { res.status(500).json({ error: 'The safe support bundle could not be generated.' }); }
 });

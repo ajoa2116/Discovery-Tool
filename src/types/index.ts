@@ -371,6 +371,12 @@ export interface PairCandidate {
   evidence: string[];
 }
 
+export interface PairVerificationEvidence {
+  startedAt: string; elapsedMs: number; cameraResponded: boolean;
+  attempts: Array<{ attempt: number; checks: DiagnosticCheckEvidence[]; error?: string }>;
+  successfulSource?: string;
+}
+
 export interface PairSessionState {
   subnetSource?: 'CAMERA_EVIDENCE' | 'ADAPTER_PREFIX_PROPOSAL';
   id: string;
@@ -387,6 +393,7 @@ export interface PairSessionState {
   technicianConfirmedAt?: string;
   adapterConfigurationVerified?: boolean;
   cameraReachabilityVerified?: boolean;
+  verification?: PairVerificationEvidence;
   message?: string;
   errorCode?: string;
   recoveryAvailable: boolean;

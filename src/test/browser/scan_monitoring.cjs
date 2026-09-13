@@ -60,7 +60,7 @@ let passed=0;const check=(v,name)=>{assert.ok(v,name);passed++;console.log('PASS
  }
  await scan().click();await stop().waitFor();
  await page.evaluate(()=>{const s=__test.foreground.session;const foreground=__test.advance(s.origin,'FAILED',s.sessionId);__test.emit({type:'FOREGROUND_SCAN_STATE',context:s,data:{foreground}})});await banner().waitFor();const failed=await page.evaluate(()=>structuredClone(__test.foreground));check(await banner().isVisible(),'genuine current foreground failure displays banner');
- await scan().click();await stop().waitFor();check(await banner().count()===0,'new user scan clears previous failure');
+ await scan().click();await stop().waitFor();await banner().waitFor({state:'hidden'});check(await banner().count()===0,'new user scan clears previous failure');
  await page.evaluate(()=>{const s=__test.foreground.session;const foreground=__test.advance(s.origin,'COMPLETED',s.sessionId);__test.emit({type:'FOREGROUND_SCAN_STATE',context:s,data:{foreground}})});await scan().waitFor();check(await banner().count()===0,'successful recovery has no stale banner');
  await page.evaluate(old=>__test.emit({type:'FOREGROUND_SCAN_STATE',context:old.session,data:{foreground:old}}),failed);check(await banner().count()===0,'old-session failure cannot overwrite success');
  await page.evaluate(()=>{__test.foreground={epoch:'restarted',revision:0,session:null}});await page.clock.runFor(3200);

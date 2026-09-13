@@ -1,3 +1,4 @@
+import { verifyAfterPair } from './post_pair_verification.ts';
 import { promises as fs } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -5,7 +6,7 @@ import { Device, PairCandidate, PairSessionState, WindowsAdapterSnapshot } from 
 import { SiteProjectDatabase, projectDb } from '../storage/project_db.ts';
 import { appStateDb } from '../storage/app_db.ts';
 import { DeviceDiagnosticEngine, NodeTcpDiagnosticProvider, WindowsPingProvider, PingProvider } from '../engine/diagnostic_engine.ts';
-import { WindowsNeighborProvider, NeighborProvider } from '../engine/device_enrichment.ts';
+import { WindowsNeighborProvider, NeighborProvider, normalizeMacAddress } from '../engine/device_enrichment.ts';
 import { NetworkConfigurationError, PowerShellWindowsNetworkAdapterService, WindowsNetworkAdapterService } from './windows_adapter_service.ts';
 import { pairTargetBlock, applyNetworkRelationship } from '../../shared/network_relationship.ts';
 import { normalizeIPv4 } from '../../shared/address_validation.ts';
@@ -86,6 +87,7 @@ export class PairService {
     private readonly diagnostics = new DeviceDiagnosticEngine(),
     private readonly recovery: PairRecoveryStore = new JsonPairRecoveryStore(),
     private readonly database: SiteProjectDatabase = projectDb,
+    private readonly verificationOptions: {windowMs?:number;settleMs?:number;neighbors?:NeighborProvider;changed?:(state:PairSessionState)=>void} = {},
   ) {}
 
   async initializeRecovery(): Promise<PairSessionState | null> {
@@ -157,17 +159,35 @@ export class PairService {
     this.session.state = 'APPLYING'; this.session.technicianConfirmedAt = new Date().toISOString(); this.session.updatedAt = this.session.technicianConfirmedAt; this.session.recoveryAvailable = true;
     await this.recovery.save(this.session);
     this.audit('Technician confirmed Pair', { deviceId: this.session.deviceId, interfaceIndex: current.interfaceIndex, temporaryIp: this.session.selectedCandidate.ipAddress });
+    this.verificationOptions.changed?.(this.getStatus()!);
     try {
       const applied = await this.adapters.applyTemporary(current.interfaceIndex, this.session.selectedCandidate.ipAddress, this.session.selectedCandidate.prefixLength);
       this.session.state = 'VERIFYING';
       const verified = applied.ipv4Addresses.some(item => item.address === this.session!.selectedCandidate!.ipAddress && item.prefixLength === this.session!.selectedCandidate!.prefixLength);
       this.session.adapterConfigurationVerified = verified;
       if (!verified) throw new NetworkConfigurationError('Windows did not report the intended temporary address after Pair.', 'APPLY_VERIFICATION_FAILED');
-      const device = this.database.getDeviceById(this.session.deviceId)!;
-      device.reachability = { ...device.reachability, discoveryInterface: { name: applied.interfaceAlias, ipAddress: this.session.selectedCandidate.ipAddress, netmask: prefixToSubnetMask(this.session.selectedCandidate.prefixLength), interfaceIndex: applied.interfaceIndex }, subnetClassification: 'LOCAL' };
-      await this.diagnostics.diagnose(device);
+      this.session.adapter = applied;
+      const device = structuredClone(this.database.getDeviceById(this.session.deviceId)!);
+      applyNetworkRelationship(device, [applied], this.database.getDevices(), applied.interfaceIndex);
+      device.reachability = { ...device.reachability, discoveryInterface: device.reachability?.relationshipAdapter };
       this.database.upsertDevice(device);
-      this.session.cameraReachabilityVerified = Boolean(device.diagnostics?.checks.slice(-6).some(check => check.success && !check.ambiguousIdentity));
+      this.verificationOptions.changed?.(this.getStatus()!);
+      const verification = await verifyAfterPair(device, this.diagnostics, this.verificationOptions.windowMs, this.verificationOptions.settleMs);
+      this.session.verification = verification.evidence;
+      this.session.cameraReachabilityVerified = verification.evidence.cameraResponded;
+      const enriched = verification.device;
+      if (!enriched.anchor.macAddress) {
+        const localAddress = applied.ipv4Addresses.find(ip=>ip.address===this.session!.selectedCandidate!.ipAddress)!.address;
+        const details:Record<string,unknown> = { requestedIp:enriched.network.ipAddress,interfaceIndex:applied.interfaceIndex,adapterIPv4:localAddress,deviceId:enriched.id };
+        try {
+          const neighbor = await (this.verificationOptions.neighbors ?? new WindowsNeighborProvider()).lookup(enriched.network.ipAddress,{interfaceIndex:applied.interfaceIndex,localAddress});
+          const mac = normalizeMacAddress(neighbor?.macAddress);
+          const accepted = Boolean(mac && neighbor?.ipAddress===enriched.network.ipAddress && neighbor.interfaceIndex===applied.interfaceIndex);
+          if (accepted) enriched.anchor.macAddress=mac;
+          this.audit('Post-Pair neighbor enrichment',{...details,state:neighbor?.state,rawMac:neighbor?.macAddress,normalizedMac:mac,result:accepted?'NEIGHBOR_MATCHED':'NEIGHBOR_NOT_FOUND',mergedDeviceId:accepted?enriched.id:undefined});
+        } catch { this.audit('Post-Pair neighbor enrichment',{...details,result:'NEIGHBOR_LOOKUP_UNAVAILABLE'}); }
+      }
+      this.database.upsertDevice(enriched);
       this.session.state = 'PAIRED';
       this.session.message = this.session.cameraReachabilityVerified ? 'Adapter Pair succeeded and the camera responded.' : 'Adapter Pair succeeded, but camera communication remains unverified. Restore remains available.';
       this.session.updatedAt = new Date().toISOString();
@@ -182,15 +202,19 @@ export class PairService {
 
   async restore(): Promise<PairSessionState> {
     if (!this.session?.recoveryAvailable) throw new NetworkConfigurationError('No original adapter snapshot is available to restore.', 'NO_RECOVERY');
+    if (['APPLYING','VERIFYING','RESTORING'].includes(this.session.state)) throw new NetworkConfigurationError('Wait for the current Pair operation to finish before Restore.', 'PAIR_OPERATION_ACTIVE');
     this.session.state = 'RESTORING'; this.session.updatedAt = new Date().toISOString();
+    this.verificationOptions.changed?.(this.getStatus()!);
     try {
       const restored = await this.adapters.restore(this.session.originalAdapter);
       const ok = this.verifyRestoration(this.session.originalAdapter, restored);
       if (!ok) throw new NetworkConfigurationError('Windows did not report the complete original adapter configuration after restore.', 'RESTORE_VERIFICATION_FAILED');
+      this.session.adapter = restored;
       this.session.state = 'RESTORED'; this.session.recoveryAvailable = false; this.session.message = 'Original network configuration restored and verified.'; this.session.updatedAt = new Date().toISOString();
       await this.recovery.clear();
       const device = this.database.getDeviceById(this.session.deviceId);
-      if (device) applyNetworkRelationship(device, [restored], this.database.getDevices(), restored.interfaceIndex);
+      if (device) { applyNetworkRelationship(device, [restored], this.database.getDevices(), restored.interfaceIndex);device.reachability={...device.reachability,discoveryInterface:device.reachability?.relationshipAdapter};this.database.upsertDevice(device); }
+      this.verificationOptions.changed?.(this.getStatus()!);
       this.audit('Original adapter configuration restored', { interfaceIndex: restored.interfaceIndex }); return this.getStatus()!;
     } catch (error) {
       this.session.state = 'ROLLBACK_REQUIRED'; this.session.errorCode = error instanceof NetworkConfigurationError ? error.code : 'RESTORE_FAILED'; this.session.message = error instanceof Error ? error.message : 'Restore failed.'; this.session.updatedAt = new Date().toISOString(); await this.recovery.save(this.session); throw error;

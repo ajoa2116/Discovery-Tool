@@ -237,9 +237,9 @@ export class DiagnosticRefreshMonitor {
     let index = 0;
     const worker = async () => {
       while (index < devices.length && !this.controller?.signal.aborted) {
-        const device = devices[index++];
+        const device = structuredClone(devices[index++]);
         await this.engine.diagnose(device, { isRefresh: true, signal: this.controller?.signal });
-        this.onDevice(device);
+        if (!this.controller?.signal.aborted) this.onDevice(device);
       }
     };
     try { await Promise.all(Array.from({ length: Math.min(this.maxConcurrency, devices.length) }, worker)); }
