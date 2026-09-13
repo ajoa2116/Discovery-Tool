@@ -62,7 +62,7 @@ export class WindowsPreflightService {
     add('app-data', 'Application data directory', await canWrite(appData), appData, true);
     add('pair-recovery', 'Pair recovery directory', await canWrite(appData), appData, true);
     add('project-report-output', 'Project/report output capability', await canWrite(appData), 'Temporary write/create/remove check completed.', true);
-    add('udp-discovery', 'UDP discovery sockets', await canUdp(), 'A local UDP socket was created and closed; no multicast probe was sent.', true);
+    add('udp-discovery', 'UDP discovery sockets', await canUdp(), 'A local UDP socket was created and closed; no multicast probe was sent. This does not prove port 3702 membership or inbound WS-Discovery reception.', true);
     const overall: ReadinessState = checks.some(check => check.critical && check.state === 'UNAVAILABLE') ? 'UNAVAILABLE' : checks.some(check => check.state !== 'READY') ? 'WARNING' : 'READY';
     return { application: 'CCTV Network Assistant', version: '1.6.0', platform, runtime, checkedAt: new Date().toISOString(), overall, checks };
   }

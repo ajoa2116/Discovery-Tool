@@ -1,5 +1,7 @@
+import { DiscoveryContext } from '../../shared/discovery_session.ts';
+import { wsDiscoveryEvidence, WsDiscoveryEvidence, safeSocketCode } from './ws_discovery_evidence.ts';
 import { isUtf8 } from 'node:buffer';
-import { discoveryMessageKind, inspectDiscoveryHello } from './ws_discovery_hello.ts';
+import { discoveryMessageKind, inspectDiscoveryHello, inspectDiscoveryMetadata } from './ws_discovery_hello.ts';
 import dgram, { RemoteInfo } from 'node:dgram';
 import { Device, NICInfo } from '../../types/index.ts';
 import { OnvifDriver } from './onvif.ts';
@@ -13,19 +15,25 @@ export interface DiscoveryTraceEvent { stage:string; elapsedMs:number; socket?:s
 export interface DiscoveryTrace { windowId:string; createdAt:string; closedAt?:string; timeoutMs:number; droppedEvents:number; events:DiscoveryTraceEvent[] }
 
 export interface UdpSocketLike {
+  address?(): {address:string;port:number;family?:string};
+  on(event: 'close' | 'listening', listener: () => void): this;
   bind(options: { port: number; address: string; exclusive?: boolean }, callback: () => void): void;
   setMulticastInterface(address: string): void;
   addMembership?(address: string, interfaceAddress: string): void;
   send(message: Uint8Array | string, port: number, address: string, callback: (error?: Error | null) => void): void;
   on(event: 'message', listener: (message: Buffer, remote: RemoteInfo) => void): this;
   on(event: 'error', listener: (error: Error) => void): this;
-  off(event: 'message' | 'error', listener: (...args: any[]) => void): this;
+  off(event: 'message' | 'error' | 'close' | 'listening', listener: (...args: any[]) => void): this;
   close(callback?: () => void): void;
 }
 
 export type UdpSocketFactory = () => UdpSocketLike;
 
 export interface WsDiscoveryOptions {
+  context?: DiscoveryContext;
+  evidence?: WsDiscoveryEvidence;
+  purpose?: 'DISCOVERY' | 'RECEIVE_TRACE_ONLY';
+  onTraceSession?: (windowId:string) => void;
   timeoutMs?: number;
   announcementOnly?: boolean;
   signal?: AbortSignal;
@@ -139,10 +147,53 @@ export function mergeDiscoveredDevice(
 export class NodeOnvifWsDiscoveryTransport implements OnvifDiscoveryTransport {
   public async discover(interfaces: NICInfo[], options: WsDiscoveryOptions = {}): Promise<WsDiscoveryResult> {
     const timeoutMs = Math.min(30_000, Math.max(1, options.timeoutMs ?? DEFAULT_DISCOVERY_WINDOW_MS));
+    const evidence=options.evidence || wsDiscoveryEvidence;
+    const session=evidence.begin(options.context,interfaces,timeoutMs,options.purpose);
+    options.onTraceSession?.(session.windowId);
+    const localProbeIds=new Set<string>();
     const started=Date.now();
-    const trace:DiscoveryTrace={windowId:crypto.randomUUID(),createdAt:new Date(started).toISOString(),timeoutMs,droppedEvents:0,events:[]};
+    const trace:DiscoveryTrace={windowId:session.windowId,createdAt:new Date(started).toISOString(),timeoutMs,droppedEvents:0,events:[]};
     const record=(stage:string,fields:Omit<DiscoveryTraceEvent,'stage'|'elapsedMs'>={})=>{if(trace.events.length<128)trace.events.push({stage,elapsedMs:Date.now()-started,...fields});else trace.droppedEvents++};
     const socketFactory = options.socketFactory ?? (() => dgram.createSocket({ type: 'udp4', reuseAddr: true }));
+    const trackedFactory = (factory:UdpSocketFactory, kind:'ANNOUNCEMENT'|'PROBE', nic?:NICInfo):UdpSocketFactory => () => {
+      const socketId=crypto.randomUUID(),details:Record<string,unknown>={socketId,kind,type:'udp4',reuseAddr:options.socketFactory||options.multicastSocketFactory?'INJECTED_FACTORY':true,adapterAlias:nic?.name.slice(0,80),interfaceIndex:nic?.interfaceIndex,adapterIPv4:nic?.ipAddress,memberships:[],localAddress:null,localPort:null};
+      if(session.sockets.length<32)session.sockets.push(details);
+      const event=(stage:string,fields:Record<string,unknown>={})=>evidence.event(session.windowId,stage,{socketId,...fields});
+      let socket:UdpSocketLike;
+      try {socket=factory();event('SOCKET_CREATED');}catch(error){session.counters.socketErrorCount++;event('SOCKET_CREATE_FAILED',{code:safeSocketCode(error)});throw error;}
+      const observe=(message:Buffer,remote:RemoteInfo)=>{
+        session.counters.datagramsReceived++;
+        const xml=isUtf8(message)?message.toString('utf8'):null,xmlLike=xml!==null&&xml.trimStart().startsWith('<');
+        const metadata=xmlLike?inspectDiscoveryMetadata(xml!):{soapParsed:false,actionFound:false,kind:'UNKNOWN',messageId:''};
+        const self=interfaces.some(n=>n.ipAddress===remote.address)||(metadata.kind==='PROBE'&&localProbeIds.has(metadata.messageId));
+        if(self)session.counters.selfDatagrams++;else {session.counters.externalDatagrams++;session.firstExternalDatagramAt ||= new Date().toISOString();}
+        if(self&&metadata.kind==='PROBE')session.firstSelfProbeAt ||= new Date().toISOString();
+        if(metadata.kind==='HELLO')session.firstHelloAt ||= new Date().toISOString();
+        if(metadata.kind==='HELLO')session.counters.helloCount++;
+        if(metadata.kind==='PROBE_MATCH')session.counters.probeMatchCount++;
+        if(!metadata.soapParsed)session.counters.parseErrorCount++;
+        const {messageId: _privateMessageId,...safeMetadata}=metadata;
+        const datagram={socketId,sequence:session.counters.datagramsReceived,sourceIp:remote.address,sourcePort:remote.port,bytes:message.length,classification:xml===null?'UNKNOWN':xmlLike?'XML':'NON_XML',appearsSoap:Boolean(xml&&/<(?:[\w.-]+:)?Envelope\b/.test(xml)),selfTraffic:self,adapterAlias:nic?.name.slice(0,80),interfaceIndex:nic?.interfaceIndex,configuredAdapterIPv4:nic?.ipAddress,ingressInterface:'NOT_EXPOSED_BY_NODE',listenerMulticastGroup:ONVIF_MULTICAST_ADDRESS,listenerLocalPort:details.localPort,destinationAddress:'NOT_EXPOSED_BY_NODE',...safeMetadata};
+        evidence.datagram(session.windowId,datagram);event('UDP_DATAGRAM_RECEIVED',{sourceIp:remote.address,bytes:message.length,selfTraffic:self,sequence:session.counters.datagramsReceived});
+        if(metadata.soapParsed)evidence.parser(session.windowId,'SOAP_PARSED',{sequence:session.counters.datagramsReceived});
+        evidence.parser(session.windowId,'ACTION_CLASSIFIED',{sequence:session.counters.datagramsReceived,...safeMetadata});
+      };
+      const error=(reason:Error)=>{session.counters.socketErrorCount++;details.errorCode=safeSocketCode(reason);event('SOCKET_ERROR',{code:details.errorCode});};
+      const listening=()=>{try{const bound=socket.address?.();if(bound){details.localAddress=bound.address;details.localPort=bound.port;details.family=bound.family;}event('SOCKET_READY',{localAddress:details.localAddress,localPort:details.localPort,addressEvidence:bound?'SOCKET_ADDRESS':'UNAVAILABLE'});}catch{event('SOCKET_ADDRESS_UNAVAILABLE');}};
+      const closed=()=>{details.closedAt=new Date().toISOString();event('SOCKET_CLOSED',{reason:details.closeReason||'EXTERNAL_CLOSE'});socket.off('close',closed);};
+      socket.on('message',observe);socket.on('error',error);socket.on('close',closed);event('RECEIVE_HANDLER_ATTACHED');
+      const wrapped:UdpSocketLike={
+        address:()=>socket.address!(),
+        bind:(binding,callback)=>{details.intendedBindAddress=binding.address;details.intendedBindPort=binding.port;details.nodeExclusive=binding.exclusive;event('BIND_ATTEMPT',{...binding});try{socket.bind(binding,()=>{listening();details.openedAt=new Date().toISOString();event('RECEIVE_WINDOW_OPEN');callback();});}catch(reason){error(reason as Error);throw reason;}},
+        addMembership:(group,local)=>{const membership:Record<string,unknown>={group,interfaceIPv4:local,attemptedAt:new Date().toISOString(),status:'ATTEMPTED'};if((details.memberships as unknown[]).length<32)(details.memberships as unknown[]).push(membership);event('MULTICAST_JOIN_ATTEMPT',{group,interfaceIPv4:local});try{if(!socket.addMembership)throw Error();socket.addMembership(group,local);membership.status='JOINED';event('MULTICAST_JOIN_SUCCEEDED',{group,interfaceIPv4:local});}catch(reason){membership.status='FAILED';membership.code=safeSocketCode(reason);session.counters.socketErrorCount++;event('MULTICAST_JOIN_FAILED',{group,interfaceIPv4:local,code:membership.code});throw reason;}},
+        setMulticastInterface:local=>{details.outboundInterface=local;event('OUTBOUND_INTERFACE_SET',{interfaceIPv4:local});try{socket.setMulticastInterface(local);}catch(reason){error(reason as Error);throw reason;}},
+        send:(message,port,address,callback)=>{const id=inspectDiscoveryMetadata(String(message)).messageId;if(id)localProbeIds.add(id);event('PROBE_SEND_ATTEMPT',{address,port});try{socket.send(message,port,address,reason=>{if(reason)session.counters.socketErrorCount++;event(reason?'PROBE_SEND_FAILED':'PROBE_SENT',reason?{code:safeSocketCode(reason)}:{});callback(reason);});}catch(reason){session.counters.socketErrorCount++;event('PROBE_SEND_FAILED',{code:safeSocketCode(reason)});throw reason;}},
+        on:((name:any,listener:any)=>{socket.on(name,listener);return wrapped;}) as UdpSocketLike['on'],
+        off:(name,listener)=>{socket.off(name,listener);return wrapped;},
+        close:callback=>{details.closeRequestedAt=new Date().toISOString();details.closeReason=options.signal?.aborted?'CANCELLED':details.errorCode?'SOCKET_ERROR':'WINDOW_FINISHED';event('SOCKET_CLOSE_REQUESTED',{reason:details.closeReason});socket.off('message',observe);socket.off('error',error);try{socket.close(callback);}catch(reason){session.counters.socketErrorCount++;event('SOCKET_CLOSE_FAILED',{code:safeSocketCode(reason)});socket.off('close',closed);throw reason;}},
+      };
+      return wrapped;
+    };
     const devices: Device[] = [];
     const interfaceErrors: WsDiscoveryResult['interfaceErrors'] = [];
     let cancelled = options.signal?.aborted ?? false;
@@ -150,7 +201,7 @@ export class NodeOnvifWsDiscoveryTransport implements OnvifDiscoveryTransport {
     const receive = (message: Buffer, remote: RemoteInfo, nic?: NICInfo, announcementOnly = false) => {
       const metadata={socket:announcementOnly?'ANNOUNCEMENT':'PROBE',adapter:nic?.name.slice(0,80),sourceIp:remote.address,sourcePort:remote.port,bytes:message.length};
       record('UDP_RECEIVED',metadata);
-      if(!isUtf8(message)){messageCounts.rejected++;record('CANDIDATE_REJECTED',{...metadata,reason:'INVALID_UTF8'});return;}
+      if(!isUtf8(message)){messageCounts.rejected++;session.counters.rejectedCount++;evidence.parser(session.windowId,'CANDIDATE_REJECTED',{reason:'INVALID_UTF8'});record('CANDIDATE_REJECTED',{...metadata,reason:'INVALID_UTF8'});return;}
       const xml = message.toString('utf8');
       const kind=discoveryMessageKind(xml);
       const hello=kind==='HELLO'||(kind==='UNKNOWN'&&/<(?:[A-Za-z_][\w.-]*:)?Hello\b/.test(xml));
@@ -158,8 +209,8 @@ export class NodeOnvifWsDiscoveryTransport implements OnvifDiscoveryTransport {
       for(const stage of inspection?.stages || [])record(stage,{...metadata,metadataVersion:inspection?.metadataVersion});
       const legacyProbe=kind==='UNKNOWN'&&!/<(?:[A-Za-z_][\w.-]*:)?Action\b/.test(xml)&&/<(?:[A-Za-z_][\w.-]*:)?ProbeMatch\b/.test(xml);
       const parsed=inspection?.device || (!announcementOnly&&(kind==='PROBE_MATCH'||legacyProbe)?OnvifDriver.parseProbeMatch(xml,remote.address):null);
-      if (!parsed?.id || !parsed.anchor || !parsed.network) { messageCounts.rejected++;record('CANDIDATE_REJECTED',{...metadata,reason:inspection?.reason || 'UNSUPPORTED_OR_MALFORMED_MESSAGE'});return; }
-      if(interfaces.some(local=>local.ipAddress===parsed.network!.ipAddress || local.ipAddress===remote.address)){messageCounts.rejected++;record('CANDIDATE_REJECTED',{...metadata,reason:'LOCAL_HOST'});return;}
+      if (!parsed?.id || !parsed.anchor || !parsed.network) { messageCounts.rejected++;session.counters.rejectedCount++;evidence.parser(session.windowId,'CANDIDATE_REJECTED',{reason:inspection?.reason || 'UNSUPPORTED_OR_MALFORMED_MESSAGE',sourceIp:remote.address,sequence:session.counters.datagramsReceived});record('CANDIDATE_REJECTED',{...metadata,reason:inspection?.reason || 'UNSUPPORTED_OR_MALFORMED_MESSAGE'});return; }
+      if(interfaces.some(local=>local.ipAddress===parsed.network!.ipAddress || local.ipAddress===remote.address)){messageCounts.rejected++;session.counters.rejectedCount++;evidence.parser(session.windowId,'CANDIDATE_REJECTED',{reason:'LOCAL_HOST',sequence:session.counters.datagramsReceived});record('CANDIDATE_REJECTED',{...metadata,reason:'LOCAL_HOST'});return;}
       if (hello) messageCounts.acceptedHellos++; else messageCounts.acceptedProbeMatches++;
       const now = new Date().toISOString();
       // Compare the advertised endpoint, not the UDP sender. Multi-NIC reception does not identify an ingress NIC.
@@ -173,12 +224,16 @@ export class NodeOnvifWsDiscoveryTransport implements OnvifDiscoveryTransport {
           discoveryInterface: nic ? { name: nic.name, ipAddress: nic.ipAddress, netmask: nic.netmask, interfaceIndex: nic.interfaceIndex } : undefined },
         discoveredPhase: 3, firstSeenAt: now, lastSeenAt: now };
       const merged = mergeDiscoveredDevice(devices, device);
+      evidence.parser(session.windowId,hello?'HELLO_PARSED':'PROBE_MATCH_PARSED',{sequence:session.counters.datagramsReceived});
+      evidence.parser(session.windowId,'XADDR_EXTRACTED',{address:device.network.ipAddress,sequence:session.counters.datagramsReceived});
+      evidence.parser(session.windowId,'CANDIDATE_CREATED',{address:device.network.ipAddress,classification:device.status,verification:device.sessionVerification,sequence:session.counters.datagramsReceived});
+      if(options.purpose==='RECEIVE_TRACE_ONLY')evidence.parser(session.windowId,'INVENTORY_NOT_REQUESTED',{reason:'SUPPORT_RECEIVE_TRACE_ONLY'});
       record('CANDIDATE_ACCEPTED',{...metadata,address:device.network.ipAddress,classification:device.reachability?.subnetClassification});
-      try{options.onDevice?.(merged.device, merged.isNew)}catch{record('DELIVERY_FAILED',{...metadata,reason:'PIPELINE_CALLBACK_FAILED'});interfaceErrors.push({interfaceName:nic?.name || 'Multicast listener',message:'A discovery candidate could not be delivered to the inventory pipeline.'})}
+      try{options.onDevice?.(merged.device, merged.isNew)}catch{evidence.parser(session.windowId,'INVENTORY_REJECTED',{reason:'PIPELINE_CALLBACK_FAILED'});record('DELIVERY_FAILED',{...metadata,reason:'PIPELINE_CALLBACK_FAILED'});interfaceErrors.push({interfaceName:nic?.name || 'Multicast listener',message:'A discovery candidate could not be delivered to the inventory pipeline.'})}
     };
 
     const eligibleInterfaces = interfaces.filter(nic => !nic.isInternal && Boolean(nic.ipAddress));
-    const announcements = this.listenAnnouncements(eligibleInterfaces, timeoutMs, options.multicastSocketFactory ?? socketFactory, options.signal,
+    const announcements = this.listenAnnouncements(eligibleInterfaces, timeoutMs, trackedFactory(options.multicastSocketFactory ?? socketFactory,'ANNOUNCEMENT'), options.signal,
       (message, remote) => {
         // dgram exposes no receiving interface index. Do not invent one for multi-adapter multicast.
         const nic = eligibleInterfaces.length === 1 ? eligibleInterfaces[0] : undefined;
@@ -186,7 +241,7 @@ export class NodeOnvifWsDiscoveryTransport implements OnvifDiscoveryTransport {
       }, interfaceErrors, record);
     await Promise.all([announcements, ...(options.announcementOnly ? [] : eligibleInterfaces).map(async nic => {
       try {
-        await this.probeInterface(nic, timeoutMs, socketFactory, options.signal, (message, remote) => receive(message, remote, nic), record);
+        await this.probeInterface(nic, timeoutMs, trackedFactory(socketFactory,'PROBE',nic), options.signal, (message, remote) => receive(message, remote, nic), record);
       } catch (error) {
         if (options.signal?.aborted) {
           cancelled = true;
@@ -200,6 +255,7 @@ export class NodeOnvifWsDiscoveryTransport implements OnvifDiscoveryTransport {
     })]);
 
     trace.closedAt=new Date().toISOString();record('WINDOW_CLOSED',{reason:options.signal?.aborted?'CANCELLED':'COMPLETED'});
+    evidence.end(session.windowId,options.signal?.aborted?'CANCELLED':session.counters.socketErrorCount?'WINDOW_FINISHED_WITH_ERRORS':'DEADLINE');
     return { devices, interfaceErrors, messageCounts, trace, cancelled: cancelled || Boolean(options.signal?.aborted) };
   }
 

@@ -67,3 +67,17 @@ export function inspectDiscoveryHello(xml:string,senderIp:string):HelloInspectio
     return {reason:'ACCEPTED',stages,metadataVersion,hasUuid:Boolean(uuid),hasTypes:types.length>0,hasScopes:Boolean(scopes.trim()),device:{id,anchor:{macAddress:mac,onvifEndpointUuid:uuid,serialNumber,vendor,model},network:{ipAddress:chosen.ip,senderIp,subnetMask:null,port:chosen.port,protocol:'ONVIF',xAddr:chosen.value,xAddrs:[...new Set(validUrls.map(url=>url.value))]},status:'DISCOVERED',sessionVerification:'NOT_VERIFIED',statusMessage:'Observed an ONVIF WS-Discovery Hello announcement; unicast communication is not verified.',discoveredPhase:3}};
   }catch{return reject('MALFORMED_DISCOVERY_XML')}
 }
+
+/** Diagnostic projection only. Never exports XML, scope values, credentials, or arbitrary Action text. */
+export function inspectDiscoveryMetadata(xml:string) {
+  try {
+    const envelope=soap(xml),header=envelope&&child(envelope,'Header',SOAP),action=header&&child(header,'Action',ADDRESSING);
+    const actionText=text(action),known=DISCOVERY.flatMap(ns=>['Hello','ProbeMatches','Probe','Bye'].map(kind=>`${ns}/${kind}`)).includes(actionText);
+    const kind=known?({Hello:'HELLO',ProbeMatches:'PROBE_MATCH',Probe:'PROBE',Bye:'BYE'} as Record<string,string>)[actionText.split('/').at(-1)!]:'UNKNOWN';
+    const body=envelope&&child(envelope,'Body',SOAP),message=body&&(child(body,'Hello',DISCOVERY)||child(body,'ProbeMatches',DISCOVERY)||child(body,'Probe',DISCOVERY)||child(body,'Bye',DISCOVERY));
+    const candidate=message&&(child(message,'ProbeMatch',DISCOVERY)||message),xaddrs=candidate&&child(candidate,'XAddrs',DISCOVERY);
+    const urls=text(xaddrs).trim().split(/\s+/).filter(Boolean);
+    const hosts=urls.flatMap(value=>{try{const u=new URL(value),host=value.match(/^https?:\/\/(\d{1,3}(?:\.\d{1,3}){3})(?::\d{1,5})?(?:[/?#]|$)/i)?.[1];return host&&normalizeIPv4(host)&&u.hostname===host&&!u.username&&!u.password&&!u.hash&&(!u.port||Number(u.port)>0)&&!/^(?:0|127)\./.test(host)&&Number(host.split('.')[0])<224?[host]:[]}catch{return []}});
+    return {soapParsed:Boolean(envelope),actionFound:Boolean(action),actionUri:known?actionText:action?'UNRECOGNIZED_ACTION':undefined,kind,messageId:text(header&&child(header,'MessageID',ADDRESSING)),xAddrCount:urls.length,validatedXAddrHosts:[...new Set(hosts)].slice(0,16),endpointReferencePresent:Boolean(candidate&&child(candidate,'EndpointReference',ADDRESSING)),typesPresent:Boolean(candidate&&child(candidate,'Types',DISCOVERY)),scopesPresent:Boolean(candidate&&child(candidate,'Scopes',DISCOVERY)),metadataVersionPresent:Boolean(candidate&&child(candidate,'MetadataVersion',DISCOVERY))};
+  } catch {return {soapParsed:false,actionFound:false,kind:'UNKNOWN',messageId:'',xAddrCount:0,validatedXAddrHosts:[]};}
+}

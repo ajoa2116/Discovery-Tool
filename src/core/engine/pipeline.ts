@@ -283,6 +283,7 @@ export class BatchExecutionPipeline {
     this.emit({ type: 'PHASE_START', phaseNumber: 3 });
 
     const result = await Phase3ActiveProbing.execute(this.currentInterfaces, this.onvifDiscovery, this.deviceEnricher, {
+      context: this.context || undefined,
       signal,
       timeoutMs: this.discoveryTimeoutMs,
       acceptDevice: filters ? device => matchesAdvancedScanFilters(device,filters) : undefined,

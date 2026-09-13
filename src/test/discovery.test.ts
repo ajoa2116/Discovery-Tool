@@ -44,8 +44,8 @@ class FakeSocket extends EventEmitter implements UdpSocketLike {
       queueMicrotask(() => this.emit('message', Buffer.from(this.behavior.xml!), remote));
     }
   }
-  public override on(event: 'message' | 'error', listener: (...args: any[]) => void): this { return super.on(event, listener); }
-  public override off(event: 'message' | 'error', listener: (...args: any[]) => void): this { return super.off(event, listener); }
+  public override on(event: 'message' | 'error' | 'close' | 'listening', listener: (...args: any[]) => void): this { return super.on(event, listener); }
+  public override off(event: 'message' | 'error' | 'close' | 'listening', listener: (...args: any[]) => void): this { return super.off(event, listener); }
   public close(callback?: () => void): void { this.closed = true; callback?.(); }
 }
 

@@ -1,3 +1,5 @@
+import { DiscoveryContext } from '../../shared/discovery_session.ts';
+import { wsDiscoveryEvidence } from '../drivers/ws_discovery_evidence.ts';
 import { Device, NICInfo } from '../../types/index.ts';
 import { appStateDb } from '../storage/app_db.ts';
 import { projectDb, SiteProjectDatabase } from '../storage/project_db.ts';
@@ -6,6 +8,7 @@ import { DeviceEnricher, WindowsDeviceEnricher } from './device_enrichment.ts';
 import { LocalHostIdentity } from '../network/local_host_identity.ts';
 
 export interface ActiveProbeOptions {
+  context?: DiscoveryContext;
   signal?: AbortSignal;
   acceptDevice?: (device: Device) => boolean;
   timeoutMs?: number;
@@ -33,11 +36,15 @@ export class Phase3ActiveProbing {
     const record=(stage:string,device:Device)=>{if(reconciliation.length<32)reconciliation.push({stage,ip:device.network.ipAddress,status:device.status,verification:device.sessionVerification})};
     const enrichmentTasks = new Map<string, Promise<void>>();
 
+    let windowId: string | undefined;
+    const traceStage=(stage:string,device:Device,reason?:string)=>{if(windowId)wsDiscoveryEvidence.parser(windowId,stage,{address:device.network.ipAddress,verification:device.sessionVerification,reason});};
     const result = await transport.discover(eligible, {
+      context: options.context, onTraceSession:id=>{windowId=id;},
       signal: options.signal,
       timeoutMs: options.timeoutMs,
       onDevice: (device) => {
         if (!localHost.isRemoteDevice(device)) {
+          traceStage('INVENTORY_REJECTED',device,'LOCAL_HOST');
           logs.push(`[Phase 3] Ignored local-host response at ${device.network.ipAddress}.`);
           return;
         }
@@ -46,10 +53,11 @@ export class Phase3ActiveProbing {
           (device.anchor.onvifEndpointUuid && existing.anchor.onvifEndpointUuid?.toLowerCase() === device.anchor.onvifEndpointUuid.toLowerCase()) ||
           (device.anchor.serialNumber && existing.anchor.serialNumber?.toLowerCase() === device.anchor.serialNumber.toLowerCase())
         ));
-        if (isNew && options.acceptDevice && !options.acceptDevice(device)) { logs.push('[Phase 3] ONVIF observation excluded by explicit Advanced Scan filters.'); return; }
+        if (isNew && options.acceptDevice && !options.acceptDevice(device)) { traceStage('INVENTORY_REJECTED',device,'ADVANCED_FILTER'); logs.push('[Phase 3] ONVIF observation excluded by explicit Advanced Scan filters.'); return; }
         const stored = database.upsertDevice(device);
-        record('INVENTORY_RECONCILED',stored);
+        record('INVENTORY_RECONCILED',stored); traceStage('RECONCILED',stored);
         options.onDevice?.(stored, isNew);
+        traceStage(database.getProject().devices.some(d=>d.id===stored.id)?'INVENTORY_PROMOTION':'INVENTORY_NOT_VISIBLE',stored);
         const enrichmentKey = stored.anchor.onvifEndpointUuid || stored.anchor.macAddress || stored.id;
         if (!enrichmentTasks.has(enrichmentKey)) {
           const task = enricher.enrich(stored, {
