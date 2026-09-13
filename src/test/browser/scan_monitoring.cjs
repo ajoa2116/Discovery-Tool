@@ -9,6 +9,15 @@ let passed=0;const check=(v,name)=>{assert.ok(v,name);passed++;console.log('PASS
  const scan=()=>page.getByRole('button',{name:'Scan',exact:true}),stop=()=>page.getByRole('button',{name:'Stop',exact:true});
  const scanning=()=>page.locator('footer').getByText('Scanning\u2026',{exact:true});
  check(await scan().isVisible()&&await stop().count()===0,'launch with enabled monitoring leaves main Scan idle');
+ const supportBefore=await page.evaluate(()=>JSON.stringify(__test.foreground));
+ await page.evaluate(()=>{__test.monitoring={...__test.monitoring,status:'DEFERRED',incrementalDiscovery:{pausedForSupport:true}};__test.emit({type:'MONITORING_STATE',context:{origin:'MONITORING'},data:{monitoring:__test.monitoring}})});
+ check(await scan().isVisible()&&await stop().count()===0,'support matrix pause never creates manual Stop');
+ check(await scanning().count()===0,'support matrix pause leaves main scan status Ready');
+ check(await page.getByText(/Monitor:.*discovery deferred/).count()===1,'support ownership is visible as discovery deferred');
+ check(await page.evaluate(()=>__test.requests.filter(r=>r.path.endsWith('/discovery/start')).length)===0,'support state never dispatches manual Scan');
+ check(await page.evaluate(()=>JSON.stringify(__test.foreground))===supportBefore,'support updates preserve foreground snapshot');
+ await page.evaluate(()=>{__test.monitoring={...__test.monitoring,status:'WAITING',incrementalDiscovery:{pausedForSupport:false}};__test.emit({type:'MONITORING_STATE',context:{origin:'MONITORING'},data:{monitoring:__test.monitoring}})});
+ check(await scan().isVisible()&&await page.getByText(/Monitor:.*discovery deferred/).count()===0,'support release restores monitoring display without Scan transition');
  await page.evaluate(()=>{let cycle=0;window.monitorTimer=setInterval(()=>{const context={origin:'MONITORING',sessionId:'monitor-'+(++cycle)};__test.monitoring={enabled:true,running:true,intervalMs:30000,status:'ACTIVE'};__test.emit({type:'MONITORING_STATE',context,data:{monitoring:__test.monitoring}});__test.emit({type:'PHASE_START',context,phaseNumber:3});setTimeout(()=>{__test.monitoring={...__test.monitoring,running:false,status:'WAITING'};__test.emit({type:'MONITORING_STATE',context,data:{monitoring:__test.monitoring}});__test.emit({type:'SCAN_COMPLETE',context});},5000)},30000)});
  await page.clock.runFor(30000);
  check(await scan().isVisible()&&await scanning().count()===0,'background cycle start never presents foreground Stop/Scanning');

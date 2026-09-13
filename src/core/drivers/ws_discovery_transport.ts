@@ -33,7 +33,8 @@ export type UdpSocketFactory = () => UdpSocketLike;
 
 export interface WsDiscoveryOptions {
   provenance?: EvidenceProvenance;
-  strategy?: 'WILDCARD_SELECTED' | 'WILDCARD_ALL' | 'ADAPTER_SPECIFIC';
+  strategy?: 'WILDCARD_SELECTED' | 'WILDCARD_ALL' | 'ADAPTER_SPECIFIC' | 'WILDCARD_EXCLUSIVE' | 'SINGLE_MEMBERSHIP';
+  awaitSocketClose?: boolean;
   localAddresses?: string[];
   context?: DiscoveryContext;
   evidence?: WsDiscoveryEvidence;
@@ -156,8 +157,10 @@ export class NodeOnvifWsDiscoveryTransport implements OnvifDiscoveryTransport {
     const localAddresses=new Set([...interfaces.map(n=>n.ipAddress),...(options.localAddresses||[])]);
     try {for(const nic of Object.values(os.networkInterfaces()).flat())if(nic?.family==='IPv4')localAddresses.add(nic.address);}catch {}
     const isLocal=(address:string)=>localAddresses.has(address)||/^127\./.test(address);
+    const closeWaits:Promise<void>[]=[];
     const strategy=options.strategy || (interfaces.length>1?'WILDCARD_ALL':'WILDCARD_SELECTED');
     if(strategy==='ADAPTER_SPECIFIC'&&(options.purpose!=='RECEIVE_TRACE_ONLY'||interfaces.length!==1))throw Error('Adapter-specific binding requires a single-adapter support session.');
+    if(['WILDCARD_EXCLUSIVE','SINGLE_MEMBERSHIP'].includes(strategy)&&(options.purpose!=='RECEIVE_TRACE_ONLY'||interfaces.length!==1))throw Error('Single-adapter support strategy required.');
     const evidence=options.evidence || wsDiscoveryEvidence;
     const session=evidence.begin(options.context,interfaces,timeoutMs,options.purpose);
     session.provenance=provenance;session.strategy=strategy;session.processId=process.pid;
@@ -168,6 +171,8 @@ export class NodeOnvifWsDiscoveryTransport implements OnvifDiscoveryTransport {
     const record=(stage:string,fields:Omit<DiscoveryTraceEvent,'stage'|'elapsedMs'>={})=>{if(trace.events.length<128)trace.events.push({stage,elapsedMs:Date.now()-started,...fields});else trace.droppedEvents++};
     const socketFactory = options.socketFactory ?? (() => dgram.createSocket({ type: 'udp4', reuseAddr: true }));
     const trackedFactory = (factory:UdpSocketFactory, kind:'ANNOUNCEMENT'|'PROBE', nic?:NICInfo):UdpSocketFactory => () => {
+      let closedResolve:()=>void=()=>{};
+      const closedPromise=new Promise<void>(resolve=>{closedResolve=resolve;});
       const socketId=crypto.randomUUID(),details:Record<string,unknown>={socketId,kind,type:'udp4',reuseAddr:options.socketFactory||options.multicastSocketFactory?'INJECTED_FACTORY':true,adapterAlias:nic?.name.slice(0,80),interfaceIndex:nic?.interfaceIndex,adapterIPv4:nic?.ipAddress,memberships:[],localAddress:null,localPort:null};
       if(session.sockets.length<32)session.sockets.push(details);
       const event=(stage:string,fields:Record<string,unknown>={})=>evidence.event(session.windowId,stage,{socketId,...fields});
@@ -194,7 +199,8 @@ export class NodeOnvifWsDiscoveryTransport implements OnvifDiscoveryTransport {
       };
       const error=(reason:Error)=>{session.counters.socketErrorCount++;details.errorCode=safeSocketCode(reason);event('SOCKET_ERROR',{code:details.errorCode});};
       const listening=()=>{try{const bound=socket.address?.();if(bound){details.localAddress=bound.address;details.localPort=bound.port;details.family=bound.family;}event('SOCKET_READY',{localAddress:details.localAddress,localPort:details.localPort,addressEvidence:bound?'SOCKET_ADDRESS':'UNAVAILABLE'});}catch{event('SOCKET_ADDRESS_UNAVAILABLE');}};
-      const closed=()=>{details.closedAt=new Date().toISOString();event('SOCKET_CLOSED',{reason:details.closeReason||'EXTERNAL_CLOSE'});socket.off('close',closed);};
+      const closed=()=>{closedResolve();details.closedAt=new Date().toISOString();event('SOCKET_CLOSED',{reason:details.closeReason||'EXTERNAL_CLOSE'});socket.off('close',closed);};
+      closeWaits.push(closedPromise);
       socket.on('message',observe);socket.on('error',error);socket.on('close',closed);event('RECEIVE_HANDLER_ATTACHED');
       const wrapped:UdpSocketLike={
         address:()=>socket.address!(),
@@ -204,7 +210,7 @@ export class NodeOnvifWsDiscoveryTransport implements OnvifDiscoveryTransport {
         send:(message,port,address,callback)=>{const id=inspectDiscoveryMetadata(String(message)).messageId;if(id)localProbeIds.add(id);event('PROBE_SEND_ATTEMPT',{address,port});try{socket.send(message,port,address,reason=>{if(reason)session.counters.socketErrorCount++;event(reason?'PROBE_SEND_FAILED':'PROBE_SENT',reason?{code:safeSocketCode(reason)}:{});callback(reason);});}catch(reason){session.counters.socketErrorCount++;event('PROBE_SEND_FAILED',{code:safeSocketCode(reason)});throw reason;}},
         on:((name:any,listener:any)=>{socket.on(name,listener);return wrapped;}) as UdpSocketLike['on'],
         off:(name,listener)=>{socket.off(name,listener);return wrapped;},
-        close:callback=>{details.closeRequestedAt=new Date().toISOString();details.closeReason=options.signal?.aborted?'CANCELLED':details.errorCode?'SOCKET_ERROR':'WINDOW_FINISHED';event('SOCKET_CLOSE_REQUESTED',{reason:details.closeReason});socket.off('message',observe);socket.off('error',error);try{socket.close(callback);}catch(reason){session.counters.socketErrorCount++;event('SOCKET_CLOSE_FAILED',{code:safeSocketCode(reason)});socket.off('close',closed);throw reason;}},
+        close:callback=>{details.closeRequestedAt=new Date().toISOString();details.closeReason=options.signal?.aborted?'CANCELLED':details.errorCode?'SOCKET_ERROR':'WINDOW_FINISHED';event('SOCKET_CLOSE_REQUESTED',{reason:details.closeReason});socket.off('message',observe);socket.off('error',error);try{socket.close(callback);}catch(reason){session.counters.socketErrorCount++;event('SOCKET_CLOSE_FAILED',{code:safeSocketCode(reason)});if(safeSocketCode(reason)==='ERR_SOCKET_DGRAM_NOT_RUNNING'){closedResolve();details.closedAt=new Date().toISOString();details.closeConfirmation='SOCKET_NOT_RUNNING';socket.off('close',closed);}throw reason;}},
       };
       return wrapped;
     };
@@ -253,7 +259,7 @@ export class NodeOnvifWsDiscoveryTransport implements OnvifDiscoveryTransport {
         // dgram exposes no receiving interface index. Do not invent one for multi-adapter multicast.
         const nic = eligibleInterfaces.length === 1 ? eligibleInterfaces[0] : undefined;
         receive(message, remote, nic, true);
-      }, interfaceErrors, record, strategy==='ADAPTER_SPECIFIC'?eligibleInterfaces[0]?.ipAddress:'0.0.0.0');
+      }, interfaceErrors, record, strategy==='ADAPTER_SPECIFIC'?eligibleInterfaces[0]?.ipAddress:'0.0.0.0',strategy==='WILDCARD_EXCLUSIVE');
     await Promise.all([announcements, ...(options.announcementOnly ? [] : eligibleInterfaces).map(async nic => {
       try {
         await this.probeInterface(nic, timeoutMs, trackedFactory(socketFactory,'PROBE',nic), options.signal, (message, remote) => receive(message, remote, nic), record);
@@ -269,13 +275,17 @@ export class NodeOnvifWsDiscoveryTransport implements OnvifDiscoveryTransport {
       }
     })]);
 
+    if(options.awaitSocketClose){
+      let timer:ReturnType<typeof setTimeout>|undefined;
+      try{await Promise.race([Promise.all(closeWaits),new Promise<never>((_,reject)=>{timer=setTimeout(()=>reject(Error('SOCKET_CLOSE_NOT_CONFIRMED')),1000);})]);}catch(error){evidence.end(session.windowId,'SOCKET_CLOSE_NOT_CONFIRMED');throw error;}finally{if(timer)clearTimeout(timer);}
+    }
     trace.closedAt=new Date().toISOString();record('WINDOW_CLOSED',{reason:options.signal?.aborted?'CANCELLED':'COMPLETED'});
     evidence.end(session.windowId,options.signal?.aborted?'CANCELLED':session.counters.socketErrorCount?'WINDOW_FINISHED_WITH_ERRORS':'DEADLINE');
     return { devices, interfaceErrors, messageCounts, trace, cancelled: cancelled || Boolean(options.signal?.aborted) };
   }
 
   private listenAnnouncements(interfaces: NICInfo[], timeoutMs: number, factory: UdpSocketFactory, signal: AbortSignal | undefined,
-    receive: (message: Buffer, remote: RemoteInfo) => void, warnings: WsDiscoveryResult['interfaceErrors'], record:(stage:string,fields?:Omit<DiscoveryTraceEvent,'stage'|'elapsedMs'>)=>void, bindAddress='0.0.0.0'): Promise<void> {
+    receive: (message: Buffer, remote: RemoteInfo) => void, warnings: WsDiscoveryResult['interfaceErrors'], record:(stage:string,fields?:Omit<DiscoveryTraceEvent,'stage'|'elapsedMs'>)=>void, bindAddress='0.0.0.0', exclusive=false): Promise<void> {
     if (!interfaces.length || signal?.aborted) return Promise.resolve();
     return new Promise(resolve => {
       let socket: UdpSocketLike;
@@ -287,7 +297,7 @@ export class NodeOnvifWsDiscoveryTransport implements OnvifDiscoveryTransport {
       socket.on('error', failure); socket.on('message', receive);
       signal?.addEventListener('abort', finish, { once: true });
       timer = setTimeout(finish, timeoutMs);
-      try { socket.bind({ port: ONVIF_DISCOVERY_PORT, address: bindAddress, exclusive: false }, () => {
+      try { socket.bind({ port: ONVIF_DISCOVERY_PORT, address: bindAddress, exclusive }, () => {
         if (settled) return;
         record('WINDOW_OPENED',{socket:'ANNOUNCEMENT',address:bindAddress});
         for (const nic of interfaces) {

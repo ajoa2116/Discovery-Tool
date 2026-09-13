@@ -621,7 +621,7 @@ export default function App() {
           <span>•</span><span>{isScanning?'Scanning…':'Ready'}</span>{projectSession?.dirty&&<><span>•</span><span className="text-amber-600">Unsaved changes</span></>}
         </div>
 
-        <span className="text-[11px]">Monitor: {diagnosticRefresh.enabled ? `${Math.round(diagnosticRefresh.intervalMs / 1000)}s${diagnosticRefresh.incrementalDiscovery?.pausedForForeground ? ' - discovery deferred' : ''}` : 'Paused'}</span>
+        <span className="text-[11px]">Monitor: {diagnosticRefresh.enabled ? `${Math.round(diagnosticRefresh.intervalMs / 1000)}s${(diagnosticRefresh.incrementalDiscovery?.pausedForForeground || diagnosticRefresh.incrementalDiscovery?.pausedForSupport) ? ' - discovery deferred' : ''}` : 'Paused'}</span>
       </footer>
 
       {/* ─────────────────────────────────────────────────────────────

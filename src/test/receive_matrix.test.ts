@@ -1,0 +1,55 @@
+import { strict as assert } from 'node:assert';
+import { EventEmitter } from 'node:events';
+import express from 'express';
+import { ReceiveMatrix, MATRIX_STRATEGIES, MatrixInput } from '../core/readiness/receive_matrix.ts';
+import { createReceiveMatrixRouter } from '../server/receive_matrix_routes.ts';
+import { NodeOnvifWsDiscoveryTransport, UdpSocketLike } from '../core/drivers/ws_discovery_transport.ts';
+import { WsDiscoveryEvidence } from '../core/drivers/ws_discovery_evidence.ts';
+import { ForegroundDiscovery } from '../core/engine/foreground_discovery.ts';
+import { IncrementalDiscoveryMonitor } from '../core/engine/incremental_discovery_monitor.ts';
+import { SiteProjectDatabase } from '../core/storage/project_db.ts';
+import { Phase3ActiveProbing } from '../core/engine/phase3_probing.ts';
+import { NoopDeviceEnricher } from '../core/engine/device_enrichment.ts';
+import { LocalHostIdentity } from '../core/network/local_host_identity.ts';
+import { fieldNic,fieldEthernet } from './support/first_camera_field.ts';
+import { hanwhaHello } from './support/hanwha_hello.ts';
+let passed=0;const check=(v:unknown,name:string)=>{assert.ok(v,name);passed++;console.log(`PASS: ${name}`)};
+const until=async(fn:()=>boolean)=>{const end=Date.now()+3000;while(!fn()){if(Date.now()>end)throw Error('Test timeout');await new Promise(r=>setTimeout(r,1));}};
+class Socket extends EventEmitter implements UdpSocketLike {
+ bound:any;members:string[]=[];closed=false;closeRequested=false;fail=false;packets=1;
+ bind(options:any,cb:()=>void){this.bound=options;if(this.fail)throw Object.assign(Error('PRIVATE_SECRET'),{code:'EADDRINUSE'});cb();queueMicrotask(()=>{for(let i=0;i<this.packets;i++)this.emit('message',Buffer.from(hanwhaHello({uuid:true,padding:1600})),{address:'192.168.1.100',port:3702});});}
+ address(){return {address:this.bound.address,port:this.bound.port||49180,family:'IPv4'};}
+ addMembership(_g:string,ip:string){this.members.push(ip);}
+ setMulticastInterface(){}
+ send(_m:unknown,_p:number,_a:string,cb:(error?:Error|null)=>void){cb();}
+ close(){this.closeRequested=true;setTimeout(()=>{this.closed=true;this.emit('close');},5);}
+}
+const input:MatrixInput={interfaceIndex:8,localAddress:'192.168.0.124',durationMs:20000,sendProbe:false,strategies:[...MATRIX_STRATEGIES]};
+async function run(){
+ const evidence=new WsDiscoveryEvidence(),sockets:Socket[]=[],fg=new ForegroundDiscovery(),before=fg.getState();let ownerChecks=0,overlap=false,requested:number[]=[],failNext=false,slow=false;
+ const matrixTransport={discover:(nics:any,options:any)=>{check(nics.length===1&&nics[0].interfaceIndex===8,'matrix transport receives only selected Ethernet');requested.push(options.timeoutMs);if(sockets.some(s=>!s.closed))overlap=true;return new NodeOnvifWsDiscoveryTransport().discover(nics,{...options,timeoutMs:slow?1000:2,multicastSocketFactory:()=>{const s=new Socket();s.fail=failNext;failNext=false;sockets.push(s);return s;}});}};
+ let matrix:ReceiveMatrix;let monitorCancelled=false,finishMonitor:()=>void=()=>{};
+ const monitor=new IncrementalDiscoveryMonitor({canRun:()=>({allowed:!matrix?.isActive()&&!fg.isActive()}),runCycle:async()=>{await new Promise<void>(r=>{finishMonitor=r;});},cancelCycle:()=>{monitorCancelled=true;finishMonitor();}});
+ matrix=new ReceiveMatrix({busy:()=>fg.isActive(),pause:()=>monitor.yieldToTechnician(),adapters:async()=>[fieldEthernet(),{...fieldEthernet(),interfaceIndex:10,mediaType:'WIFI'}],owners:async()=>{ownerChecks++;return [];},transport:matrixTransport,evidence});
+ const monitoring=monitor.runNow();await until(()=>monitor.getState().running);const id=matrix.start({...input,password:'PRIVATE_SECRET'} as MatrixInput);check(matrix.isActive(),'support lease acquired synchronously');check(JSON.stringify(fg.getState())===JSON.stringify(before),'support matrix never creates foreground Scan state');check((await monitor.runNow())==='SKIPPED','monitor tick cannot reclaim listener during support lease');await monitoring;await until(()=>!matrix.isActive());
+ const result=matrix.snapshot();check(monitorCancelled,'expected monitoring owner cancelled through owned handoff');check(result.state==='COMPLETED'&&result.results.length===4,'four strategies finish sequentially');check(ownerChecks===4,'port ownership checked before every strategy');check(!overlap&&sockets.every(s=>s.closed),'next strategy waits for actual previous socket close');check(requested.every(ms=>ms===20000),'production matrix requests bounded physical 20-second windows');
+ for(let i=0;i<4;i++){const r=result.results[i];check(r.strategy===MATRIX_STRATEGIES[i]&&r.windowId,'strategy result and trace window remain distinct');check(r.sockets[0].localAddress===(i===1?fieldNic().ipAddress:'0.0.0.0')&&r.sockets[0].localPort===3702,'actual bind address and port recorded');check(r.sockets[0].nodeExclusive===(i===2),'Node exclusive variant is explicit');check(sockets[i].members.join()===fieldNic().ipAddress,'Ethernet membership excludes Wi-Fi');check(r.counters.datagramsReceived===1&&r.counters.externalDatagrams===1,'strategy counters are independent');check(r.windowOpenedAt&&r.windowClosedAt&&Date.parse(r.windowClosedAt)>=Date.parse(r.windowOpenedAt),'exact receive window timestamps recorded');}
+ check(result.monitoringPausedAt&&result.monitoringResumedAt&&result.listenerAcquiredAt&&result.listenerReleasedAt,'handoff pause acquire release resume timestamps present');check(!JSON.stringify(result).includes('<SOAP')&&!JSON.stringify(result).includes('PRIVATE_SECRET'),'matrix retains no XML or exception secrets');check(!matrix.stop(id),'stale support Stop cannot cancel completed work');
+ const resumed=monitor.runNow();await until(()=>monitor.getState().running);finishMonitor();check((await resumed)==='COMPLETED','monitor can run again after successful matrix');
+ failNext=true;matrix.start({...input,strategies:['WILDCARD_SELECTED']});await until(()=>!matrix.isActive());check(matrix.snapshot().results[0].cause==='SOCKET_SETUP_OR_RECEIVE_FAILED','socket failure returns actionable cause');check(matrix.snapshot().monitoringResumedAt&&sockets.at(-1)?.closed,'failure closes listener and releases monitoring lease');
+ slow=true;const cancelId=matrix.start({...input,strategies:['WILDCARD_SELECTED','ADAPTER_SPECIFIC']});await until(()=>matrix.snapshot().results[0]?.windowOpenedAt);check(!matrix.stop('old-id')&&matrix.stop(cancelId),'support Stop is scoped');await until(()=>!matrix.isActive());check(matrix.snapshot().state==='CANCELLED'&&matrix.snapshot().results.length===1,'cancel stops remaining matrix strategies');slow=false;
+ const foreign=new ReceiveMatrix({busy:()=>false,pause:async()=>{},adapters:async()=>[fieldEthernet()],owners:async()=>[{pid:process.pid+123,processName:'other',localAddress:'0.0.0.0',localPort:3702}],transport:matrixTransport,evidence});const prior=sockets.length;foreign.start(input);await until(()=>!foreign.isActive());check(foreign.snapshot().cause==='CONFLICTING_PORT_OWNER'&&sockets.length===prior,'foreign owner stops experiment without bind or termination');check(foreign.snapshot().results[0].owners[0].expectedBackend===false,'owner PID and expected backend classification recorded');
+ let drain=0;const expected=new ReceiveMatrix({busy:()=>false,pause:async()=>{},adapters:async()=>[fieldEthernet()],owners:async()=>drain++===0?[{pid:process.pid,processName:'node',localAddress:'0.0.0.0',localPort:3702}]:[],transport:matrixTransport,evidence});expected.start({...input,strategies:['WILDCARD_SELECTED']});await until(()=>!expected.isActive());check(drain===2&&expected.snapshot().state==='COMPLETED','expected owner gets bounded drain opportunity before acquisition');
+ const delayedEvidence=new WsDiscoveryEvidence();const delayed=new ReceiveMatrix({busy:()=>false,pause:async()=>{},adapters:async()=>[fieldEthernet()],owners:async()=>[],evidence:delayedEvidence,transport:{discover:(nics,options)=>new NodeOnvifWsDiscoveryTransport().discover(nics,{...options,timeoutMs:2,multicastSocketFactory:()=>{const socket=new Socket();socket.close=()=>{setTimeout(()=>socket.emit('close'),1200);};return socket;}})}});delayed.start({...input,strategies:['WILDCARD_SELECTED']});await until(()=>delayed.snapshot().cleanupPending);check(delayed.isActive()&&!delayed.snapshot().monitoringResumedAt,'unconfirmed close holds support lease instead of racing monitoring');await until(()=>!delayed.isActive());check(delayed.snapshot().monitoringResumedAt&&!delayed.snapshot().cleanupPending,'late actual close releases failed strategy lease safely');
+ const paused=fg.begin('MANUAL');assert.throws(()=>matrix.start(input),/DISCOVERY_BUSY/);check(fg.getState().session?.sessionId===paused.context.sessionId,'manual session cannot be stolen by support matrix');fg.finish(paused.context.sessionId,'COMPLETED');
+ const db=new SiteProjectDatabase('ISOLATED_TEST'),ethernet=fieldNic(),wifi={...fieldNic(),name:'Wi-Fi',ipAddress:'192.168.40.166',interfaceIndex:10};let newNotifications=0;
+ const two={discover:(nics:any,options:any)=>new NodeOnvifWsDiscoveryTransport().discover(nics,{...options,timeoutMs:2,multicastSocketFactory:()=>{const s=new Socket();s.packets=0;return s;},socketFactory:()=>new Socket()})};
+ await Phase3ActiveProbing.execute([ethernet,wifi],two,new NoopDeviceEnricher(),{onDevice:(_d,isNew)=>{if(isNew)newNotifications++;}},LocalHostIdentity.fromInterfaces([ethernet,wifi]),db);
+ check(db.getDevices().length===1&&newNotifications===1,'two adapter receives deduplicate to one new row notification in isolated harness');
+ const multiEvidence=new WsDiscoveryEvidence();let index=0;const multi=await new NodeOnvifWsDiscoveryTransport().discover([ethernet,wifi],{evidence:multiEvidence,timeoutMs:2,multicastSocketFactory:()=>{const s=new Socket();s.packets=0;return s;},socketFactory:()=>{const s=new Socket();s.fail=index++===0;return s;}});
+ check(multi.devices.length===1&&multi.interfaceErrors.length===1,'Ethernet socket failure preserves independent Wi-Fi receive');check(multiEvidence.snapshot().sessions[0].sockets.some(s=>s.interfaceIndex===10),'per-adapter socket identity preserved');
+ const app=express();app.use(express.json());app.use('/matrix',createReceiveMatrixRouter(matrix));const server=app.listen(0,'127.0.0.1');await new Promise<void>(r=>server.once('listening',r));const url=`http://127.0.0.1:${(server.address() as any).port}/matrix`;
+ try{const response=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...input,strategies:['WILDCARD_SELECTED']})});check(response.status===202,'matrix HTTP starts asynchronously');await until(()=>!matrix.isActive());check((await(await fetch(url)).json()).matrix.state==='COMPLETED','matrix HTTP exposes independent result');const bad=await fetch(url,{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});check(bad.status===400,'invalid matrix request fails without lease');}finally{await new Promise<void>(r=>server.close(()=>r()));}
+ console.log(`Receive matrix: ${passed} passed, 0 failed, 0 skipped`);
+}
+run().catch(error=>{console.error(error);process.exitCode=1;});
