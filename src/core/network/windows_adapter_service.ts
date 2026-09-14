@@ -9,7 +9,7 @@ export class NetworkConfigurationError extends Error {
 export interface WindowsNetworkAdapterService {
   inspectAdapters(signal?: AbortSignal): Promise<WindowsAdapterSnapshot[]>;
   isAdministrator(signal?: AbortSignal): Promise<boolean>;
-  applyTemporary(interfaceIndex: number, ipAddress: string, prefixLength: number): Promise<WindowsAdapterSnapshot>;
+  applyTemporary(interfaceIndex: number, ipAddress: string, prefixLength: number, gateway?: string): Promise<WindowsAdapterSnapshot>;
   restore(snapshot: WindowsAdapterSnapshot): Promise<WindowsAdapterSnapshot>;
 }
 
@@ -116,14 +116,14 @@ export class PowerShellWindowsNetworkAdapterService implements WindowsNetworkAda
     return output.trim().toLowerCase() === 'true';
   }
 
-  public async applyTemporary(interfaceIndex: number, ipAddress: string, prefixLength: number): Promise<WindowsAdapterSnapshot> {
-    if (!validIndex(interfaceIndex) || !validIp(ipAddress) || !validPrefix(prefixLength)) throw new NetworkConfigurationError('Invalid adapter or temporary IPv4 configuration.', 'INVALID_INPUT');
+  public async applyTemporary(interfaceIndex: number, ipAddress: string, prefixLength: number, gateway?: string): Promise<WindowsAdapterSnapshot> {
+    if (!validIndex(interfaceIndex) || !validIp(ipAddress) || !validPrefix(prefixLength) || (gateway!==undefined&&!validIp(gateway))) throw new NetworkConfigurationError('Invalid adapter or temporary IPv4 configuration.', 'INVALID_INPUT');
     const script = `$i=${interfaceIndex}; $ip='${ipAddress}'; $prefix=${prefixLength};
 $adapter=Get-NetAdapter -InterfaceIndex $i -ErrorAction Stop; if($adapter.Status -ne 'Up'){throw 'Adapter disconnected'}
 Set-NetIPInterface -InterfaceIndex $i -AddressFamily IPv4 -Dhcp Disabled -ErrorAction Stop
 Get-NetRoute -InterfaceIndex $i -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | Remove-NetRoute -Confirm:$false -ErrorAction Stop
 Get-NetIPAddress -InterfaceIndex $i -AddressFamily IPv4 -ErrorAction SilentlyContinue | Remove-NetIPAddress -Confirm:$false -ErrorAction Stop
-New-NetIPAddress -InterfaceIndex $i -IPAddress $ip -PrefixLength $prefix -AddressFamily IPv4 -ErrorAction Stop | Out-Null`;
+New-NetIPAddress -InterfaceIndex $i -IPAddress $ip -PrefixLength $prefix ${gateway?`-DefaultGateway '${gateway}'`:''} -AddressFamily IPv4 -ErrorAction Stop | Out-Null`;
     await runPowerShell(script);
     return this.getAdapter(interfaceIndex);
   }

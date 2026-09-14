@@ -1,3 +1,4 @@
+import { NetworkAdapterModal } from './components/NetworkAdapterModal.tsx';
 import { pairAdapterInterfaces } from '../shared/pair_adapter.ts';
 import { ForegroundSnapshot, foregroundFailed, foregroundActive, isForegroundSnapshot, reconcileForeground } from '../shared/discovery_session.ts';
 import { connectProgress, ProgressConnectionState } from './progress_connection.ts';
@@ -65,6 +66,7 @@ export default function App() {
   const openProjectInput = useRef<HTMLInputElement>(null);
   const addExistingProjectInput = useRef<HTMLInputElement>(null);
   const [interfaces, setInterfaces] = useState<NICInfo[]>([]);
+  const [networkAdapterOpen,setNetworkAdapterOpen]=useState(false);
   const currentPairRef = useRef<PairSessionState | null>(null);
   const acceptPair = (pair:PairSessionState|null) => { const changed=JSON.stringify(currentPairRef.current)!==JSON.stringify(pair);currentPairRef.current=pair;setPairSession(pair);if(changed)setInterfaces(value=>pairAdapterInterfaces(value,pair)); };
   const [progressConnection, setProgressConnection] = useState<ProgressConnectionState>('CONNECTING');
@@ -461,7 +463,7 @@ export default function App() {
         <div className="flex items-center gap-2 min-w-0"><ShieldCheck className="w-5 h-5 text-blue-600 shrink-0"/><div className="min-w-0"><h1 className="font-bold text-sm sm:text-base text-slate-900 dark:text-white truncate">CCTV Network Assistant</h1><p className="text-[11px] text-slate-500 truncate">{projectSession?.mode==='PROJECT'?(project?.name||'Project'):'Quick Work'}{projectSession?.dirty&&<span className="text-amber-600"> • Unsaved</span>}</p></div></div>
         <div ref={menuAreaRef} className="flex items-center gap-1.5 shrink-0">
           <div className="relative"><button aria-haspopup="menu" aria-expanded={openMenu==='PROJECT'} onClick={()=>setOpenMenu(openMenu==='PROJECT'?null:'PROJECT')} className="ui-header-button">Project <ChevronDown className="w-3.5 h-3.5"/></button>{openMenu==='PROJECT'&&<div role="menu" className="ui-menu"><button onClick={()=>{void handleNewProject();setOpenMenu(null)}}>New Project</button>{projectSession?.mode==='QUICK_WORK'&&(project?.devices.length||0)>0&&<button onClick={()=>{void handleCreateFromCurrent();setOpenMenu(null)}}>Create Project from Results</button>}{projectSession?.mode==='QUICK_WORK'&&<button disabled={selectedDeviceIds.size===0} onClick={()=>{addExistingProjectInput.current?.click();setOpenMenu(null)}}>Add Selected to Existing Project</button>}<button onClick={()=>{openProjectInput.current?.click();setOpenMenu(null)}}>Open Project</button><button onClick={()=>{void handleSaveProject(false);setOpenMenu(null)}}>Save Project</button>{projectSession?.mode==='PROJECT'&&<><button onClick={()=>{void handleSaveProject(true);setOpenMenu(null)}}>Save As</button><button onClick={()=>{setProjectHistoryOpen(true);setOpenMenu(null)}}>History</button><button disabled={projectReverifyOpen} onClick={()=>{setProjectReverifyOpen(true);setOpenMenu(null)}}>Reverify</button></>}</div>}</div>
-          <div className="relative"><button aria-haspopup="menu" aria-expanded={openMenu==='TOOLS'} onClick={()=>setOpenMenu(openMenu==='TOOLS'?null:'TOOLS')} className="ui-header-button">Tools <ChevronDown className="w-3.5 h-3.5"/></button>{openMenu==='TOOLS'&&<div role="menu" className="ui-menu"><button onClick={()=>{setIsLegacyModalOpen(true);setOpenMenu(null)}}>Add Device Manually</button><button onClick={()=>{setIsSiteSurveyModalOpen(true);setOpenMenu(null)}}>Reports</button></div>}</div>
+          <div className="relative"><button aria-haspopup="menu" aria-expanded={openMenu==='TOOLS'} onClick={()=>setOpenMenu(openMenu==='TOOLS'?null:'TOOLS')} className="ui-header-button">Tools <ChevronDown className="w-3.5 h-3.5"/></button>{openMenu==='TOOLS'&&<div role="menu" className="ui-menu"><button onClick={()=>{setNetworkAdapterOpen(true);setOpenMenu(null)}}>Network Adapter</button><button onClick={()=>{setIsLegacyModalOpen(true);setOpenMenu(null)}}>Add Device Manually</button><button onClick={()=>{setIsSiteSurveyModalOpen(true);setOpenMenu(null)}}>Reports</button></div>}</div>
           <div className="relative"><button aria-haspopup="menu" aria-expanded={openMenu==='SETTINGS'} onClick={()=>setOpenMenu(openMenu==='SETTINGS'?null:'SETTINGS')} className="ui-header-button"><Settings className="w-4 h-4"/>Settings <ChevronDown className="w-3.5 h-3.5"/></button>{openMenu==='SETTINGS'&&<SettingsMenu preferences={preferences} onPreferences={changePreferences} monitoring={diagnosticRefresh} preflight={preflight} onClose={()=>setOpenMenu(null)}/>}</div>
           <input ref={openProjectInput} type="file" accept=".cctvproj,application/json" onChange={handleOpenProject} className="hidden" />
           <input ref={addExistingProjectInput} type="file" accept=".cctvproj,application/json" onChange={handleAddExistingFile} className="hidden" />
@@ -488,8 +490,8 @@ export default function App() {
         {/* Section 13.3 Rogue DHCP Banner (if detected) */}
         {project && <RogueDhcpBanner rogueEvents={project.rogueDhcpEvents} />}
         {pairSession?.recoveryAvailable && ['PAIRED', 'ROLLBACK_REQUIRED'].includes(pairSession.state) && (
-          <button onClick={() => { const device = project?.devices.find(item => item.id === pairSession.deviceId) || null; setPairDevice(device); setPairModalDismissed(false); }} className="w-full p-3 rounded-xl border border-amber-600/60 bg-amber-950/40 text-amber-200 text-xs flex items-center justify-center gap-2">
-            <Network className="w-4 h-4" />Temporary adapter Pair may be active on {pairSession.originalAdapter.interfaceAlias}. Review or restore original network configuration.
+          <button onClick={() => { if(pairSession.purpose==='NETWORK_MATCH'){setNetworkAdapterOpen(true);return;} const device = project?.devices.find(item => item.id === pairSession.deviceId) || null; setPairDevice(device); setPairModalDismissed(false); }} className="w-full p-3 rounded-xl border border-amber-600/60 bg-amber-950/40 text-amber-200 text-xs flex items-center justify-center gap-2">
+            <Network className="w-4 h-4" />Temporary adapter configuration may be active on {pairSession.originalAdapter.interfaceAlias}. Review or restore original network configuration.
           </button>
         )}
 
@@ -650,8 +652,9 @@ export default function App() {
       />
 
       {addExisting&&<AddToExistingProjectModal preview={addExisting.preview} filename={addExisting.filename} onCancel={cancelAddExisting} onConfirm={confirmAddExisting}/>}
+      <NetworkAdapterModal open={networkAdapterOpen||Boolean(pairSession?.purpose==='NETWORK_MATCH'&&pairSession.recoveryAvailable&&!pairModalDismissed)} pair={pairSession} onClose={()=>{setNetworkAdapterOpen(false);setPairModalDismissed(true)}} onUpdated={pair=>{acceptPair(pair);void fetchData();}}/>
       <PairNetworkModal
-        isOpen={pairDevice !== null || Boolean(!pairModalDismissed && pairSession?.recoveryAvailable && ['PAIRED', 'ROLLBACK_REQUIRED'].includes(pairSession.state))}
+        isOpen={pairDevice !== null || Boolean(pairSession?.purpose!=='NETWORK_MATCH'&&!pairModalDismissed && pairSession?.recoveryAvailable && ['PAIRED', 'ROLLBACK_REQUIRED'].includes(pairSession.state))}
         device={pairDevice || project?.devices.find(device => device.id === pairSession?.deviceId) || null}
         pair={pairSession}
         onClose={() => { setPairDevice(null); setPairModalDismissed(true); }}

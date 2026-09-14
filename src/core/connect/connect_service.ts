@@ -1,4 +1,4 @@
-import { execFile } from 'node:child_process';
+import { execFile, spawn } from 'node:child_process';
 import net from 'node:net';
 import { BrowserPreference, CameraAccessEndpoint, ConnectReadiness, ConnectionHistoryEntry, Device } from '../../types/index.ts';
 import { DeviceDiagnosticEngine } from '../engine/diagnostic_engine.ts';
@@ -9,6 +9,12 @@ export class ConnectError extends Error { constructor(message: string, public re
 export interface BrowserLauncher { available(): Promise<BrowserPreference[]>; launch(url: string, preference: BrowserPreference): Promise<{ used: BrowserPreference; fallback: boolean }>; }
 
 const run = (file: string, args: string[]) => new Promise<void>((resolve, reject) => execFile(file, args, { windowsHide: true }, error => error ? reject(error) : resolve()));
+/** A GUI launch is acknowledged by process creation, not by the browser's later exit code. */
+export function launchExternalProcess(file:string,args:string[],create:typeof spawn=spawn):Promise<void>{
+  return new Promise((resolve,reject)=>{
+    try {const child=create(file,args,{windowsHide:true,detached:true,stdio:'ignore'});child.once('error',reject);child.once('spawn',()=>{child.unref();resolve();});}catch(error){reject(error);}
+  });
+}
 export class WindowsBrowserLauncher implements BrowserLauncher {
   async available() {
     const result: BrowserPreference[] = ['SYSTEM', 'EMBEDDED'];
@@ -21,9 +27,9 @@ export class WindowsBrowserLauncher implements BrowserLauncher {
     const supported = await this.available();
     const used = supported.includes(preference) ? preference : 'SYSTEM';
     if (used === 'EMBEDDED') return { used, fallback: false };
-    if (used === 'EDGE') await run('msedge.exe', [url]);
-    else if (used === 'CHROME') await run('chrome.exe', [url]);
-    else await run('explorer.exe', [url]);
+    if (used === 'EDGE') await launchExternalProcess('msedge.exe', [url]);
+    else if (used === 'CHROME') await launchExternalProcess('chrome.exe', [url]);
+    else await launchExternalProcess('explorer.exe', [url]);
     return { used, fallback: used !== preference };
   }
 }

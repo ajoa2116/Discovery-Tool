@@ -378,6 +378,8 @@ export interface PairVerificationEvidence {
 }
 
 export interface PairSessionState {
+  purpose?: 'CAMERA_PAIR' | 'NETWORK_MATCH';
+  temporaryGateway?: string;
   subnetSource?: 'CAMERA_EVIDENCE' | 'ADAPTER_PREFIX_PROPOSAL';
   id: string;
   state: PairState;

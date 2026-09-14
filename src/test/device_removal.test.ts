@@ -38,7 +38,7 @@ assert(server.includes('removeDeviceFromCurrentList')&&server.includes('removeDe
 assert(!server.match(/remove-(?:current|project)[\s\S]{0,500}(?:cameraNetwork|osVault|applyTemporary|configure)/),'removal routes perform no camera, adapter, credential, or network mutation');
 assert(dialog.includes('This does not change or delete the physical device.')&&dialog.includes('role="alertdialog"'),'confirmation truthfully distinguishes list removal from physical deletion');
 assert(dialog.includes('Cancel')&&dialog.includes('bg-rose-700'),'confirmation supports cancellation and restrained destructive styling');
-assert(menu.lastIndexOf('Remove from Project')>menu.lastIndexOf('Device Configuration')&&menu.includes('border-t border-slate-700'),'removal actions are separated at the bottom of the floating menu');
+assert(menu.lastIndexOf('Remove from Project')>menu.lastIndexOf('Device Configuration')&&menu.includes('border-t border-slate-200 dark:border-slate-700'),'removal actions are separated at the bottom of the floating menu');
 assert(menu.includes('callback(device); onClose();'),'removal selection closes the overlay while preserving stable device target');
 
 console.log(`\nDevice removal summary: ${passed} passed, ${failed} failed`);if(failed)process.exit(1);
