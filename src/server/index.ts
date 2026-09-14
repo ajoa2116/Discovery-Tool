@@ -1,3 +1,6 @@
+import { TaskManager } from '../core/tasks/task_manager.ts';
+import { OperationTasks } from '../core/tasks/operation_tasks.ts';
+import { taskHttpIntegration } from './task_routes.ts';
 import { SupportTraceLease } from '../core/readiness/support_trace_lease.ts';
 import { ReceiveMatrix } from '../core/readiness/receive_matrix.ts';
 import { createReceiveMatrixRouter } from './receive_matrix_routes.ts';
@@ -39,6 +42,9 @@ import { AddToExistingProjectService } from '../core/storage/add_to_existing_pro
 import { LocalHostIdentity } from '../core/network/local_host_identity.ts';
 import { ProjectHistoryFilter } from '../core/storage/project_history.ts';
 
+const tasks = new TaskManager(100,undefined,task=>appStateDb.logAudit({id:crypto.randomUUID(),timestamp:task.updatedAt,category:'SYSTEM',level:task.state==='FAILED'?'WARNING':'INFO',message:`Task ${task.state.toLowerCase()}: ${task.title}`,details:{taskId:task.id,correlationId:task.correlationId,state:task.state,reference:task.reference}}));
+const operationTasks = new OperationTasks(tasks);
+let advancedTaskSessionId='';
 const app = express();
 const server = createServer(app);
 const wss = new WebSocketServer({ server, path: '/ws' });
@@ -71,6 +77,8 @@ app.use(express.json());
 
 // Broadcast WebSocket message to all connected clients
 const broadcast = (data: any) => {
+  if(data.type==='FOREGROUND_SCAN_STATE'){const snapshot=data.data.foreground;operationTasks.foreground(snapshot,()=>foregroundDiscovery.stop(snapshot.session?.sessionId),snapshot.session?.sessionId===advancedTaskSessionId?advancedScanService.getStatus():undefined);}
+  if(data.type==='PAIR_STATE_CHANGED')operationTasks.pair(data.data.pair);
   const msg = JSON.stringify(data);
   wss.clients.forEach(client => {
     if (client.readyState === WebSocket.OPEN) {
@@ -133,6 +141,15 @@ pipelineEngine.subscribe(event => {
 });
 incrementalMonitor.start();
 
+const taskIntegration=taskHttpIntegration(tasks,{
+  refresh:()=>{const snapshot=foregroundDiscovery.getState();operationTasks.foreground(snapshot,()=>foregroundDiscovery.stop(snapshot.session?.sessionId),snapshot.session?.sessionId===advancedTaskSessionId?advancedScanService.getStatus():undefined);operationTasks.pair(pairService.getStatus());},
+  monitoring:monitoringState,
+  bulk:(kind,id)=>{try{return kind==='BULK_REIP'?bulkNetworkService.get(id):cameraConfigurationService.getBulk(id)}catch{return undefined}},
+  cancelBulk:(kind,id)=>kind==='BULK_REIP'?bulkNetworkService.cancel(id):cameraConfigurationService.cancelBulk(id),
+  cancelReverify:()=>reverifyWorkflow.cancel(),
+});
+app.use(taskIntegration.middleware);
+app.use('/api/tasks',taskIntegration.router);
 // ==================== REST API ROUTES ====================
 
 // Project & Devices
@@ -295,6 +312,7 @@ app.use('/api/discovery', createForegroundDiscoveryRouter({
       if (signal.aborted || plan.mode==='QUICK_FALLBACK') return;
     }
     if (signal.aborted) return;
+    advancedTaskSessionId=context.sessionId;
     await advancedScanService.execute(plan, {
       onDevice: (device,isNew) => { projectDb.restoreDiscoveredDevice(device); broadcast({type:'DEVICE_DISCOVERED',context,data:{device,isNew,project:projectDb.getProject(),scanMode:'ADVANCED'}}); },
       onComplete: () => {},
@@ -314,23 +332,30 @@ app.post('/api/diagnostics/run', async (req, res) => {
   const devices = ids.map(id => projectDb.getDeviceById(id)).filter((device): device is NonNullable<typeof device> => Boolean(device));
   if (!devices.length) return res.status(404).json({ error: 'No matching devices were found.' });
   const topology = await advancedScanService.listAdapters().catch(() => []);
-  res.status(202).json({ started: devices.map(device => device!.id) });
+  const ownedControllers:AbortController[]=[];
+  const taskId=tasks.begin('DIAGNOSTICS',undefined,()=>{for(const controller of ownedControllers)controller.abort();return ownedControllers.length>0;});
+  tasks.update(taskId,{state:'RUNNING',phase:'WORKING',progress:{completed:0,total:devices.length}});
+  let finished=0,failed=0,cancelled=0;
+  const finishDiagnostic=()=>{finished++;tasks.update(taskId,{state:finished<devices.length?'RUNNING':failed?'FAILED':cancelled?'CANCELLED':'COMPLETED',phase:finished<devices.length?'WORKING':failed?'FAILED':cancelled?'CANCELLED':'DONE',progress:{completed:finished,total:devices.length}});};
+  res.status(202).json({ started: devices.map(device => device!.id), taskId });
   for (const device of devices) {
     const current = applyNetworkRelationship(device!, topology, projectDb.getDevices());
     diagnosticControllers.get(current.id)?.abort();
     const controller = new AbortController();
-    diagnosticControllers.set(current.id, controller);
+    diagnosticControllers.set(current.id, controller);ownedControllers.push(controller);
     const ambiguousIdentity = projectDb.getDevices().some(other => other.id !== current.id && other.network.ipAddress === current.network.ipAddress);
     diagnosticEngine.diagnose(current, {
       signal: controller.signal,
       ambiguousIdentity,
       onEvidence: (evidence, updated) => broadcast({ type: 'DIAGNOSTIC_EVIDENCE', data: { deviceId: updated.id, evidence, device: updated } }),
     }).then(updated => {
+      if(controller.signal.aborted){cancelled++;return;}
       projectDb.upsertDevice(updated);
       broadcast({ type: 'DEVICE_DIAGNOSTICS_UPDATED', context: { origin: 'DIAGNOSTICS' }, data: { device: updated, project: projectDb.getProject() } });
     }).catch(error => {
+      if(controller.signal.aborted)cancelled++;else failed++;
       const body=technicianErrorResponse(error,{operation:'DIAGNOSE',deviceId:current.id,fallbackCode:'OPERATION_FAILED'});broadcast({ type: 'DIAGNOSTIC_FAILED', data: { deviceId: current.id, ...body } });
-    }).finally(() => diagnosticControllers.delete(current.id));
+    }).finally(() => {if(diagnosticControllers.get(current.id)===controller)diagnosticControllers.delete(current.id);finishDiagnostic();});
   }
 });
 
@@ -419,7 +444,8 @@ app.get('/api/system/support-bundle', async (_req, res) => {
     const adapters=await advancedScanService.listAdapters().catch(()=>[]);
     // SupportBundleBuilder recursively filters password|credential|authorization material after this security-event exclusion.
     const supportEvents=appStateDb.getAuditLogs().filter(entry => entry.category !== 'SECURITY');
-    const bundle = supportBundleBuilder.build({wsDiscoveryTransport:{...wsDiscoveryEvidence.snapshot(),matrix:receiveMatrix?.snapshot(),supportTrace:supportTrace.snapshot()},application:{name:'CCTV Network Assistant',version:'1.6.0',runtime:process.version,platform:process.platform},readiness:preflight,network:adapters.map(adapter=>({interfaceIndex:adapter.interfaceIndex,interfaceAlias:adapter.interfaceAlias,mediaType:adapter.mediaType,operationalStatus:adapter.operationalStatus,eligible:adapter.eligible,ipv4Addresses:adapter.ipv4Addresses})),monitoring:monitoringState(),discovery:{foreground:foregroundDiscovery.getState(),running:foregroundDiscovery.isActive(),engineRunning:pipelineEngine.getIsRunning(),phases:pipelineEngine.getStates().slice(0,4),advanced:advancedScanService.getStatus()},projectSession:projectDb.getSession(),events:supportEvents,pair:pairService.getStatus()?{purpose:pairService.getStatus()!.purpose||'CAMERA_PAIR',verification:pairService.getStatus()!.verification,cameraResponded:pairService.getStatus()!.cameraReachabilityVerified,adapter:pairService.getStatus()!.adapter,state:pairService.getStatus()!.state,recoveryAvailable:pairService.getStatus()!.recoveryAvailable,errorCode:pairService.getStatus()!.errorCode,preview:{cameraIp:pairService.getStatus()!.cameraIp,interfaceIndex:pairService.getStatus()!.adapter.interfaceIndex,subnetSource:pairService.getStatus()!.subnetSource,candidate:pairService.getStatus()!.selectedCandidate}}:null});
+    taskIntegration.refresh();
+    const bundle = supportBundleBuilder.build({tasks:tasks.snapshot(),wsDiscoveryTransport:{...wsDiscoveryEvidence.snapshot(),matrix:receiveMatrix?.snapshot(),supportTrace:supportTrace.snapshot()},application:{name:'CCTV Network Assistant',version:'1.6.0',runtime:process.version,platform:process.platform},readiness:preflight,network:adapters.map(adapter=>({interfaceIndex:adapter.interfaceIndex,interfaceAlias:adapter.interfaceAlias,mediaType:adapter.mediaType,operationalStatus:adapter.operationalStatus,eligible:adapter.eligible,ipv4Addresses:adapter.ipv4Addresses})),monitoring:monitoringState(),discovery:{foreground:foregroundDiscovery.getState(),running:foregroundDiscovery.isActive(),engineRunning:pipelineEngine.getIsRunning(),phases:pipelineEngine.getStates().slice(0,4),advanced:advancedScanService.getStatus()},projectSession:projectDb.getSession(),events:supportEvents,pair:pairService.getStatus()?{purpose:pairService.getStatus()!.purpose||'CAMERA_PAIR',verification:pairService.getStatus()!.verification,cameraResponded:pairService.getStatus()!.cameraReachabilityVerified,adapter:pairService.getStatus()!.adapter,state:pairService.getStatus()!.state,recoveryAvailable:pairService.getStatus()!.recoveryAvailable,errorCode:pairService.getStatus()!.errorCode,preview:{cameraIp:pairService.getStatus()!.cameraIp,interfaceIndex:pairService.getStatus()!.adapter.interfaceIndex,subnetSource:pairService.getStatus()!.subnetSource,candidate:pairService.getStatus()!.selectedCandidate}}:null});
     res.setHeader('Content-Disposition', 'attachment; filename="CCTV_Safe_Support_Bundle.json"'); res.json(bundle);
   } catch { res.status(500).json({ error: 'The safe support bundle could not be generated.' }); }
 });

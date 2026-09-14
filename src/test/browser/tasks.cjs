@@ -1,0 +1,50 @@
+const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
+const assert=require('node:assert/strict');const {mock}=require('./advanced_scan.cjs');
+let passed=0;const check=(value,name)=>{assert.ok(value,name);passed++;console.log('PASS: '+name)};
+(async()=>{const browser=await chromium.launch({channel:'msedge',headless:true});try{
+ const page=await browser.newPage({viewport:{width:1280,height:900}});const errors=[];page.on('pageerror',e=>errors.push(String(e)));await mock(page);
+ await page.addInitScript(()=>{
+  window.__test.project={id:'quick',name:'Quick Work',devices:[],collisions:[],rogueDhcpEvents:[],auditLogs:[],totalDevices:0};
+  const previous=window.fetch.bind(window);window.__tasks={tasks:[],active:0,attention:0,monitoring:{enabled:true,status:'WAITING'},cancelCalls:[],offline:false};
+  window.fetch=async(url,options={})=>{const path=String(url);const t=window.__tasks;
+   if(path.includes('/api/tasks')){if(t.offline)throw Error('offline');if(path.endsWith('/cancel')){t.cancelCalls.push(path);const row=t.tasks.find(x=>path.includes(encodeURIComponent(x.id)));if(row){row.cancellable=false;row.cancellationRequested=true;row.phase='Stopping; waiting for active work';}return new Response(JSON.stringify({...t,accepted:true}));}return new Response(JSON.stringify(t));}
+   if(path.endsWith('/api/reports/preview'))return new Response(JSON.stringify({error:'No report fixture selected.'}),{status:400});
+   return previous(url,options);
+  };
+ });
+ await page.goto('http://127.0.0.1:5179/src/test/browser/advanced_scan.html?app');
+ const button=page.getByRole('button',{name:'Tasks',exact:true});await button.waitFor();await button.click();const dialog=page.getByRole('dialog',{name:'Tasks',exact:true});
+ await dialog.getByText('No recent technician tasks.').waitFor();check(true,'quiet empty task surface');
+ check(await dialog.getByText(/Background monitoring: Active/).isVisible(),'monitoring subordinate background section');
+ await page.keyboard.press('Escape');check(await button.evaluate(e=>e===document.activeElement),'Escape restores Tasks button focus');
+ await page.evaluate(()=>{const t=window.__tasks;const make=(id,title,state,cancellable,extra={})=>({id,correlationId:id,kind:'SCAN',title,state,cancellable,startedAt:new Date().toISOString(),updatedAt:new Date().toISOString(),phase:'Operation in progress',...extra});t.tasks=[make('scan-1','Quick Scan','RUNNING',true),make('match-1','Match Network','NEEDS_ATTENTION',false,{phase:'Original network configuration requires Restore',result:'NETWORK_RECOVERY'}),make('report-1','Generate Report','COMPLETED',false,{endedAt:new Date().toISOString(),result:'REPORTS'}),make('bulk-1','Bulk Configure','FAILED',false,{reference:'OP-ABC12345'})];t.active=1;t.attention=2;});
+ const activeButton=page.getByRole('button',{name:'Tasks • 1 active • 2 need attention',exact:true});await activeButton.waitFor();check(true,'shell active and attention counts reflect server snapshot');await activeButton.click();
+ check(await dialog.getByRole('listitem').count()===4,'recent completed failed active and attention tasks visible');
+ await dialog.getByRole('button',{name:/Quick Scan RUNNING/}).click();let detail=dialog.getByRole('region',{name:'Task details'});
+ check(await detail.getByText('Correlation: scan-1').isVisible(),'task details show correlation');
+ check(await detail.getByText(/Started:/).isVisible()&&await detail.getByText(/Elapsed:/).isVisible(),'task timing shown');
+ check(await detail.locator('progress').count()===0,'indeterminate scan has no fabricated percentage');
+ await detail.getByRole('button',{name:'Cancel Task'}).click();await dialog.getByText('Cancellation requested. Active work may need to finish safely.').waitFor();
+ check(await page.evaluate(()=>__tasks.cancelCalls.length===1),'Cancel sent once to task-specific endpoint');
+ check(await detail.getByRole('button',{name:'Cancel Task'}).count()===0,'cancel request disables further cancellation');
+ check(await detail.getByText(/RUNNING/).isVisible(),'cancel request does not pretend operation completed');
+ await page.evaluate(()=>{__tasks.tasks[0].state='CANCELLED';__tasks.tasks[0].endedAt=new Date().toISOString();__tasks.active=0;});
+ await detail.getByText(/CANCELLED/).waitFor();check(true,'authoritative cancelled update reconciles');
+ await dialog.getByRole('button',{name:/Match Network NEEDS ATTENTION/}).click();
+ check(await detail.getByRole('button',{name:'Cancel Task'}).count()===0,'adapter recovery has no unsafe Cancel');
+ check(await detail.getByRole('button',{name:'View Network Recovery'}).isVisible(),'recovery navigation is available');
+ await dialog.getByRole('button',{name:/Bulk Configure FAILED/}).click();check(await detail.getByText('Reference: OP-ABC12345').isVisible(),'safe failure reference shown');
+ await dialog.getByRole('button',{name:/Generate Report COMPLETED/}).click();check(await detail.getByText(/Ended:/).isVisible(),'completed task end time remains inspectable');
+ await detail.getByRole('button',{name:'Open Reports'}).click();check(await dialog.count()===0,'result navigation closes Tasks');
+ await page.getByRole('heading',{name:'Reports & Field Documentation'}).waitFor();check(true,'report opens existing result surface');
+ // Reload clears other surfaces, keeps backend fixture for isolated keyboard/theme checks.
+ await page.reload();await page.getByRole('button',{name:'Tasks',exact:true}).click();
+ for(let n=0;n<8;n++)await page.keyboard.press('Tab');check(await dialog.evaluate(e=>e.contains(document.activeElement)),'keyboard focus remains inside Tasks');
+ check(await page.locator('#root').evaluate(e=>e.inert),'background UI is inert while Tasks open');
+ const colors=await dialog.evaluate(e=>({background:getComputedStyle(e).backgroundColor,color:getComputedStyle(e).color}));check(colors.background==='rgb(255, 255, 255)'&&colors.color==='rgb(30, 41, 59)','light theme readable foreground and surface');
+ await page.evaluate(()=>document.documentElement.classList.add('dark'));check(await dialog.evaluate(e=>getComputedStyle(e).backgroundColor)==='rgb(15, 23, 42)','dark theme surface preserved');
+ await page.setViewportSize({width:560,height:576});check(await dialog.evaluate(e=>e.getBoundingClientRect().right<=innerWidth&&e.getBoundingClientRect().bottom<=innerHeight),'compact viewport stays within screen');
+ await page.evaluate(()=>__tasks.offline=true);await dialog.getByText('Task status unavailable. Showing the last known state.').waitFor();check(true,'unavailable backend is not presented as idle success');
+ check(errors.length===0,'no browser runtime errors');
+ console.log(`Tasks browser: ${passed} passed, 0 failed, 0 skipped`);
+}finally{await browser.close();}})().catch(e=>{console.error(e);process.exitCode=1});
