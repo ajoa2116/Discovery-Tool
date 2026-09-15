@@ -1,3 +1,5 @@
+import { isAdapterCollection } from '../shared/advanced_scan_contract.ts';
+import { prefixMask } from '../shared/address_validation.ts';
 import { Tasks } from './components/Tasks.tsx';
 import { NetworkAdapterModal } from './components/NetworkAdapterModal.tsx';
 import { pairAdapterInterfaces } from '../shared/pair_adapter.ts';
@@ -67,6 +69,7 @@ export default function App() {
   const openProjectInput = useRef<HTMLInputElement>(null);
   const addExistingProjectInput = useRef<HTMLInputElement>(null);
   const [interfaces, setInterfaces] = useState<NICInfo[]>([]);
+  const [adapterInspected,setAdapterInspected]=useState(false);
   const [networkAdapterOpen,setNetworkAdapterOpen]=useState(false);
   const currentPairRef = useRef<PairSessionState | null>(null);
   const acceptPair = (pair:PairSessionState|null) => { const changed=JSON.stringify(currentPairRef.current)!==JSON.stringify(pair);currentPairRef.current=pair;setPairSession(pair);if(changed)setInterfaces(value=>pairAdapterInterfaces(value,pair)); };
@@ -85,8 +88,9 @@ export default function App() {
   const [advancedScanOpen, setAdvancedScanOpen] = useState(false);
   const [projectReverifyOpen, setProjectReverifyOpen] = useState(false);
   const [projectHistoryOpen, setProjectHistoryOpen] = useState(false);
-  const [diagnosticRefresh, setDiagnosticRefresh] = useState<UiMonitoringStatus>({ enabled: false, running: false, intervalMs: 30000, status:'OFF' });
+  const [diagnosticRefresh, setDiagnosticRefresh] = useState<UiMonitoringStatus>({ enabled: false, running: false, intervalMs: 30000, status:'UNAVAILABLE' });
   const [pairSession, setPairSession] = useState<PairSessionState | null>(null);
+  const [pairTaskOpen,setPairTaskOpen]=useState(false);
   const [pairDevice, setPairDevice] = useState<Device | null>(null);
   const [pairModalDismissed, setPairModalDismissed] = useState(false);
 
@@ -138,11 +142,22 @@ export default function App() {
       if (refreshRes.ok) setDiagnosticRefresh(await refreshRes.json());
       if (pairRes.ok) { const pair=await pairRes.json();if(pairAtRequest===currentPairRef.current)acceptPair(pair); }
       const readinessRes = await fetch('http://localhost:3001/api/system/preflight');
-      if (readinessRes.ok) setPreflight(await readinessRes.json());
+      const readiness=readinessRes.ok?await readinessRes.json():null;
+      const valid=readiness&&['READY','WARNING','UNAVAILABLE'].includes(readiness.overall)&&typeof readiness.version==='string'&&typeof readiness.runtime==='string'&&Array.isArray(readiness.checks)&&readiness.checks.every((check:unknown)=>check&&typeof check==='object'&&'state' in check&&['READY','WARNING','UNAVAILABLE'].includes(String(check.state)));
+      setPreflight(valid?readiness:{overall:'UNAVAILABLE',version:'1.6.0',runtime:'Unavailable',checks:[]});
     } catch (err) {
       console.error('Failed to fetch backend data:', err);
     }
   };
+
+  useEffect(()=>{
+    const controller=new AbortController(),pairAtRequest=currentPairRef.current;
+    void requestJson('http://localhost:3001/api/pair/adapters',{signal:controller.signal},fetch,10000).then(({response,body})=>{
+      if(!response.ok||!isAdapterCollection(body))return;
+      if(!controller.signal.aborted&&pairAtRequest===currentPairRef.current)setInterfaces(current=>pairAdapterInterfaces(body.flatMap(adapter=>adapter.ipv4Addresses.map(address=>({name:adapter.interfaceAlias,interfaceIndex:adapter.interfaceIndex,ipAddress:address.address,netmask:prefixMask(address.prefixLength),broadcast:'',mac:'',isInternal:false}))),currentPairRef.current));
+    }).catch(()=>{/* No invented adapter values; the badge reports unavailable. */}).finally(()=>{if(!controller.signal.aborted)setAdapterInspected(true)});
+    return()=>controller.abort();
+  },[progressConnection]);
 
   const retiredForegroundEpochs = useRef(new Set<string>());
   const acceptForeground = (value: unknown, source: 'HTTP' | 'WS' = 'HTTP') => {
@@ -217,7 +232,7 @@ export default function App() {
           setScanStatusUnavailable(false); acceptForeground(body.foreground);
           if ('monitoring' in body && body.monitoring && typeof body.monitoring === 'object' && 'enabled' in body.monitoring && typeof body.monitoring.enabled === 'boolean' && 'running' in body.monitoring && typeof body.monitoring.running === 'boolean' && 'intervalMs' in body.monitoring && typeof body.monitoring.intervalMs === 'number') setDiagnosticRefresh(body.monitoring as UiMonitoringStatus);
         }
-      } catch { if (active) setScanStatusUnavailable(true); }
+      } catch { if (active) {setScanStatusUnavailable(true);setDiagnosticRefresh(current=>({...current,status:'UNAVAILABLE'}));} }
       finally { if (active) timer = setTimeout(poll, 3000); }
     };
     void poll();
@@ -466,7 +481,15 @@ export default function App() {
           <div className="relative"><button aria-haspopup="menu" aria-expanded={openMenu==='PROJECT'} onClick={()=>setOpenMenu(openMenu==='PROJECT'?null:'PROJECT')} className="ui-header-button">Project <ChevronDown className="w-3.5 h-3.5"/></button>{openMenu==='PROJECT'&&<div role="menu" className="ui-menu"><button onClick={()=>{void handleNewProject();setOpenMenu(null)}}>New Project</button>{projectSession?.mode==='QUICK_WORK'&&(project?.devices.length||0)>0&&<button onClick={()=>{void handleCreateFromCurrent();setOpenMenu(null)}}>Create Project from Results</button>}{projectSession?.mode==='QUICK_WORK'&&<button disabled={selectedDeviceIds.size===0} onClick={()=>{addExistingProjectInput.current?.click();setOpenMenu(null)}}>Add Selected to Existing Project</button>}<button onClick={()=>{openProjectInput.current?.click();setOpenMenu(null)}}>Open Project</button><button onClick={()=>{void handleSaveProject(false);setOpenMenu(null)}}>Save Project</button>{projectSession?.mode==='PROJECT'&&<><button onClick={()=>{void handleSaveProject(true);setOpenMenu(null)}}>Save As</button><button onClick={()=>{setProjectHistoryOpen(true);setOpenMenu(null)}}>History</button><button disabled={projectReverifyOpen} onClick={()=>{setProjectReverifyOpen(true);setOpenMenu(null)}}>Reverify</button></>}</div>}</div>
           <div className="relative"><button aria-haspopup="menu" aria-expanded={openMenu==='TOOLS'} onClick={()=>setOpenMenu(openMenu==='TOOLS'?null:'TOOLS')} className="ui-header-button">Tools <ChevronDown className="w-3.5 h-3.5"/></button>{openMenu==='TOOLS'&&<div role="menu" className="ui-menu"><button onClick={()=>{setNetworkAdapterOpen(true);setOpenMenu(null)}}>Network Adapter</button><button onClick={()=>{setIsLegacyModalOpen(true);setOpenMenu(null)}}>Add Device Manually</button><button onClick={()=>{setIsSiteSurveyModalOpen(true);setOpenMenu(null)}}>Reports</button></div>}</div>
           <div className="relative"><button aria-haspopup="menu" aria-expanded={openMenu==='SETTINGS'} onClick={()=>setOpenMenu(openMenu==='SETTINGS'?null:'SETTINGS')} className="ui-header-button"><Settings className="w-4 h-4"/>Settings <ChevronDown className="w-3.5 h-3.5"/></button>{openMenu==='SETTINGS'&&<SettingsMenu preferences={preferences} onPreferences={changePreferences} monitoring={diagnosticRefresh} preflight={preflight} onClose={()=>setOpenMenu(null)}/>}</div>
-          <Tasks onResult={result=>{if(result==='REPORTS')setIsSiteSurveyModalOpen(true);else if(result==='PROJECT_HISTORY')setProjectHistoryOpen(true);else if(pairSession?.purpose==='NETWORK_MATCH')setNetworkAdapterOpen(true);else setPairModalDismissed(false);}}/>
+          <Tasks onResult={(result,correlationId)=>{
+            if(result==='REPORTS')setIsSiteSurveyModalOpen(true);
+            else if(result==='PROJECT_HISTORY')setProjectHistoryOpen(true);
+            else void requestJson('http://localhost:3001/api/pair/status',{},fetch,5000).then(({response,body})=>{
+              const current=body as PairSessionState|null;
+              if(!response.ok||!current||current.id!==correlationId||['CANCELLED','RESTORED'].includes(current.state))throw Error('This adapter task is no longer current. No network change was made.');
+              acceptPair(current);setPairModalDismissed(false);if(current.purpose==='NETWORK_MATCH')setNetworkAdapterOpen(true);else setPairTaskOpen(true);
+            }).catch(()=>window.alert('This adapter task is no longer current or its status is unavailable. No network change was made.'));
+          }}/>
           <input ref={openProjectInput} type="file" accept=".cctvproj,application/json" onChange={handleOpenProject} className="hidden" />
           <input ref={addExistingProjectInput} type="file" accept=".cctvproj,application/json" onChange={handleAddExistingFile} className="hidden" />
         </div>
@@ -552,13 +575,13 @@ export default function App() {
 
             {/* Network Adapter Info (Section 24) */}
             <div className="flex items-center gap-1.5 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-md px-2.5 py-1 text-slate-600 dark:text-slate-300 font-mono text-[11px]">
-              <span title="First enumerated adapter shown. Quick Scan and monitoring use all eligible adapters; Advanced ONVIF/neighbor discovery uses your selection; targeted checks use Windows routing.">{interfaces[0] ? `${interfaces[0].name} • ${interfaces[0].ipAddress}` : 'Adapter: Detecting…'}</span>
+              <span title="First enumerated adapter shown. Quick Scan and monitoring use all eligible adapters; Advanced ONVIF/neighbor discovery uses your selection; targeted checks use Windows routing.">{interfaces[0] ? `${interfaces[0].name} • ${interfaces[0].ipAddress}` : adapterInspected?'Adapter: Unavailable':'Adapter: Detecting…'}</span>
             </div>
 
             {/* Continuous Discovery Monitor Indicator (Section 15) */}
             <div className="flex items-center gap-1.5 text-slate-400 font-mono text-[11px]" title="Lightweight diagnostic refresh; no configuration or full discovery">
               <Activity className={`w-3.5 h-3.5 ${diagnosticRefresh.enabled ? 'text-emerald-400' : 'text-slate-600'}`} />
-              <span>Diagnostics: {diagnosticRefresh.enabled ? `Active • ${Math.round(diagnosticRefresh.intervalMs / 1000)}s${diagnosticRefresh.running ? ' • checking' : ''}` : preflight?.overall==='UNAVAILABLE' ? 'Unavailable' : 'Paused'}</span>
+              <span>Diagnostics: {diagnosticRefresh.status==='UNAVAILABLE' ? 'Unavailable' : diagnosticRefresh.enabled ? `Active • ${Math.round(diagnosticRefresh.intervalMs / 1000)}s${diagnosticRefresh.running ? ' • checking' : ''}` : preflight?.overall==='UNAVAILABLE' ? 'Unavailable' : 'Paused'}</span>
             </div>
           </div>}
         </div>
@@ -656,11 +679,11 @@ export default function App() {
       {addExisting&&<AddToExistingProjectModal preview={addExisting.preview} filename={addExisting.filename} onCancel={cancelAddExisting} onConfirm={confirmAddExisting}/>}
       <NetworkAdapterModal open={networkAdapterOpen||Boolean(pairSession?.purpose==='NETWORK_MATCH'&&pairSession.recoveryAvailable&&!pairModalDismissed)} pair={pairSession} onClose={()=>{setNetworkAdapterOpen(false);setPairModalDismissed(true)}} onUpdated={pair=>{acceptPair(pair);void fetchData();}}/>
       <PairNetworkModal
-        isOpen={pairDevice !== null || Boolean(pairSession?.purpose!=='NETWORK_MATCH'&&!pairModalDismissed && pairSession?.recoveryAvailable && ['PAIRED', 'ROLLBACK_REQUIRED'].includes(pairSession.state))}
+        isOpen={pairTaskOpen || pairDevice !== null || Boolean(pairSession?.purpose!=='NETWORK_MATCH'&&!pairModalDismissed && pairSession?.recoveryAvailable && ['PAIRED', 'ROLLBACK_REQUIRED'].includes(pairSession.state))}
         device={pairDevice || project?.devices.find(device => device.id === pairSession?.deviceId) || null}
         pair={pairSession}
-        onClose={() => { setPairDevice(null); setPairModalDismissed(true); }}
-        onPairUpdated={(pair) => { acceptPair(pair); if (pair.state === 'RESTORED' || pair.state === 'CANCELLED') setPairDevice(null); fetchData(); }}
+        onClose={() => { setPairTaskOpen(false);setPairDevice(null); setPairModalDismissed(true); }}
+        onPairUpdated={(pair) => { acceptPair(pair); if (pair.state === 'RESTORED' || pair.state === 'CANCELLED') {setPairTaskOpen(false);setPairDevice(null);} fetchData(); }}
       />
 
       {/* Milestone 8: backend-authoritative bulk network configuration */}

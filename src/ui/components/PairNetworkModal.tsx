@@ -27,7 +27,7 @@ export const PairNetworkModal: React.FC<Props> = ({ isOpen, device, pair, onClos
     finally { setBusy(false); }
   };
 
-  const currentPair = pair?.deviceId === device?.id || pair?.recoveryAvailable ? pair : null;
+  const currentPair = pair?.deviceId === device?.id || pair?.recoveryAvailable || (!device&&pair?.purpose!=='NETWORK_MATCH') ? pair : null;
   const ready = currentPair?.state === 'READY_FOR_CONFIRMATION';
   const selected = currentPair?.selectedCandidate;
 
@@ -50,7 +50,7 @@ export const PairNetworkModal: React.FC<Props> = ({ isOpen, device, pair, onClos
             <div className="flex justify-between"><span>Camera responded</span><strong>{currentPair.cameraReachabilityVerified ? 'Yes' : 'Not verified'}</strong></div>
             <p className="text-slate-400">{currentPair.message}</p>
           </div>
-          <button disabled={busy} onClick={() => action('/api/pair/restore')} className="w-full py-2.5 rounded-lg bg-amber-600 hover:bg-amber-500 text-slate-950 font-bold flex items-center justify-center gap-2 disabled:opacity-50"><RotateCcw className="w-4 h-4" />Restore Original Network Configuration</button>
+          <button disabled={busy||currentPair.state==='RESTORING'} onClick={() => action('/api/pair/restore')} className="w-full py-2.5 rounded-lg bg-amber-600 hover:bg-amber-500 text-slate-950 font-bold flex items-center justify-center gap-2 disabled:opacity-50"><RotateCcw className="w-4 h-4" />Restore Original Network Configuration</button>
         </> : <>
           {!ready && <div className="space-y-3">
             <div><label className="block text-slate-400 mb-1">Camera</label><div className="p-2 bg-slate-950 border border-slate-800 rounded font-mono">{device ? `${device.technician?.name || device.anchor.vendor} — ${device.network.ipAddress} / ${device.network.subnetMask || 'unknown mask'}` : 'Select a camera'}</div></div>

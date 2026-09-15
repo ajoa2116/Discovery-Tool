@@ -1,3 +1,4 @@
+import { productionAssets, startupFailureMessage } from './production_assets.ts';
 import { TaskManager } from '../core/tasks/task_manager.ts';
 import { OperationTasks } from '../core/tasks/operation_tasks.ts';
 import { taskHttpIntegration } from './task_routes.ts';
@@ -48,6 +49,9 @@ let advancedTaskSessionId='';
 const app = express();
 const server = createServer(app);
 const wss = new WebSocketServer({ server, path: '/ws' });
+const startupFailure=(error:NodeJS.ErrnoException)=>{console.error(startupFailureMessage(error.code));process.exit(1);};
+server.once('error',startupFailure);
+wss.once('error',startupFailure);
 const diagnosticEngine = new DeviceDiagnosticEngine();
 const diagnosticControllers = new Map<string, AbortController>();
 const pairService = new PairService(undefined,undefined,undefined,undefined,undefined,{changed:pair=>{if(['APPLYING','RESTORING'].includes(pair.state))diagnosticMonitor.cancelCurrent();broadcast({type:'PAIR_STATE_CHANGED',data:{pair,project:projectDb.getProject()}})}});
@@ -545,8 +549,10 @@ app.get('/api/audit-logs', (req, res) => {
   res.json(appStateDb.getAuditLogs());
 });
 
+app.use(productionAssets());
+
 const PORT = 3001;
-server.listen(PORT, () => {
+server.listen(PORT, '127.0.0.1', () => {
   console.log(`[CCTV Discovery Server v1.6] running on http://localhost:${PORT}`);
 });
 

@@ -3,7 +3,7 @@ import{ArrowLeft,Check,ChevronRight,Columns3,Download,Info,Palette,Settings2,Ste
 import{BrowserPreference}from'../../types/index.ts';
 import{ApplicationPreferences,DEFAULT_VISIBLE_COLUMNS,MONITORING_CADENCES,TableColumnId,TABLE_COLUMNS}from'../preferences.ts';
 export interface UiPreflight{overall:'READY'|'WARNING'|'UNAVAILABLE';version:string;runtime:string;platform?:string;checks?:Array<{id:string;label:string;state:'READY'|'WARNING'|'UNAVAILABLE';detail:string;critical:boolean}>}
-export interface UiMonitoringStatus{incrementalDiscovery?:{pausedForForeground?:boolean;pausedForSupport?:boolean};enabled:boolean;running:boolean;intervalMs:number;status?:'OFF'|'ACTIVE'|'WAITING'|'DEFERRED'}
+export interface UiMonitoringStatus{incrementalDiscovery?:{pausedForForeground?:boolean;pausedForSupport?:boolean};enabled:boolean;running:boolean;intervalMs:number;status?:'OFF'|'ACTIVE'|'WAITING'|'DEFERRED'|'UNAVAILABLE'}
 interface Props{preferences:ApplicationPreferences;onPreferences:(patch:Partial<Omit<ApplicationPreferences,'version'>>)=>void;monitoring:UiMonitoringStatus;preflight:UiPreflight|null;onClose:()=>void}
 type View='ROOT'|'GENERAL'|'COLUMNS'|'APPEARANCE'|'DIAGNOSTICS'|'ABOUT';
 const title=(value:string)=>value[0]+value.slice(1).toLowerCase(),labels:Record<TableColumnId,string>={NAME:'Name',STATUS:'Status',IP:'IP',LAST_6:'Last 6',CONFIGURED:'Configured',SERIAL:'Serial',NOTES:'Notes'},browserLabels:Record<BrowserPreference,string>={SYSTEM:'System Default',EDGE:'Microsoft Edge',CHROME:'Google Chrome',EMBEDDED:'Embedded'};

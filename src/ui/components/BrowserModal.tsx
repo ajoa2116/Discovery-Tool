@@ -1,5 +1,7 @@
+import { requestJson } from '../bounded_request.ts';
+import { operationFeedback } from '../operation_feedback.ts';
 import { FactoryCredentialSuggestions } from './FactoryCredentialSuggestions.tsx';
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { BrowserPreference, CameraAccessEndpoint, ConnectReadiness, Device } from '../../types/index.ts';
 import { AlertTriangle, ExternalLink, RefreshCw, X } from 'lucide-react';
 
@@ -12,16 +14,26 @@ export const BrowserModal: React.FC<Props> = ({ isOpen, onClose, device }) => {
   const [credentials, setCredentials] = useState<SafeCredential[]>([]);
   const [selectedCredentialId, setSelectedCredentialId] = useState('');
   const [username, setUsername] = useState(''); const [password, setPassword] = useState(''); const [remember, setRemember] = useState(false); const [message, setMessage] = useState('');
-  const load = async () => { if (!device) return; const [connect, refs] = await Promise.all([fetch(`http://localhost:3001/api/connect/${encodeURIComponent(device.id)}`).then(r => r.json()), fetch(`http://localhost:3001/api/connect/${encodeURIComponent(device.id)}/credentials`).then(r => r.json())]); setEndpoint(connect.endpoint); setReadiness(connect.readiness); setCredentials(refs.references || []); setSelectedCredentialId(refs.selectedCredentialId || ''); };
-  useEffect(() => { if (isOpen) void load(); }, [isOpen, device?.id]);
-  useEffect(()=>{setUsername('');setPassword('');setRemember(false);},[isOpen,device?.id]);
+  const owner=useRef(''),readController=useRef<AbortController|null>(null);
+  const identity=`${isOpen}:${device?.id||''}`;owner.current=identity;
+  const load=async()=>{
+    if(!device||!isOpen)return;const key=identity;readController.current?.abort();const controller=new AbortController();readController.current=controller;
+    try{
+      const [connect,refs]=await Promise.all([requestJson(`http://localhost:3001/api/connect/${encodeURIComponent(device.id)}`,{signal:controller.signal},fetch,5000),requestJson(`http://localhost:3001/api/connect/${encodeURIComponent(device.id)}/credentials`,{signal:controller.signal},fetch,5000)]);
+      if(!connect.response.ok||!refs.response.ok)throw Error(operationFeedback(!connect.response.ok?connect.body:refs.body,'Camera access information is unavailable.'));
+      if(owner.current!==key||controller.signal.aborted)return;
+      const value=connect.body as {endpoint?:CameraAccessEndpoint;readiness?:ConnectReadiness},safe=refs.body as {references?:SafeCredential[];selectedCredentialId?:string};
+      setEndpoint(value?.endpoint||null);setReadiness(value?.readiness||null);setCredentials(Array.isArray(safe?.references)?safe.references:[]);setSelectedCredentialId(typeof safe?.selectedCredentialId==='string'?safe.selectedCredentialId:'');
+    }catch(reason){if(owner.current===key&&!controller.signal.aborted)setMessage(reason instanceof Error&&reason.name!=='TimeoutError'?reason.message:'Camera access information timed out. Recheck when the backend is available.');}
+  };
+  useEffect(()=>{setEndpoint(null);setReadiness(null);setCredentials([]);setSelectedCredentialId('');setMessage('');setUsername('');setPassword('');setRemember(false);if(isOpen)void load();return()=>readController.current?.abort();},[isOpen,device?.id]);
   if (!isOpen || !device) return null;
   const post = async (path: string, body: unknown = {}) => { const response = await fetch(`http://localhost:3001${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); const data = await response.json(); if (!response.ok) throw new Error(data.error); return data; };
   const mutateCredential = async (method: 'PUT' | 'DELETE') => { if (!selectedCredentialId) return; const response = await fetch(`http://localhost:3001/api/connect/${encodeURIComponent(device.id)}/credentials/${encodeURIComponent(selectedCredentialId)}`, { method, headers: { 'Content-Type': 'application/json' }, body: method === 'PUT' ? JSON.stringify({ username, password }) : undefined }); const data = await response.json(); if (!response.ok) throw new Error(data.error); setPassword(''); setMessage(method === 'PUT' ? 'Saved credential updated securely.' : 'Saved credential deleted; the camera and project were not changed.'); await load(); };
   const openExternal = async (preference: BrowserPreference = 'SYSTEM') => { const data = await post(`/api/connect/${encodeURIComponent(device.id)}/open`, { preference }); setMessage(data.browser?.fallback ? 'Preferred browser unavailable; Windows default was used.' : 'External browser launch requested. Return here and choose Recheck after making changes.'); };
   const recheck = async () => { setMessage('Rechecking…'); await post(`/api/connect/${encodeURIComponent(device.id)}/recheck`); await load(); setMessage('Recheck completed using current-session evidence.'); };
-  return <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-5"><div className="bg-slate-900 border border-slate-700 rounded-2xl w-full max-w-5xl h-[85vh] flex flex-col overflow-hidden">
-    <div className="p-3 bg-slate-950 border-b border-slate-800 flex items-center justify-between"><div><strong>{device.technician?.name || device.anchor.vendor}</strong><span className="text-xs text-slate-400 ml-2">{device.technician?.location} • {device.anchor.vendor} {device.anchor.model} • {device.network.ipAddress}</span></div><button onClick={onClose}><X className="w-5 h-5" /></button></div>
+  return <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-5"><div role="dialog" aria-label="Camera Access" aria-modal="true" className="bg-slate-900 border border-slate-700 rounded-2xl w-full max-w-5xl h-[85vh] flex flex-col overflow-hidden">
+    <div className="p-3 bg-slate-950 border-b border-slate-800 flex items-center justify-between"><div><strong>{device.technician?.name || device.anchor.vendor}</strong><span className="text-xs text-slate-400 ml-2">{device.technician?.location} • {device.anchor.vendor} {device.anchor.model} • {device.network.ipAddress}</span></div><button aria-label="Close Camera Access" onClick={onClose}><X className="w-5 h-5" /></button></div>
     <div className="p-3 border-b border-slate-800 space-y-2 text-xs">
       {readiness?.warning && <div className="text-amber-300 flex gap-2"><AlertTriangle className="w-4 h-4" />{readiness.warning}</div>}
       {endpoint?.certificateWarning && <div className="text-amber-300">HTTPS responded, but certificate trust warning: {endpoint.certificateWarning}</div>}

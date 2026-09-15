@@ -33,7 +33,7 @@ export class OperationTasks {
     this.pairId=this.tasks.begin(pair.purpose==='NETWORK_MATCH'?'MATCH':'PAIR',pair.id);
     this.tasks.adapterTarget(this.pairId,pair.adapter.interfaceIndex,pair.purpose==='NETWORK_MATCH'?pair.selectedCandidate?.ipAddress:pair.cameraIp);
     const s=pair.state;
-    if(s==='RESTORING'&&!this.restoreStarted){this.restoreId=this.tasks.begin('RESTORE');this.tasks.adapterTarget(this.restoreId,pair.adapter.interfaceIndex);this.restoreStarted=true;}
+    if(s==='RESTORING'&&!this.restoreStarted){this.restoreId=this.tasks.begin('RESTORE');this.tasks.correlate(this.restoreId,pair.id);this.tasks.adapterTarget(this.restoreId,pair.adapter.interfaceIndex);this.restoreStarted=true;}
     if(s==='RESTORING'){this.tasks.update(this.restoreId,{state:'RUNNING',phase:'RESTORING'});return;}
     if(s==='RESTORED'){
       if(this.restoreId)this.tasks.update(this.restoreId,{state:'COMPLETED',phase:'DONE'});
