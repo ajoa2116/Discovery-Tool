@@ -5,11 +5,12 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc && vite build",
+    "build": "tsc && vite build && node scripts/build-identity.cjs",
     "preview": "vite preview",
     "server": "tsx src/server/index.ts",
     "start": "concurrently \"tsx src/server/index.ts\" \"vite\"",
-    "start:production": "node scripts/start-production.cjs"
+    "start:production": "node scripts/start-production.cjs",
+    "smoke:production": "node scripts/smoke-production.cjs"
   },
   "dependencies": {
     "clsx": "^2.1.1",

@@ -33,7 +33,7 @@ import { PairNetworkModal } from './components/PairNetworkModal.tsx';
 import { ProjectReverifyModal } from './components/ProjectReverifyModal.tsx';
 import { AddExistingPreview, AddToExistingProjectModal } from './components/AddToExistingProjectModal.tsx';
 import { ProjectHistoryModal } from './components/ProjectHistory.tsx';
-import { SettingsMenu, UiMonitoringStatus, UiPreflight } from './components/SettingsMenu.tsx';
+import { SettingsMenu, isUiPreflight, UiMonitoringStatus, UiPreflight } from './components/SettingsMenu.tsx';
 import {
   ShieldCheck,
   Search,
@@ -143,7 +143,7 @@ export default function App() {
       if (pairRes.ok) { const pair=await pairRes.json();if(pairAtRequest===currentPairRef.current)acceptPair(pair); }
       const readinessRes = await fetch('http://localhost:3001/api/system/preflight');
       const readiness=readinessRes.ok?await readinessRes.json():null;
-      const valid=readiness&&['READY','WARNING','UNAVAILABLE'].includes(readiness.overall)&&typeof readiness.version==='string'&&typeof readiness.runtime==='string'&&Array.isArray(readiness.checks)&&readiness.checks.every((check:unknown)=>check&&typeof check==='object'&&'state' in check&&['READY','WARNING','UNAVAILABLE'].includes(String(check.state)));
+      const valid=isUiPreflight(readiness);
       setPreflight(valid?readiness:{overall:'UNAVAILABLE',version:'1.6.0',runtime:'Unavailable',checks:[]});
     } catch (err) {
       console.error('Failed to fetch backend data:', err);

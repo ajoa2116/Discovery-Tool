@@ -22,7 +22,7 @@ function deviceEvents(device:Device,audit:AuditLogEntry[]):TimelineEvent[]{
   if(device.lastSeenAt!==device.firstSeenAt)events.push({timestamp:time(device.lastSeenAt),category:'IDENTITY',summary:'Latest evidence retained for the same stable identity.',deviceId:device.id,evidence:{currentIp:device.network.ipAddress,ipAddressHistory:device.network.ipAddressHistory,status:device.status,sessionVerification:device.sessionVerification}});
   return sorted(events);
 }
-export interface SupportBundleInput{tasks?:unknown;wsDiscoveryTransport?:unknown;application:{name:string;version:string;runtime:string;platform:string};readiness:unknown;network:unknown[];monitoring:unknown;discovery:unknown;projectSession:ProjectSession;events:AuditLogEntry[];pair:unknown}
+export interface SupportBundleInput{tasks?:unknown;wsDiscoveryTransport?:unknown;application:{name:string;version:string;runtime:string;platform:string;build?:{commit:string|null;dirty:boolean|null;sourceDigest:string|null;runtimeMode:string}};readiness:unknown;network:unknown[];monitoring:unknown;discovery:unknown;projectSession:ProjectSession;events:AuditLogEntry[];pair:unknown}
 export class SupportBundleBuilder{
   public build(input:SupportBundleInput){
     const safeEvents=input.events.filter(entry=>entry.category!=='SECURITY').slice(0,1000).map(entry=>{if(!input.wsDiscoveryTransport||!entry.details?.receiveTrace)return entry;const trace=entry.details.receiveTrace as {windowId?:string};return {...entry,details:{...entry.details,receiveTrace:{windowId:trace.windowId,location:'wsDiscoveryTransport'}}}}),global=sorted(safeEvents.map(auditEvent)).slice(-250),devices=input.projectSession.project.devices,fullTimelines=Object.fromEntries(devices.map(device=>[device.id,deviceEvents(device,safeEvents)]));

@@ -1,4 +1,8 @@
-import { productionAssets, startupFailureMessage } from './production_assets.ts';
+import {existsSync} from 'node:fs';
+import {join} from 'node:path';
+import {readBuildIdentity} from '../core/readiness/build_identity.ts';
+import {PowerShellWindowsNetworkAdapterService} from '../core/network/windows_adapter_service.ts';
+import { productionAssets, productionAssetRoot, startupFailureMessage } from './production_assets.ts';
 import { TaskManager } from '../core/tasks/task_manager.ts';
 import { OperationTasks } from '../core/tasks/operation_tasks.ts';
 import { taskHttpIntegration } from './task_routes.ts';
@@ -33,7 +37,7 @@ import { CameraNetworkConfigurationService } from '../core/network/camera_networ
 import { CameraConfigurationService } from '../core/network/camera_configuration_service.ts';
 import { PreferredCameraConfigurationProvider } from '../core/drivers/vendor_configuration_provider.ts';
 import { createReportRouter } from './report_routes.ts';
-import { ShutdownCoordinator, WindowsPreflightService } from '../core/readiness/field_readiness.ts';
+import { ShutdownCoordinator, WindowsPreflightService, recoveryRequiresReview } from '../core/readiness/field_readiness.ts';
 import { AdvancedScanService } from '../core/engine/advanced_scan.ts';
 import { DEFAULT_MONITORING_INTERVAL_MS, IncrementalDiscoveryMonitor } from '../core/engine/incremental_discovery_monitor.ts';
 import { LegacyConfigurationBoundary } from '../core/network/legacy_configuration_boundary.ts';
@@ -72,9 +76,19 @@ const reverifyWorkflow = new ProjectReverificationWorkflow(
   () => reverifySessionId ? pipelineEngine.stopDiscovery(reverifySessionId) : false,
 );
 const cameraNetworkControllers = new Map<string, AbortController>();
-const preflightService = new WindowsPreflightService({ portAvailable: async port => port === 3001 && server.listening });
-let preflightCache: { expiresAt: number; value: Awaited<ReturnType<WindowsPreflightService['run']>> } | null = null;
-const getPreflight = async () => { if (preflightCache && preflightCache.expiresAt > Date.now()) return preflightCache.value; const value = await preflightService.run(); preflightCache = { expiresAt: Date.now() + 60_000, value }; return value; };
+let recoveryInspected=false;
+const buildIdentity=readBuildIdentity();
+const preflightService = new WindowsPreflightService({
+  portAvailable:async port=>port===3001&&server.listening,
+  enumerateAdapters:async()=> (await pairService.getEligibleAdapters()).filter(adapter=>adapter.ipv4Addresses.length>0).length,
+  isAdministrator:()=>new PowerShellWindowsNetworkAdapterService().isAdministrator(),
+  productionAssetsAvailable:async()=>existsSync(join(productionAssetRoot,'index.html')),
+  recoveryRequired:async()=>recoveryRequiresReview(recoveryInspected,pairService.getStatus()),
+  operationActive:async()=>tasks.snapshot().active>0||supportTrace.isActive()||Boolean(receiveMatrix?.isActive()),
+  production:process.env.NODE_ENV==='production',build:buildIdentity
+});
+let preflightCache: { stateKey:string; expiresAt: number; value: Awaited<ReturnType<WindowsPreflightService['run']>> } | null = null;
+const getPreflight = async (refresh=false) => { const stateKey=JSON.stringify([recoveryInspected,pairService.getStatus()?.state,tasks.snapshot().active,supportTrace.isActive(),receiveMatrix?.isActive()]);if (!refresh && preflightCache?.stateKey===stateKey && preflightCache.expiresAt > Date.now()) return preflightCache.value; const value = await preflightService.run(); preflightCache = { stateKey,expiresAt: Date.now() + 60_000, value }; return value; };
 
 app.use(cors({ exposedHeaders: ['X-CCTV-Report-Renderer', 'Content-Disposition'] }));
 app.use(express.json());
@@ -130,8 +144,9 @@ const incrementalMonitor = new IncrementalDiscoveryMonitor({
   log: (event, message) => { if (event !== 'CYCLE_STARTED' && event !== 'CYCLE_COMPLETED') monitoringAudit(event, message); },
 }, DEFAULT_MONITORING_INTERVAL_MS);
 pairService.initializeRecovery().then(state => {
+  recoveryInspected=true;
   if (state) broadcast({ type: 'PAIR_STATE_CHANGED', data: { pair: state } });
-}).catch(error => console.error('Pair recovery inspection failed:', error instanceof Error ? error.message : error));
+}).catch(() => console.error('Pair recovery inspection failed. Check original adapter state before further adapter changes.'));
 osVault.initialize().catch(error => console.error('Windows secure credential store unavailable:', error instanceof Error ? error.message : error));
 
 // Wire pipeline events to WebSocket clients
@@ -437,8 +452,8 @@ app.post('/api/connect/:deviceId/credentials', async (req, res) => { try { res.j
 app.put('/api/connect/:deviceId/credentials/:credentialId', async(req,res)=>{try{res.json(await connectService.updateCredential(req.params.deviceId,req.params.credentialId,req.body))}catch(error:any){res.status(400).json({error:error.message})}});
 app.delete('/api/connect/:deviceId/credentials/:credentialId', async(req,res)=>{try{res.json(await connectService.deleteCredential(req.params.deviceId,req.params.credentialId))}catch(error:any){res.status(400).json({error:error.message})}});
 
-app.get('/api/system/about', (_req, res) => res.json({ application: 'CCTV Network Assistant', version: '1.6.0', runtime: process.version, platform: process.platform }));
-app.get('/api/system/preflight', async (_req, res) => { try { res.json(await getPreflight()); } catch { res.status(500).json({ error: 'Application readiness checks could not be completed.' }); } });
+app.get('/api/system/about', (_req, res) => res.json({ application: 'CCTV Network Assistant', version: '1.6.0', runtime: process.version, platform: process.platform,build:buildIdentity }));
+app.get('/api/system/preflight', async (req, res) => { try { res.json(await getPreflight(req.query.refresh==='1')); } catch { res.status(500).json({ error: 'Application readiness checks could not be completed.' }); } });
 receiveMatrix=new ReceiveMatrix({busy:()=>supportTrace.isActive()||foregroundDiscovery.isActive()||reverifyWorkflow.isRunning()||(pipelineEngine.getIsRunning()&&!incrementalMonitor.getState().running),pause:()=>incrementalMonitor.yieldToTechnician(),adapters:()=>advancedScanService.listAdapters(),owners:readDiscoveryPortOwners,transport:new NodeOnvifWsDiscoveryTransport(),evidence:wsDiscoveryEvidence,changed:()=>broadcast({type:'MONITORING_STATE',context:{origin:'MONITORING'},data:{monitoring:monitoringState()}})});
 app.use('/api/support/ws-discovery/matrix',createReceiveMatrixRouter(receiveMatrix));
 app.use('/api/support/ws-discovery/receive-trace',createReceiveTraceRouter({support:supportTrace,portOwners:readDiscoveryPortOwners,foreground:foregroundDiscovery,yieldMonitoring:()=>incrementalMonitor.yieldToTechnician(),busy:()=>Boolean(receiveMatrix?.isActive() || supportTrace.isActive())||reverifyWorkflow.isRunning()||(pipelineEngine.getIsRunning()&&!incrementalMonitor.getState().running),adapters:()=>advancedScanService.listAdapters(),transport:new NodeOnvifWsDiscoveryTransport(),evidence:wsDiscoveryEvidence}));
@@ -449,7 +464,7 @@ app.get('/api/system/support-bundle', async (_req, res) => {
     // SupportBundleBuilder recursively filters password|credential|authorization material after this security-event exclusion.
     const supportEvents=appStateDb.getAuditLogs().filter(entry => entry.category !== 'SECURITY');
     taskIntegration.refresh();
-    const bundle = supportBundleBuilder.build({tasks:tasks.snapshot(),wsDiscoveryTransport:{...wsDiscoveryEvidence.snapshot(),matrix:receiveMatrix?.snapshot(),supportTrace:supportTrace.snapshot()},application:{name:'CCTV Network Assistant',version:'1.6.0',runtime:process.version,platform:process.platform},readiness:preflight,network:adapters.map(adapter=>({interfaceIndex:adapter.interfaceIndex,interfaceAlias:adapter.interfaceAlias,mediaType:adapter.mediaType,operationalStatus:adapter.operationalStatus,eligible:adapter.eligible,ipv4Addresses:adapter.ipv4Addresses})),monitoring:monitoringState(),discovery:{foreground:foregroundDiscovery.getState(),running:foregroundDiscovery.isActive(),engineRunning:pipelineEngine.getIsRunning(),phases:pipelineEngine.getStates().slice(0,4),advanced:advancedScanService.getStatus()},projectSession:projectDb.getSession(),events:supportEvents,pair:pairService.getStatus()?{purpose:pairService.getStatus()!.purpose||'CAMERA_PAIR',verification:pairService.getStatus()!.verification,cameraResponded:pairService.getStatus()!.cameraReachabilityVerified,adapter:pairService.getStatus()!.adapter,state:pairService.getStatus()!.state,recoveryAvailable:pairService.getStatus()!.recoveryAvailable,errorCode:pairService.getStatus()!.errorCode,preview:{cameraIp:pairService.getStatus()!.cameraIp,interfaceIndex:pairService.getStatus()!.adapter.interfaceIndex,subnetSource:pairService.getStatus()!.subnetSource,candidate:pairService.getStatus()!.selectedCandidate}}:null});
+    const bundle = supportBundleBuilder.build({tasks:tasks.snapshot(),wsDiscoveryTransport:{...wsDiscoveryEvidence.snapshot(),matrix:receiveMatrix?.snapshot(),supportTrace:supportTrace.snapshot()},application:{name:'CCTV Network Assistant',version:'1.6.0',runtime:process.version,platform:process.platform,build:buildIdentity},readiness:preflight,network:adapters.map(adapter=>({interfaceIndex:adapter.interfaceIndex,interfaceAlias:adapter.interfaceAlias,mediaType:adapter.mediaType,operationalStatus:adapter.operationalStatus,eligible:adapter.eligible,ipv4Addresses:adapter.ipv4Addresses})),monitoring:monitoringState(),discovery:{foreground:foregroundDiscovery.getState(),running:foregroundDiscovery.isActive(),engineRunning:pipelineEngine.getIsRunning(),phases:pipelineEngine.getStates().slice(0,4),advanced:advancedScanService.getStatus()},projectSession:projectDb.getSession(),events:supportEvents,pair:pairService.getStatus()?{purpose:pairService.getStatus()!.purpose||'CAMERA_PAIR',verification:pairService.getStatus()!.verification,cameraResponded:pairService.getStatus()!.cameraReachabilityVerified,adapter:pairService.getStatus()!.adapter,state:pairService.getStatus()!.state,recoveryAvailable:pairService.getStatus()!.recoveryAvailable,errorCode:pairService.getStatus()!.errorCode,preview:{cameraIp:pairService.getStatus()!.cameraIp,interfaceIndex:pairService.getStatus()!.adapter.interfaceIndex,subnetSource:pairService.getStatus()!.subnetSource,candidate:pairService.getStatus()!.selectedCandidate}}:null});
     res.setHeader('Content-Disposition', 'attachment; filename="CCTV_Safe_Support_Bundle.json"'); res.json(bundle);
   } catch { res.status(500).json({ error: 'The safe support bundle could not be generated.' }); }
 });
