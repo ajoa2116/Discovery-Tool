@@ -15,7 +15,7 @@ async function run(){
   assert(plan.recognizedCount===1&&plan.projectDevices[0].id==='saved'&&plan.projectDevices[0].sessionVerification==='VERIFIED','A normal MAC match retains Project identity');
   const moved={...same,network:{...same.network,ipAddress:'10.20.30.40'}};plan=ProjectReverificationEngine.plan([saved],[moved]);
   assert(plan.changedIpCount===1&&plan.projectDevices[0].network.ipAddressHistory?.includes('192.168.1.20')&&plan.possibleReplacements.length===0,'B changed IP preserves identity/history without replacement');
-  const ten=Array.from({length:10},(_,i)=>device(`p${i}`,`192.168.1.${i+10}`,`00:00:00:00:00:${String(i).padStart(2,'0')}`));const twelve=[...ten.map(x=>structuredClone(x)),device('new-a','192.168.1.100','aa:00:00:00:00:01'),device('new-b','192.168.1.101','aa:00:00:00:00:02')];
+  const ten=Array.from({length:10},(_,i)=>device(`p${i}`,`192.168.1.${i+10}`,`00:00:00:00:00:${String(i+1).padStart(2,'0')}`));const twelve=[...ten.map(x=>structuredClone(x)),device('new-a','192.168.1.100','aa:00:00:00:00:01'),device('new-b','192.168.1.101','aa:00:00:00:00:02')];
   const growthDb=cleanProject(ten);let result=await workflow(growthDb,twelve).run();
   assert(result.recognizedCount===10&&result.newDevicesCount===2&&growthDb.getProjectMemberDevices().length===10&&growthDb.getSession().dirty,'C growth keeps 2 devices live-only and records Reverify history');
   assert(JSON.parse(growthDb.exportProjectJson()).project.devices.length===10,'C live-only devices are excluded from Project export');

@@ -1,3 +1,4 @@
+import { canonicalMac } from '../../shared/identity_policy.ts';
 import { packetProvenance } from '../../shared/evidence_provenance.ts';
 import { inspectDiscoveryHello } from './ws_discovery_hello.ts';
 import { Device, OnvifCustomConfig, OnvifVideoStreamProfile, OnvifImagingSettings, OnvifPtzCapabilities } from '../../types/index.ts';
@@ -190,7 +191,7 @@ export class OnvifDriver {
         const macMatch = scopesStr.match(/onvif:\/\/www\.onvif\.org\/MAC\/([a-fA-F0-9:%-]+)/i);
         if (macMatch) {
           const candidate = decodeURIComponent(macMatch[1]).replace(/-/g, ':').toLowerCase();
-          if (/^(?:[0-9a-f]{2}:){5}[0-9a-f]{2}$/.test(candidate)) mac = candidate;
+          mac = canonicalMac(candidate);
         }
 
         const serialMatch = scopesStr.match(/onvif:\/\/www\.onvif\.org\/(?:serial|serialnumber)\/([^\s]+)/i);

@@ -1,3 +1,4 @@
+import { conflicts, sameIdentity } from './identity_policy.ts';
 import { Device } from '../types/index.ts';
 import { AdvancedScanRequest } from './advanced_scan.ts';
 
@@ -6,11 +7,7 @@ export const hasCctvEvidence = (device: Device): boolean => Boolean(
   ['ONVIF','AXIS_ADP','ILLUSTRA','LENEL','HANWHA_SUNAPI','HIKVISION_ISAPI','DAHUA_CGI','BOSCH_RCP','PELCO_SARIX','OPTEX_REC'].includes(device.network.protocol) ||
   device.anchor.onvifEndpointUuid || ['IP_CAMERA','ACCESS_CONTROL','INTERCOM','PERIMETER_LIDAR'].includes(device.anchor.hardwareClass || '')
 );
-export const sameDiscoveryIdentity = (left:Device,right:Device):boolean => left.id === right.id || Boolean(
-  left.anchor.macAddress && right.anchor.macAddress?.toLowerCase() === left.anchor.macAddress.toLowerCase() ||
-  left.anchor.onvifEndpointUuid && right.anchor.onvifEndpointUuid?.toLowerCase() === left.anchor.onvifEndpointUuid.toLowerCase() ||
-  left.anchor.serialNumber && right.anchor.serialNumber?.toLowerCase() === left.anchor.serialNumber.toLowerCase()
-);
+export const sameDiscoveryIdentity = (left:Device,right:Device):boolean => !conflicts(left,right)&&(left.id===right.id||sameIdentity(left,right));
 export const matchesAdvancedScanFilters = (device: Device, filters: AdvancedScanRequest['filters']) => {
   const mac = device.anchor.macAddress?.toLowerCase() || '';
   const prefix = (filters.macPrefix || '').toLowerCase().replace(/-/g, ':');

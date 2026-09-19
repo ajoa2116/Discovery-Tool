@@ -1,3 +1,4 @@
+import { canonicalMac } from '../../shared/identity_policy.ts';
 import { Device } from '../../types/index.ts';
 import { CameraConfigurationOperation, CameraConfigurationProposal } from '../../shared/camera_configuration.ts';
 import { createHash, randomBytes } from 'node:crypto';
@@ -61,7 +62,7 @@ const clean=(value?:string)=>value?.trim()||undefined;
 export const xmlText=(xml:string,name:string)=>clean(xml.match(new RegExp(`<(?:\\w+:)?${name}(?:\\s[^>]*)?>([^<]*)<\\/(?:\\w+:)?${name}>`,'i'))?.[1]);
 export const queryMap=(body:string)=>new Map(body.split(/\r?\n|&/).map(line=>line.trim()).filter(Boolean).map(line=>{const i=line.indexOf('=');return i<0?[line,'']:[line.slice(0,i),decodeURIComponent(line.slice(i+1))]}));
 export const escapeXml=(value:string)=>value.replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&apos;'}[c]!));
-export function normalizeMac(value?:string){if(!value)return undefined;const hex=value.toLowerCase().replace(/[^0-9a-f]/g,'');return hex.length===12&&hex!=='000000000000'&&hex!=='ffffffffffff'?hex.match(/.{2}/g)!.join(':'):undefined}
+export function normalizeMac(value?:string){return canonicalMac(value)||undefined}
 export async function boundedReverify(signal:AbortSignal|undefined,probe:()=>Promise<unknown>,attempts=6,delayMs=750){for(let i=0;i<attempts;i++){if(signal?.aborted)throw new CameraDriverError('Vendor verification cancelled.','CANCELLED');await new Promise(resolve=>setTimeout(resolve,delayMs));try{await probe();return true}catch{}}return false}
 
 export abstract class HttpCameraVendorDriver implements CameraVendorDriver {

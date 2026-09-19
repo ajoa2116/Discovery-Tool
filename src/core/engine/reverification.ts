@@ -1,35 +1,29 @@
+import { sameIdentity, canonicalAnchor, mergeAnchors, hasIdentity } from '../../shared/identity_policy.ts';
 import { Device, ReverificationResult } from '../../types/index.ts';
 import { appStateDb } from '../storage/app_db.ts';
 import { projectDb, ProjectValidationError, SiteProjectDatabase } from '../storage/project_db.ts';
 import { LocalHostIdentity } from '../network/local_host_identity.ts';
 
-const norm = (value?: string | null) => value?.trim().toLowerCase() || undefined;
-const identities = (device: Device) => [norm(device.anchor.macAddress), norm(device.anchor.onvifEndpointUuid), norm(device.anchor.serialNumber)].filter(Boolean) as string[];
-const sameIdentity = (left: Device, right: Device) => {
-  const leftMac=norm(left.anchor.macAddress),rightMac=norm(right.anchor.macAddress),leftUuid=norm(left.anchor.onvifEndpointUuid),rightUuid=norm(right.anchor.onvifEndpointUuid);
-  if ((leftMac&&rightMac&&leftMac!==rightMac)||(leftUuid&&rightUuid&&leftUuid!==rightUuid)) return false;
-  return identities(left).some(value => identities(right).includes(value));
-};
 const persistedAnchor = (device: Device) => JSON.stringify({ mac: device.anchor.macAddress, uuid: device.anchor.onvifEndpointUuid, serial: device.anchor.serialNumber, vendor: device.anchor.vendor, model: device.anchor.model, firmware: device.anchor.firmwareVersion });
 
 export interface ReverificationPlan extends ReverificationResult { projectDevices: Device[]; persistentChanged: boolean; }
 
 export class ProjectReverificationEngine {
   public static plan(knownProjectDevices: Device[], liveDiscoveredDevices: Device[], localHost = LocalHostIdentity.fromAddresses([])): ReverificationPlan {
-    const known = structuredClone(knownProjectDevices);
-    const live = structuredClone(liveDiscoveredDevices).filter(device => localHost.isRemoteDevice(device));
+    const known = structuredClone(knownProjectDevices).map(d=>({...d,anchor:canonicalAnchor(d.anchor)}));
+    const live = structuredClone(liveDiscoveredDevices).map(d=>({...d,anchor:canonicalAnchor(d.anchor)})).filter(device => localHost.isRemoteDevice(device));
     const matchedLiveIds = new Set<string>();
     const verifiedDevices: Device[] = [], notVerifiedDevices: Device[] = [];
     const possibleReplacements: ReverificationResult['possibleReplacements'] = [];
     let changedIpCount = 0, persistentChanged = false;
     for (const saved of known) {
       const matches = live.filter(found => sameIdentity(saved, found));
-      const found = matches.length === 1 ? matches[0] : undefined;
+      const found = matches.length === 1 && known.filter(other=>sameIdentity(other,matches[0])).length === 1 ? matches[0] : undefined;
       if (found) {
         matchedLiveIds.add(found.id);
         const previousIp = saved.network.ipAddress;
         if (found.network.ipAddress !== previousIp) { changedIpCount++; persistentChanged = true; }
-        const mergedAnchor = { ...saved.anchor, ...found.anchor };
+        const mergedAnchor = mergeAnchors(saved.anchor, found.anchor);
         if (persistedAnchor(saved) !== persistedAnchor({ ...saved, anchor: mergedAnchor })) persistentChanged = true;
         saved.network = { ...saved.network, ...found.network, ipAddressHistory: Array.from(new Set([...(saved.network.ipAddressHistory || [previousIp]), previousIp, found.network.ipAddress])) };
         saved.anchor = mergedAnchor; saved.reachability = found.reachability;
@@ -40,13 +34,13 @@ export class ProjectReverificationEngine {
         saved.sessionVerification = 'NOT_FOUND'; saved.status = 'UNKNOWN'; saved.statusMessage = 'Not verified during the latest Project reverification.'; delete saved.reachability;
         notVerifiedDevices.push(saved);
         const atSavedIp = live.filter(candidate => candidate.network.ipAddress === saved.network.ipAddress && !sameIdentity(saved, candidate));
-        if (identities(saved).length && atSavedIp.length === 1 && identities(atSavedIp[0]).length) {
+        if (hasIdentity(saved) && atSavedIp.length === 1 && hasIdentity(atSavedIp[0])) {
           const candidate = atSavedIp[0];
           possibleReplacements.push({ candidateId: crypto.randomUUID(), originalDeviceId: saved.id, expectedName: saved.technician?.name || saved.anchor.model || saved.anchor.vendor, expectedMac: saved.anchor.macAddress, expectedIp: saved.network.ipAddress, expectedSerial: saved.anchor.serialNumber, expectedVendor: saved.anchor.vendor, expectedModel: saved.anchor.model, foundMac: candidate.anchor.macAddress, foundIp: candidate.network.ipAddress, foundSerial: candidate.anchor.serialNumber, foundVendor: candidate.anchor.vendor, model: candidate.anchor.model || candidate.anchor.vendor, evidence: ['Different stable physical identity discovered at the saved Project address.'], decision: 'PENDING' });
         }
       }
     }
-    const newDevices = live.filter(device => !matchedLiveIds.has(device.id) && !known.some(saved => sameIdentity(saved, device)));
+    const newDevices = live.filter(device => !matchedLiveIds.has(device.id));
     const collisionIps = new Set(live.filter(device => live.some(other => other.id !== device.id && other.network.ipAddress === device.network.ipAddress)).map(device => device.network.ipAddress));
     return { totalKnown: known.length, recognizedCount: verifiedDevices.length, changedIpCount, newDevicesCount: newDevices.length, notVerifiedCount: notVerifiedDevices.length, collisionCount: collisionIps.size, verifiedDevices, notVerifiedDevices, newDevices, possibleReplacements, projectDevices: known, persistentChanged };
   }
@@ -78,7 +72,10 @@ export class ProjectReverificationWorkflow {
       if (outcome === 'CANCELLED') throw new ProjectValidationError('Project reverification was cancelled.');
       const plan = ProjectReverificationEngine.plan(baseline, staging.getDevices(), this.localHost);
       for (const candidate of plan.possibleReplacements) {
-        const replacement = plan.newDevices?.find(device => device.network.ipAddress === candidate.foundIp && (norm(device.anchor.macAddress) === norm(candidate.foundMac) || norm(device.anchor.serialNumber) === norm(candidate.foundSerial)));
+        // The plan already established exactly one different identity at this address.
+        // This locates the technician-review candidate; it does not authorize an identity merge.
+        const candidates = plan.newDevices?.filter(device => device.network.ipAddress === candidate.foundIp) || [];
+        const replacement = candidates.length === 1 ? candidates[0] : undefined;
         if (candidate.candidateId && candidate.originalDeviceId && replacement) this.candidates.set(candidate.candidateId, { originalDeviceId: candidate.originalDeviceId, replacement });
       }
       this.db.applyReverification(plan.projectDevices, plan.newDevices || [], plan.persistentChanged, session.dirty);

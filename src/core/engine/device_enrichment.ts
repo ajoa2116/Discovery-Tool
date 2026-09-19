@@ -1,3 +1,4 @@
+import { canonicalMac } from '../../shared/identity_policy.ts';
 import { execFile } from 'node:child_process';
 import net from 'node:net';
 import { Device, NICInfo, ReachabilityEvidence } from '../../types/index.ts';
@@ -30,15 +31,7 @@ export interface DeviceEnricher {
   enrich(device: Device, options?: DeviceEnrichmentOptions): Promise<Device>;
 }
 
-export function normalizeMacAddress(value: string | null | undefined): string | null {
-  if (!value) return null;
-  if (!/^(?:[0-9a-f]{12}|(?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2}|(?:[0-9a-f]{4}\.){2}[0-9a-f]{4})$/i.test(value.trim())) return null;
-  const hex = value.trim().toLowerCase().replace(/[:.\-]/g, '');
-  if (hex.length !== 12 || !/^[0-9a-f]{12}$/.test(hex)) return null;
-  if (hex === '000000000000' || hex === 'ffffffffffff') return null;
-  if ((parseInt(hex.slice(0, 2), 16) & 1) === 1) return null;
-  return hex.match(/.{2}/g)!.join(':');
-}
+export const normalizeMacAddress = canonicalMac;
 
 function ipv4ToUint32(ipAddress: string): number | null {
   const parts = ipAddress.split('.');

@@ -1,3 +1,4 @@
+import { canonicalAnchor, mergeAnchors, selectIdentity } from '../../shared/identity_policy.ts';
 import os from 'node:os';
 import { EvidenceProvenance, packetProvenance } from '../../shared/evidence_provenance.ts';
 import { DiscoveryContext } from '../../shared/discovery_session.ts';
@@ -60,83 +61,31 @@ export interface OnvifDiscoveryTransport {
   discover(interfaces: NICInfo[], options?: WsDiscoveryOptions): Promise<WsDiscoveryResult>;
 }
 
-function sameIdentity(left: Device, right: Device): boolean {
-  const leftMac = left.anchor.macAddress?.toLowerCase();
-  const rightMac = right.anchor.macAddress?.toLowerCase();
-  if (leftMac && rightMac && leftMac === rightMac) return true;
-
-  const leftUuid = left.anchor.onvifEndpointUuid?.toLowerCase();
-  const rightUuid = right.anchor.onvifEndpointUuid?.toLowerCase();
-  if (leftUuid && rightUuid && leftUuid === rightUuid) return true;
-
-  const leftSerial = left.anchor.serialNumber?.toLowerCase();
-  const rightSerial = right.anchor.serialNumber?.toLowerCase();
-  return Boolean(leftSerial && rightSerial && leftSerial === rightSerial) || (left.id.startsWith('session:') && left.id === right.id && !leftMac && !rightMac && !leftUuid && !rightUuid);
-}
-
-function identityConflicts(left: Device, right: Device): boolean {
-  const leftMac = left.anchor.macAddress?.toLowerCase();
-  const rightMac = right.anchor.macAddress?.toLowerCase();
-  const leftUuid = left.anchor.onvifEndpointUuid?.toLowerCase();
-  const rightUuid = right.anchor.onvifEndpointUuid?.toLowerCase();
-  return Boolean(
-    (leftMac && rightMac && leftMac !== rightMac) ||
-    (leftUuid && rightUuid && leftUuid !== rightUuid)
-  );
-}
-
 export function mergeDiscoveredDevice(
   devices: Device[],
   incoming: Device,
 ): { device: Device; isNew: boolean } {
-  const existingIndex = devices.findIndex(device => (device.evidenceProvenance || 'PHYSICAL_NETWORK') === (incoming.evidenceProvenance || 'PHYSICAL_NETWORK') && sameIdentity(device, incoming));
-  if (existingIndex < 0) {
-    devices.push(incoming);
-    return { device: incoming, isNew: true };
+  incoming={...incoming,anchor:canonicalAnchor(incoming.anchor)};
+  const eligible=devices.filter(d=>(d.evidenceProvenance||'PHYSICAL_NETWORK')===(incoming.evidenceProvenance||'PHYSICAL_NETWORK'));
+  const selection=selectIdentity(eligible,incoming);
+  if(selection.index<0){
+    if(selection.related.length){
+      const conflict={detectedAt:new Date().toISOString(),reason:selection.ambiguous?'Ambiguous physical identity matches':'Conflicting MAC/UUID identity evidence',existingMac:selection.related[0].anchor.macAddress,incomingMac:incoming.anchor.macAddress,existingUuid:selection.related[0].anchor.onvifEndpointUuid,incomingUuid:incoming.anchor.onvifEndpointUuid};
+      for(const related of selection.related)related.identityConflicts=[...(related.identityConflicts||[]),conflict];
+      incoming={...incoming,identityConflicts:[...(incoming.identityConflicts||[]),conflict]};
+      if(devices.some(d=>d.id===incoming.id))incoming.id=`${incoming.id}:conflict:${crypto.randomUUID()}`;
+    }
+    devices.push(incoming);return {device:incoming,isNew:true};
   }
-
-  const existing = devices[existingIndex];
-  if (identityConflicts(existing, incoming)) {
-    const conflict = {
-      detectedAt: new Date().toISOString(),
-      reason: 'Conflicting MAC/UUID identity evidence',
-      existingMac: existing.anchor.macAddress,
-      incomingMac: incoming.anchor.macAddress,
-      existingUuid: existing.anchor.onvifEndpointUuid,
-      incomingUuid: incoming.anchor.onvifEndpointUuid,
-    };
-    existing.identityConflicts = [...(existing.identityConflicts || []), conflict];
-    const separate = {
-      ...incoming,
-      id: devices.some(device => device.id === incoming.id)
-        ? `${incoming.id}:conflict:${crypto.randomUUID()}`
-        : incoming.id,
-      identityConflicts: [...(incoming.identityConflicts || []), conflict],
-    };
-    devices.push(separate);
-    return { device: separate, isNew: true };
-  }
+  const existing=eligible[selection.index],existingIndex=devices.indexOf(existing);
   const merged: Device = {
     ...existing,
     ...incoming,
-    id: incoming.anchor.macAddress
-      ? `mac:${incoming.anchor.macAddress.toLowerCase()}`
-      : existing.anchor.macAddress
-        ? `mac:${existing.anchor.macAddress.toLowerCase()}`
-        : existing.id,
+    id: existing.id,
     firstSeenAt: existing.firstSeenAt,
     lastSeenAt: incoming.lastSeenAt,
-    anchor: {
-      ...existing.anchor,
-      ...incoming.anchor,
-      macAddress: incoming.anchor.macAddress || existing.anchor.macAddress,
-      onvifEndpointUuid: incoming.anchor.onvifEndpointUuid || existing.anchor.onvifEndpointUuid,
-      serialNumber: incoming.anchor.serialNumber || existing.anchor.serialNumber,
-      vendor: incoming.anchor.vendor !== 'Unknown ONVIF Device'
-        ? incoming.anchor.vendor
-        : existing.anchor.vendor,
-      model: incoming.anchor.model || existing.anchor.model,
-    },
+    anchor: {...mergeAnchors(existing.anchor,incoming.anchor),vendor:incoming.anchor.vendor==='Unknown ONVIF Device'?existing.anchor.vendor:incoming.anchor.vendor},
+    technician: {...incoming.technician,...existing.technician},
     network: {
       ...existing.network,
       ...incoming.network,

@@ -1,3 +1,4 @@
+import { canonicalAnchor, canonicalMac, mergeAnchors, selectIdentity, sameIdentity } from '../../shared/identity_policy.ts';
 import { promises as fs } from 'node:fs';
 import { dirname } from 'node:path';
 import { CctvProjectBundle, Device, IPCollisionRecord, ProjectSession, RogueDHCPOffer, SiteProject } from '../../types/index.ts';
@@ -51,6 +52,7 @@ function makeProject(name: string, location = '', description = ''): SiteProject
 
 function prepareDeviceForSave(device: Device): Device {
   const saved = sanitize(clone(device)) as Device;
+  saved.anchor = canonicalAnchor(saved.anchor);
   const status = device.sessionVerification === 'NOT_FOUND' && device.savedStatusSnapshot ? device.savedStatusSnapshot : device.status;
   saved.status = status;
   saved.savedStatusSnapshot = status;
@@ -61,6 +63,7 @@ function prepareDeviceForSave(device: Device): Device {
 
 function prepareLoadedDevice(device: Device): Device {
   const loaded = clone(device);
+  loaded.anchor = canonicalAnchor(loaded.anchor);
   loaded.savedStatusSnapshot = device.savedStatusSnapshot || device.status;
   loaded.status = 'UNKNOWN';
   loaded.sessionVerification = 'NOT_VERIFIED';
@@ -123,27 +126,14 @@ export class SiteProjectDatabase {
   public upsertDevice(device: Device, membershipHistory: 'DEVICE_ADDED'|'DEVICE_RE_ADDED' = 'DEVICE_ADDED'): Device {
     if (!this.acceptsEvidence(device)) throw new ProjectValidationError('Nonphysical discovery evidence requires an isolated test inventory.');
     const devices = this.session.project.devices;
-    const mac = device.anchor.macAddress?.toLowerCase();
-    const uuid = device.anchor.onvifEndpointUuid?.toLowerCase();
-    const serial = device.anchor.serialNumber?.toLowerCase();
-    const exactIdIndex = devices.findIndex(d => d.id === device.id);
-    const identityMatchIndex = exactIdIndex >= 0 ? exactIdIndex : devices.findIndex(d => Boolean(
-      (mac && d.anchor.macAddress?.toLowerCase() === mac) ||
-      (uuid && d.anchor.onvifEndpointUuid?.toLowerCase() === uuid) ||
-      (serial && d.anchor.serialNumber?.toLowerCase() === serial)
-    ));
-    let existingIndex = identityMatchIndex;
-    if (identityMatchIndex >= 0) {
-      const existing = devices[identityMatchIndex];
-      const macConflict = Boolean(mac && existing.anchor.macAddress && existing.anchor.macAddress.toLowerCase() !== mac);
-      const uuidConflict = Boolean(uuid && existing.anchor.onvifEndpointUuid && existing.anchor.onvifEndpointUuid.toLowerCase() !== uuid);
-      if (macConflict || uuidConflict) {
-        const conflict = { detectedAt: new Date().toISOString(), reason: macConflict ? 'Conflicting MAC addresses for matching identity evidence' : 'Conflicting ONVIF UUIDs for matching identity evidence', existingMac: existing.anchor.macAddress, incomingMac: device.anchor.macAddress, existingUuid: existing.anchor.onvifEndpointUuid, incomingUuid: device.anchor.onvifEndpointUuid };
-        existing.identityConflicts = [...(existing.identityConflicts || []), conflict];
-        device.identityConflicts = [...(device.identityConflicts || []), conflict];
-        if (devices.some(candidate => candidate.id === device.id)) device = { ...device, id: `${device.id}:conflict:${crypto.randomUUID()}` };
-        existingIndex = -1;
-      }
+    device.anchor = canonicalAnchor(device.anchor);
+    const selection = selectIdentity(devices,device);
+    const existingIndex = selection.index;
+    if (existingIndex < 0 && selection.related.length) {
+      const conflict = { detectedAt:new Date().toISOString(), reason:selection.ambiguous ? 'Ambiguous physical identity matches' : 'Conflicting physical identity evidence', existingMac:selection.related[0].anchor.macAddress, incomingMac:device.anchor.macAddress, existingUuid:selection.related[0].anchor.onvifEndpointUuid, incomingUuid:device.anchor.onvifEndpointUuid };
+      for (const related of selection.related) related.identityConflicts=[...(related.identityConflicts||[]),conflict];
+      device={...device,identityConflicts:[...(device.identityConflicts||[]),conflict]};
+      if(devices.some(d=>d.id===device.id)) device.id=`${device.id}:conflict:${crypto.randomUUID()}`;
     }
 
     let storedDevice: Device;
@@ -153,9 +143,9 @@ export class SiteProjectDatabase {
       const history = Array.from(new Set([...(existing.network.ipAddressHistory || [existing.network.ipAddress]), existing.network.ipAddress, device.network.ipAddress]));
       devices[existingIndex] = {
         ...existing, ...device, id: existing.id,
-        anchor: { ...existing.anchor, ...device.anchor, macAddress: device.anchor.macAddress || existing.anchor.macAddress, onvifEndpointUuid: device.anchor.onvifEndpointUuid || existing.anchor.onvifEndpointUuid, serialNumber: device.anchor.serialNumber || existing.anchor.serialNumber },
+        anchor: mergeAnchors(existing.anchor, device.anchor),
         network: { ...existing.network, ...device.network, ipAddressHistory: history },
-        technician: { ...existing.technician, ...device.technician },
+        technician: { ...device.technician, ...existing.technician },
         reachability: { ...existing.reachability, ...device.reachability },
         sessionVerification: device.sessionVerification ?? (device.reachability?.lastSuccessfulResponseAt || device.reachability?.wsDiscoveryRespondedAt ? 'VERIFIED' : existing.sessionVerification),
         lastSeenAt: new Date().toISOString(),
@@ -170,13 +160,8 @@ export class SiteProjectDatabase {
     for (let i = devices.length - 1; i >= 0; i--) {
       const candidate = devices[i];
       if (candidate === storedDevice) continue;
-      const sameMac = Boolean(storedDevice.anchor.macAddress && candidate.anchor.macAddress && storedDevice.anchor.macAddress.toLowerCase() === candidate.anchor.macAddress.toLowerCase());
-      const sameUuid = Boolean(storedDevice.anchor.onvifEndpointUuid && candidate.anchor.onvifEndpointUuid && storedDevice.anchor.onvifEndpointUuid.toLowerCase() === candidate.anchor.onvifEndpointUuid.toLowerCase());
-      const sameSerial = Boolean(storedDevice.anchor.serialNumber && candidate.anchor.serialNumber && storedDevice.anchor.serialNumber.toLowerCase() === candidate.anchor.serialNumber.toLowerCase());
-      const macConflict = Boolean(storedDevice.anchor.macAddress && candidate.anchor.macAddress && !sameMac);
-      const uuidConflict = Boolean(storedDevice.anchor.onvifEndpointUuid && candidate.anchor.onvifEndpointUuid && !sameUuid);
-      if (!(sameMac || sameUuid || sameSerial) || macConflict || uuidConflict) continue;
-      storedDevice.anchor = { ...candidate.anchor, ...storedDevice.anchor, macAddress: storedDevice.anchor.macAddress || candidate.anchor.macAddress, onvifEndpointUuid: storedDevice.anchor.onvifEndpointUuid || candidate.anchor.onvifEndpointUuid, serialNumber: storedDevice.anchor.serialNumber || candidate.anchor.serialNumber };
+      if (selection.ambiguous || existingIndex < 0 || !sameIdentity(storedDevice,candidate)) continue;
+      storedDevice.anchor = mergeAnchors(candidate.anchor,storedDevice.anchor);
       storedDevice.network.ipAddressHistory = Array.from(new Set([...(candidate.network.ipAddressHistory || [candidate.network.ipAddress]), ...(storedDevice.network.ipAddressHistory || [storedDevice.network.ipAddress])]));
       storedDevice.technician = { ...candidate.technician, ...storedDevice.technician };
       storedDevice.reachability = { ...candidate.reachability, ...storedDevice.reachability };
@@ -253,7 +238,7 @@ export class SiteProjectDatabase {
     const removed = this.removedProjectIdentities.find(identity => identity.id===device.id || Boolean((mac&&identity.mac===mac)||(uuid&&identity.uuid===uuid)||(serial&&identity.serial===serial)));
     if (removed) this.currentOnlyDeviceIds.add(device.id);
   }
-  public getDeviceByMac(mac: string): Device | undefined { return this.getDevices().find(d => d.anchor.macAddress?.toLowerCase() === mac.toLowerCase()); }
+  public getDeviceByMac(mac: string): Device | undefined { const matches=this.getDevices().filter(d => Boolean(canonicalMac(mac)) && canonicalMac(d.anchor.macAddress) === canonicalMac(mac)); return matches.length===1 ? matches[0] : undefined; }
   public getDeviceById(id: string): Device | undefined { return this.getDevices().find(device => device.id === id); }
   public getDeviceByIdentifier(identifier: string): Device | undefined { return this.getDeviceById(identifier) || this.getDeviceByMac(identifier); }
   public recordCollision(collision: IPCollisionRecord): void { const existing = this.session.project.collisions.find(c => (collision.id&&c.id===collision.id)||c.ipAddress === collision.ipAddress); if (existing) { const id=existing.id||collision.id,detectedAt=existing.detectedAt;Object.assign(existing,collision,{id,detectedAt}); } else this.session.project.collisions.push(collision); this.markDirty(); }
