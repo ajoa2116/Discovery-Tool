@@ -1,3 +1,4 @@
+import { withDiscoveryOwnership } from './support/identity_observation.ts';
 import { strict as assert } from 'node:assert';
 import { EventEmitter } from 'node:events';
 import express from 'express';
@@ -58,7 +59,7 @@ async function run(){
  const physicalReference=quick.getDevices()[0],mixed=[physicalReference];mergeDiscoveredDevice(mixed,{...synthetic.result.devices[0],anchor:{...synthetic.result.devices[0].anchor,macAddress:'00:11:22:33:44:55'}});check(mixed.length===2&&!physicalReference.identityConflicts,'transport merge partitions provenance before any identity conflict mutation');
  const beforePhysical=JSON.stringify(quick.getDevices()[0]);assert.throws(()=>quick.upsertDevice({...synthetic.result.devices[0],network:{...synthetic.result.devices[0].network,ipAddress:'192.168.1.101'}}));check(JSON.stringify(quick.getDevices()[0])===beforePhysical,'synthetic identity collision cannot overwrite physical device');
  await pipeline(quick,'PHYSICAL_NETWORK',()=>{});check(quick.getDevices().length===1,'repeated physical Hello deduplicates');
- const original=quick.getDevices()[0];await new WindowsDeviceEnricher({lookup:async()=>({ipAddress:original.network.ipAddress,macAddress:'e4:30:22:cd:68:85',interfaceIndex:8})},{probe:async()=>[]}).enrich(original,{onUpdate:device=>quick.upsertDevice(device)});
+ const original=withDiscoveryOwnership(quick.getDevices()[0],'e4:30:22:cd:68:85');await new WindowsDeviceEnricher({lookup:async()=>({ipAddress:original.network.ipAddress,macAddress:'e4:30:22:cd:68:85',interfaceIndex:8})},{probe:async()=>[]}).enrich(original,{onUpdate:device=>quick.upsertDevice(device)});
  check(quick.getDevices().length===1&&quick.getDevices()[0].anchor.macAddress==='e4:30:22:cd:68:85','later MAC enrichment preserves one physical identity');
  check(quick.getDevices()[0].evidenceProvenance==='PHYSICAL_NETWORK','MAC reconciliation retains physical provenance');
  const provisional=await candidate('PHYSICAL_NETWORK',hanwhaHello().replace('xmlns:synthetic="urn:cctv-discovery:synthetic-test" ',''));check(provisional.result.devices[0].id.startsWith('session:'),'physical Hello without UUID remains provisional');

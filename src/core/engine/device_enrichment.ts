@@ -1,3 +1,4 @@
+import { observeNeighbor } from '../../shared/identity_enrichment.ts';
 import { canonicalMac } from '../../shared/identity_policy.ts';
 import { execFile } from 'node:child_process';
 import net from 'node:net';
@@ -141,9 +142,9 @@ export class WindowsDeviceEnricher implements DeviceEnricher {
     options.onUpdate?.(device, ['subnetClassification']);
 
     let neighbor = await this.safeNeighborLookup(device.network.ipAddress, nic, options.signal, options.onEvidence);
-    if (neighbor?.macAddress && !device.anchor.macAddress) {
-      device.anchor.macAddress = neighbor.macAddress;
-      options.onUpdate?.(device, ['macAddress']);
+    if (neighbor) {
+      const promoted=observeNeighbor(device,neighbor);
+      options.onUpdate?.(device, promoted ? ['macAddress','neighborObservations'] : ['neighborObservations']);
     }
 
     if (options.signal?.aborted) return device;
@@ -167,9 +168,9 @@ export class WindowsDeviceEnricher implements DeviceEnricher {
 
     if (!device.anchor.macAddress && !options.signal?.aborted) {
       neighbor = await this.safeNeighborLookup(device.network.ipAddress, nic, options.signal, options.onEvidence);
-      if (neighbor?.macAddress) {
-        device.anchor.macAddress = neighbor.macAddress;
-        options.onUpdate?.(device, ['macAddress']);
+      if (neighbor) {
+        const promoted=observeNeighbor(device,neighbor);
+        options.onUpdate?.(device, promoted ? ['macAddress','neighborObservations'] : ['neighborObservations']);
       }
     }
     return device;

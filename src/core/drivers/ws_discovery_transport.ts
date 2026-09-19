@@ -193,6 +193,11 @@ export class NodeOnvifWsDiscoveryTransport implements OnvifDiscoveryTransport {
         reachability: { subnetClassification, discoverySource:{ipAddress:remote.address,port:remote.port,payloadBytes:message.length,kind:hello?'HELLO':'PROBE_MATCH'}, ...(hello ? { wsDiscoveryAnnouncedAt: now } : { wsDiscoveryRespondedAt: now, lastSuccessfulResponseAt: now }),
           discoveryInterface: nic ? { name: nic.name, ipAddress: nic.ipAddress, netmask: nic.netmask, interfaceIndex: nic.interfaceIndex } : undefined },
         discoveredPhase: 3, firstSeenAt: now, lastSeenAt: now };
+      // Capture only anchors co-present in this raw response, before transport merge.
+      const packetAnchor=canonicalAnchor(parsed.anchor);
+      if(packetAnchor.macAddress&&packetAnchor.onvifEndpointUuid&&nic?.interfaceIndex!==undefined) {
+        device.reachability!.identityObservation={source:'WS_DISCOVERY',ipAddress:device.network.ipAddress,interfaceIndex:nic.interfaceIndex,observedAt:now,anchor:structuredClone(packetAnchor)};
+      }
       const merged = mergeDiscoveredDevice(devices, device);
       evidence.parser(session.windowId,hello?'HELLO_PARSED':'PROBE_MATCH_PARSED',{sequence:session.counters.datagramsReceived});
       evidence.parser(session.windowId,'XADDR_EXTRACTED',{address:device.network.ipAddress,sequence:session.counters.datagramsReceived});

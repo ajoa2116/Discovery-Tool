@@ -1,3 +1,4 @@
+import { withDiscoveryOwnership } from './support/identity_observation.ts';
 import { Device } from '../types/index.ts';
 import {
   classifySubnet,
@@ -86,6 +87,7 @@ async function run() {
   assert(normalizeMacAddress('ff:ff:ff:ff:ff:ff') === null && normalizeMacAddress('01:00:5e:00:00:01') === null, 'invalid and multicast MAC rejection');
 
   const neighbor = new FakeNeighborProvider({ ipAddress: '192.168.1.50', macAddress: '00:40:8c:11:22:33', interfaceIndex: 7 });
+  withDiscoveryOwnership(uuidOnly,'00:40:8c:11:22:33');
   const enriched = await new WindowsDeviceEnricher(neighbor, new FakeReachabilityProvider()).enrich(uuidOnly);
   assert(enriched.anchor.macAddress === '00:40:8c:11:22:33', 'legitimate neighbor MAC enrichment');
 
@@ -142,11 +144,12 @@ async function run() {
   const providerByIp: NeighborProvider = {
     async lookup(ipAddress) {
       if (ipAddress.endsWith('.70')) throw new Error('adapter failure');
-      return { ipAddress, macAddress: '00:40:8c:11:22:70' };
+      return { ipAddress, macAddress: '00:40:8c:11:22:70', interfaceIndex:7 };
     },
   };
   const perAdapterEnricher = new WindowsDeviceEnricher(providerByIp, new FakeReachabilityProvider());
   const adapterDevices = [device('adapter-fail', '192.168.1.70'), device('adapter-ok', '192.168.1.71')];
+  withDiscoveryOwnership(adapterDevices[1],'00:40:8c:11:22:70');
   await Promise.all(adapterDevices.map(item => perAdapterEnricher.enrich(item)));
   assert(adapterDevices[0].anchor.macAddress === null && adapterDevices[1].anchor.macAddress !== null, 'per-adapter enrichment failure isolation');
 

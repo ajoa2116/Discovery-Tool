@@ -1,3 +1,4 @@
+import { withDiscoveryOwnership } from './support/identity_observation.ts';
 import { strict as assert } from 'node:assert';
 import { Device, PairSessionState } from '../types/index.ts';
 import { PairService } from '../core/network/pair_service.ts';
@@ -18,7 +19,7 @@ async function run(){
  check(parseWindowsNeighbors(JSON.stringify({...row(),AddressFamily:'IPv6'})).length===0,'reject IPv6');
  let script='';const neighbor=new WindowsNeighborProvider(async text=>{script=text;return JSON.stringify([row('Incomplete','00-00-00-00-00-00'),row('Stale'),row('Reachable','E4-30-22-CD-68-86',10)]);});
  check((await neighbor.lookup('192.168.1.100',{interfaceIndex:8,localAddress:'192.168.1.137'}))?.state==='Stale','valid later Stale row survives invalid first row');check(script.includes('$ifIndex = 8')&&!script.includes('First 1 IPAddress'),'lookup scopes correct interface and validates all entries');check(await neighbor.lookup('192.168.1.101',{interfaceIndex:8})===null,'exact IP required');check(await neighbor.lookup('192.168.1.100',{interfaceIndex:9})===null,'wrong interface rejected');check(await neighbor.lookup('192.168.1.100')===null,'ambiguous cross-interface MAC rejected');
- const db=new SiteProjectDatabase();db.startQuickWork();db.upsertDevice(camera());
+ const db=new SiteProjectDatabase();db.startQuickWork();db.upsertDevice(withDiscoveryOwnership(camera(),'e4:30:22:cd:68:85'));
  const original={...fieldEthernet(),dhcpEnabled:false};let ethernet=structuredClone(original);const wifi={...fieldEthernet(),interfaceIndex:10,interfaceAlias:'Wi-Fi',mediaType:'WIFI' as const};const wifiBefore=JSON.stringify(wifi);let writes=0,attempt=0;const states:PairSessionState[]=[];
  const adapters={inspectAdapters:async()=>[structuredClone(ethernet),wifi],isAdministrator:async()=>true,applyTemporary:async(index:number,ip:string,prefix:number)=>{check(index===8,'apply selected Ethernet only');writes++;ethernet={...ethernet,ipv4Addresses:[{address:ip,prefixLength:prefix}]};return structuredClone(ethernet)},restore:async()=>{ethernet=structuredClone(original);return ethernet}};
  const recovery={value:null as PairSessionState|null,load:async()=>null,save:async(value:PairSessionState)=>{recovery.value=structuredClone(value)},clear:async()=>{recovery.value=null}};

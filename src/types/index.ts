@@ -122,6 +122,9 @@ export interface NetworkEndpoint {
 }
 
 export interface ReachabilityEvidence {
+  /** Runtime-only corroboration from a response carrying identity and MAC together. */
+  identityObservation?: { source:'WS_DISCOVERY'; ipAddress:string; interfaceIndex:number; observedAt:string; anchor:DevicePhysicalAnchor };
+  neighborObservations?: Array<{ipAddress:string;macAddress:string|null;interfaceIndex?:number;state?:string;observedAt:string;result:'CONFIRMED'|'UNBOUND'|'CONFLICT'|'INVALID'}>;
   discoverySource?: { ipAddress:string; port:number; payloadBytes:number; kind:'HELLO'|'PROBE_MATCH' };
   wsDiscoveryAnnouncedAt?: string;
   relationshipAdapter?: { name: string; ipAddress: string; netmask: string; interfaceIndex?: number };

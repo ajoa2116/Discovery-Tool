@@ -1,3 +1,4 @@
+import { withDiscoveryOwnership } from './support/identity_observation.ts';
 import { strict as assert } from 'node:assert';
 import { EventEmitter } from 'node:events';
 import dgram, { RemoteInfo } from 'node:dgram';
@@ -59,6 +60,7 @@ async function run(){
  const db=new SiteProjectDatabase('ISOLATED_TEST');db.startQuickWork();const transport={discover:async(_nics:any,options:any)=>{for(const device of received.result.devices)options.onDevice?.(structuredClone(device),true);return received.result}};
  await Phase3ActiveProbing.execute([fieldNic()],transport,new NoopDeviceEnricher(),{},LocalHostIdentity.fromInterfaces([fieldNic()]),db);check(db.getDevices().length===1&&db.getDevices()[0].status==='DIFFERENT_SUBNET','monitoring/Quick pipeline promotes Hello without unicast enrichment');await Phase3ActiveProbing.execute([fieldNic()],transport,new NoopDeviceEnricher(),{},LocalHostIdentity.fromInterfaces([fieldNic()]),db);check(db.getDevices().length===1,'repeated stable Hello does not duplicate inventory');
  const moved=(await receive([hanwhaHello({uuid:true,ip:'192.168.1.101'})])).result.devices[0];db.upsertDevice(moved);check(db.getDevices().length===1&&db.getDevices()[0].network.ipAddress==='192.168.1.101','same UUID with new XAddr reconciles without IP identity');
+ withDiscoveryOwnership(db.getDevices()[0],'e4:30:22:cd:68:85');
  const enricher=new WindowsDeviceEnricher({lookup:async()=>({ipAddress:'192.168.1.101',macAddress:'e4:30:22:cd:68:85',interfaceIndex:8})},{probe:async()=>[]});await enricher.enrich(db.getDevices()[0],{onUpdate:device=>db.upsertDevice(device)});check(db.getDeviceByMac('e4:30:22:cd:68:85')?.anchor.onvifEndpointUuid===camera.anchor.onvifEndpointUuid,'later MAC enriches same UUID identity without duplicate row');check(db.getDevices()[0].sessionVerification==='NOT_VERIFIED','MAC enrichment does not fabricate live verification');check(canOfferPair(db.getDevices()[0]),'manual Pair remains offered for discovered off-subnet candidate');
  const second={...moved,id:'onvif:other',anchor:{macAddress:null,onvifEndpointUuid:'bbbbbbbb-bbbb-cccc-dddd-eeeeeeeeeeee',vendor:'Unknown'}};db.upsertDevice(second);check(db.getDevices().length===2,'different stable identities at same IP remain separate');
  check(hasCctvEvidence(camera)&&matchesAdvancedScanFilters(camera,{onlyLikelyCameras:true,includeUnknownDevices:false}),'valid Hello retains CCTV eligibility with unknown hosts excluded');

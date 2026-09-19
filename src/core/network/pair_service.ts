@@ -1,3 +1,4 @@
+import { observeNeighbor } from '../../shared/identity_enrichment.ts';
 import { NetworkMatchInput, networkMatchError } from '../../shared/network_match.ts';
 import { verifyAfterPair } from './post_pair_verification.ts';
 import { promises as fs } from 'node:fs';
@@ -209,15 +210,14 @@ export class PairService {
       this.session.verification = verification.evidence;
       this.session.cameraReachabilityVerified = verification.evidence.cameraResponded;
       const enriched = verification.device;
-      if (!enriched.anchor.macAddress) {
+      {
         const localAddress = applied.ipv4Addresses.find(ip=>ip.address===this.session!.selectedCandidate!.ipAddress)!.address;
         const details:Record<string,unknown> = { requestedIp:enriched.network.ipAddress,interfaceIndex:applied.interfaceIndex,adapterIPv4:localAddress,deviceId:enriched.id };
         try {
           const neighbor = await (this.verificationOptions.neighbors ?? new WindowsNeighborProvider()).lookup(enriched.network.ipAddress,{interfaceIndex:applied.interfaceIndex,localAddress});
           const mac = normalizeMacAddress(neighbor?.macAddress);
-          const accepted = Boolean(mac && neighbor?.ipAddress===enriched.network.ipAddress && neighbor.interfaceIndex===applied.interfaceIndex);
-          if (accepted) enriched.anchor.macAddress=mac;
-          this.audit('Post-Pair neighbor enrichment',{...details,state:neighbor?.state,rawMac:neighbor?.macAddress,normalizedMac:mac,result:accepted?'NEIGHBOR_MATCHED':'NEIGHBOR_NOT_FOUND',mergedDeviceId:accepted?enriched.id:undefined});
+          const accepted = neighbor ? observeNeighbor(enriched,neighbor) : false;
+          this.audit('Post-Pair neighbor enrichment',{...details,state:neighbor?.state,rawMac:neighbor?.macAddress,normalizedMac:mac,result:accepted?'NEIGHBOR_MATCHED':neighbor?'NEIGHBOR_OBSERVED_NOT_PROMOTED':'NEIGHBOR_NOT_FOUND',mergedDeviceId:accepted?enriched.id:undefined});
         } catch { this.audit('Post-Pair neighbor enrichment',{...details,result:'NEIGHBOR_LOOKUP_UNAVAILABLE'}); }
       }
       this.database.upsertDevice(enriched);

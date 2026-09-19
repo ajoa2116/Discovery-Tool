@@ -1,10 +1,11 @@
+import { assessAuthenticatedIdentity } from '../../shared/identity_enrichment.ts';
 import { canonicalMac } from '../../shared/identity_policy.ts';
 import { Device } from '../../types/index.ts';
 import { CameraConfigurationOperation, CameraConfigurationProposal } from '../../shared/camera_configuration.ts';
 import { createHash, randomBytes } from 'node:crypto';
 
 export type DriverCapabilityState = 'SUPPORTED'|'UNSUPPORTED'|'UNKNOWN'|'REQUIRES_AUTHENTICATION'|'TRANSPORT_UNAVAILABLE';
-export type DriverErrorCode = 'AUTHENTICATION_FAILED'|'UNSUPPORTED'|'TIMEOUT'|'REFUSED'|'UNREACHABLE'|'MALFORMED_RESPONSE'|'VENDOR_ERROR'|'TLS_WARNING'|'AMBIGUOUS_IDENTITY'|'CANCELLED';
+export type DriverErrorCode = 'AUTHENTICATION_FAILED'|'UNSUPPORTED'|'TIMEOUT'|'REFUSED'|'UNREACHABLE'|'MALFORMED_RESPONSE'|'VENDOR_ERROR'|'TLS_WARNING'|'AMBIGUOUS_IDENTITY'|'IDENTITY_CONFLICT'|'INSUFFICIENT_IDENTITY'|'CANCELLED';
 export interface DriverCapability { operation:CameraConfigurationOperation|'IDENTITY'|'NETWORK'; state:DriverCapabilityState; detail:string }
 export interface DriverIdentity { manufacturer?:string; model?:string; serial?:string; firmware?:string; macAddress?:string; hostname?:string }
 export interface DriverValues { deviceName?:string; ntp?:{fromDhcp:boolean;servers:string[]}; timeZone?:string; onvifEnabled?:boolean }
@@ -91,5 +92,5 @@ export class CameraDriverResolver {
     if(candidates.size>1)return{driver:null,provider:'Unsupported / ambiguous vendor',evidence,confidence:'UNKNOWN'};
     const driver=[...candidates][0];return driver?{driver,provider:driver.label,evidence,confidence:'POSITIVE'}:{driver:null,provider:'Unsupported / unknown vendor',evidence:[],confidence:'UNKNOWN'};
   }
-  confirm(device:Device,driver:CameraVendorDriver,identity:DriverIdentity):DriverSelection{const value=identity.manufacturer||driver.label;if(!driver.vendorTokens.some(t=>value.toLowerCase().includes(t.toLowerCase())))throw new CameraDriverError('Vendor response conflicts with the selected driver.','AMBIGUOUS_IDENTITY');return{driver,provider:driver.label,evidence:[{source:'VENDOR_RESPONSE',value,confidence:'HIGH'}],confidence:'VERIFIED'}}
+  confirm(device:Device,driver:CameraVendorDriver,identity:DriverIdentity):DriverSelection{const binding=assessAuthenticatedIdentity(device,identity);if(binding==='CONFLICT'||binding==='INVALID')throw new CameraDriverError('Provider identity conflicts with established physical evidence.','IDENTITY_CONFLICT');if(binding==='INSUFFICIENT'&&(identity.macAddress||identity.serial))throw new CameraDriverError('Provider response is not bound to the intended physical identity.','INSUFFICIENT_IDENTITY');const value=identity.manufacturer||driver.label;if(!driver.vendorTokens.some(t=>value.toLowerCase().includes(t.toLowerCase())))throw new CameraDriverError('Vendor response conflicts with the selected driver.','AMBIGUOUS_IDENTITY');return{driver,provider:driver.label,evidence:[{source:'VENDOR_RESPONSE',value,confidence:'HIGH'}],confidence:binding==='BOUND'?'VERIFIED':'POSITIVE'}}
 }
