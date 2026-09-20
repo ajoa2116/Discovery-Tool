@@ -515,8 +515,8 @@ export default function App() {
         {/* Section 13.3 Rogue DHCP Banner (if detected) */}
         {project && <RogueDhcpBanner rogueEvents={project.rogueDhcpEvents} />}
         {pairSession?.recoveryAvailable && ['PAIRED', 'ROLLBACK_REQUIRED'].includes(pairSession.state) && (
-          <button onClick={() => { if(pairSession.purpose==='NETWORK_MATCH'){setNetworkAdapterOpen(true);return;} const device = project?.devices.find(item => item.id === pairSession.deviceId) || null; setPairDevice(device); setPairModalDismissed(false); }} className="w-full p-3 rounded-xl border border-amber-600/60 bg-amber-950/40 text-amber-200 text-xs flex items-center justify-center gap-2">
-            <Network className="w-4 h-4" />Temporary adapter configuration may be active on {pairSession.originalAdapter.interfaceAlias}. Review or restore original network configuration.
+          <button onClick={() => { if(pairSession.purpose==='NETWORK_MATCH'){setNetworkAdapterOpen(true);return;} const device = project?.devices.find(item => item.id === pairSession.deviceId) || null; setPairDevice(device); setPairTaskOpen(true); setPairModalDismissed(false); }} className={`w-full p-3 rounded-xl border text-xs flex items-center justify-center gap-2 ${pairSession.recoveryDisposition==='HEALTHY_RETAINED'?'border-sky-600/40 bg-sky-950/20 text-sky-200':'border-amber-600/60 bg-amber-950/40 text-amber-200'}`}>
+            <Network className="w-4 h-4" />{pairSession.recoveryDisposition==='HEALTHY_RETAINED' ? `Configuration retained on ${pairSession.adapter.interfaceAlias} • ${pairSession.adapter.ipv4Addresses.map(ip=>`${ip.address}/${ip.prefixLength}`).join(', ')}. Original configuration safely retained.` : `Network recovery requires review: ${pairSession.message}`}
           </button>
         )}
 
@@ -677,9 +677,9 @@ export default function App() {
       />
 
       {addExisting&&<AddToExistingProjectModal preview={addExisting.preview} filename={addExisting.filename} onCancel={cancelAddExisting} onConfirm={confirmAddExisting}/>}
-      <NetworkAdapterModal open={networkAdapterOpen||Boolean(pairSession?.purpose==='NETWORK_MATCH'&&pairSession.recoveryAvailable&&!pairModalDismissed)} pair={pairSession} onClose={()=>{setNetworkAdapterOpen(false);setPairModalDismissed(true)}} onUpdated={pair=>{acceptPair(pair);void fetchData();}}/>
+      <NetworkAdapterModal open={networkAdapterOpen||Boolean(pairSession?.purpose==='NETWORK_MATCH'&&pairSession.recoveryAvailable&&pairSession.recoveryDisposition!=='HEALTHY_RETAINED'&&!pairModalDismissed)} pair={pairSession} onClose={()=>{setNetworkAdapterOpen(false);setPairModalDismissed(true)}} onUpdated={pair=>{acceptPair(pair);void fetchData();}}/>
       <PairNetworkModal
-        isOpen={pairTaskOpen || pairDevice !== null || Boolean(pairSession?.purpose!=='NETWORK_MATCH'&&!pairModalDismissed && pairSession?.recoveryAvailable && ['PAIRED', 'ROLLBACK_REQUIRED'].includes(pairSession.state))}
+        isOpen={pairTaskOpen || pairDevice !== null || Boolean(pairSession?.purpose!=='NETWORK_MATCH'&&pairSession?.recoveryDisposition!=='HEALTHY_RETAINED'&&!pairModalDismissed && pairSession?.recoveryAvailable && ['PAIRED', 'ROLLBACK_REQUIRED'].includes(pairSession.state))}
         device={pairDevice || project?.devices.find(device => device.id === pairSession?.deviceId) || null}
         pair={pairSession}
         onClose={() => { setPairTaskOpen(false);setPairDevice(null); setPairModalDismissed(true); }}

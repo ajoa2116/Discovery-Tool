@@ -1,3 +1,4 @@
+import { adapterGuid } from '../../shared/pair_recovery.ts';
 import { execFile } from 'node:child_process';
 import { WindowsAdapterSnapshot } from '../../types/index.ts';
 import { isAdapterCollection, isRecord } from '../../shared/advanced_scan_contract.ts';
@@ -9,7 +10,7 @@ export class NetworkConfigurationError extends Error {
 export interface WindowsNetworkAdapterService {
   inspectAdapters(signal?: AbortSignal): Promise<WindowsAdapterSnapshot[]>;
   isAdministrator(signal?: AbortSignal): Promise<boolean>;
-  applyTemporary(interfaceIndex: number, ipAddress: string, prefixLength: number, gateway?: string): Promise<WindowsAdapterSnapshot>;
+  applyTemporary(interfaceIndex: number, ipAddress: string, prefixLength: number, gateway?: string, expectedGuid?: string): Promise<WindowsAdapterSnapshot>;
   restore(snapshot: WindowsAdapterSnapshot): Promise<WindowsAdapterSnapshot>;
 }
 
@@ -82,7 +83,7 @@ $adapters = Get-NetAdapter -ErrorAction Stop | ForEach-Object {
   $virtual = $description -match 'Hyper-V|Virtual|VPN|Tunnel|Loopback|Bluetooth|TAP|WireGuard|VMware|VirtualBox'
   $eligible = $a.Status -eq 'Up' -and $a.HardwareInterface -and -not $virtual -and ($media -eq 'ETHERNET' -or $media -eq 'WIFI')
   [pscustomobject]@{
-    interfaceIndex=[int]$a.ifIndex; interfaceAlias=[string]$a.Name; interfaceDescription=$description; mediaType=$media;
+    interfaceGuid=[string]$a.InterfaceGuid; interfaceIndex=[int]$a.ifIndex; interfaceAlias=[string]$a.Name; interfaceDescription=$description; mediaType=$media;
     physicalMediaType=$physicalMedia; hardwareInterface=[bool]$a.HardwareInterface;
     operationalStatus=[string]$a.Status; eligible=$eligible;
     eligibilityReason=if($eligible){$null}elseif($a.Status -ne 'Up'){'Adapter is disconnected or disabled.'}elseif($virtual){'Virtual or tunnel adapter is excluded.'}else{'Adapter is not an eligible physical Ethernet or Wi-Fi interface.'};
@@ -116,10 +117,11 @@ export class PowerShellWindowsNetworkAdapterService implements WindowsNetworkAda
     return output.trim().toLowerCase() === 'true';
   }
 
-  public async applyTemporary(interfaceIndex: number, ipAddress: string, prefixLength: number, gateway?: string): Promise<WindowsAdapterSnapshot> {
+  public async applyTemporary(interfaceIndex: number, ipAddress: string, prefixLength: number, gateway?: string, expectedGuid?: string): Promise<WindowsAdapterSnapshot> {
     if (!validIndex(interfaceIndex) || !validIp(ipAddress) || !validPrefix(prefixLength) || (gateway!==undefined&&!validIp(gateway))) throw new NetworkConfigurationError('Invalid adapter or temporary IPv4 configuration.', 'INVALID_INPUT');
+    if(!adapterGuid(expectedGuid))throw new NetworkConfigurationError('Physical adapter identity is required.','ADAPTER_IDENTITY_MISMATCH');
     const script = `$i=${interfaceIndex}; $ip='${ipAddress}'; $prefix=${prefixLength};
-$adapter=Get-NetAdapter -InterfaceIndex $i -ErrorAction Stop; if($adapter.Status -ne 'Up'){throw 'Adapter disconnected'}
+$adapter=Get-NetAdapter -InterfaceIndex $i -ErrorAction Stop; if(([guid]$adapter.InterfaceGuid).ToString() -ne '${adapterGuid(expectedGuid)}'){throw 'Adapter identity changed'}; if($adapter.Status -ne 'Up'){throw 'Adapter disconnected'}
 Set-NetIPInterface -InterfaceIndex $i -AddressFamily IPv4 -Dhcp Disabled -ErrorAction Stop
 Get-NetRoute -InterfaceIndex $i -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | Remove-NetRoute -Confirm:$false -ErrorAction Stop
 Get-NetIPAddress -InterfaceIndex $i -AddressFamily IPv4 -ErrorAction SilentlyContinue | Remove-NetIPAddress -Confirm:$false -ErrorAction Stop
@@ -130,11 +132,13 @@ New-NetIPAddress -InterfaceIndex $i -IPAddress $ip -PrefixLength $prefix ${gatew
 
   public async restore(snapshot: WindowsAdapterSnapshot): Promise<WindowsAdapterSnapshot> {
     if (!validIndex(snapshot.interfaceIndex) || snapshot.ipv4Addresses.some(ip => !validIp(ip.address) || !validPrefix(ip.prefixLength)) || snapshot.defaultGateways.some(gateway => !validIp(gateway)) || snapshot.dnsServers.some(server => !validIp(server))) throw new NetworkConfigurationError('The stored restoration snapshot is invalid.', 'INVALID_SNAPSHOT');
+    if(!adapterGuid(snapshot.interfaceGuid))throw new NetworkConfigurationError('Physical adapter identity is required for recovery.','ADAPTER_IDENTITY_MISMATCH');
     const addresses = snapshot.ipv4Addresses.map(item => `@{Address='${item.address}';Prefix=${item.prefixLength}}`).join(',');
     const gateways = snapshot.defaultGateways.map(value => `'${value}'`).join(',');
     const dns = snapshot.dnsServers.map(value => `'${value}'`).join(',');
     const script = `$i=${snapshot.interfaceIndex}; $addresses=@(${addresses}); $gateways=@(${gateways}); $dns=@(${dns});
 $adapter=Get-NetAdapter -InterfaceIndex $i -ErrorAction Stop
+if(([guid]$adapter.InterfaceGuid).ToString() -ne '${adapterGuid(snapshot.interfaceGuid)}'){throw 'Adapter identity changed'}
 Get-NetRoute -InterfaceIndex $i -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | Remove-NetRoute -Confirm:$false -ErrorAction Stop
 Get-NetIPAddress -InterfaceIndex $i -AddressFamily IPv4 -ErrorAction SilentlyContinue | Remove-NetIPAddress -Confirm:$false -ErrorAction Stop
 if(${snapshot.dhcpEnabled ? '$true' : '$false'}) { Set-NetIPInterface -InterfaceIndex $i -AddressFamily IPv4 -Dhcp Enabled -ErrorAction Stop } else {

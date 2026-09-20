@@ -36,7 +36,7 @@ check(db.getDevices().length===0,'Match Network does not create a camera or scan
 const recoveredTasks=new TaskManager(),recoveredProjection=new OperationTasks(recoveredTasks);
 const restartedService=new PairService(adapters,undefined,undefined,recovery,db);
 const recovered=await restartedService.initializeRecovery();recoveredProjection.pair(recovered);
-check(recovered?.state==='ROLLBACK_REQUIRED'&&recoveredTasks.snapshot().attention===1,'restart Task attention uses existing saved recovery');
+check(recovered?.state==='PAIRED'&&recovered?.recoveryDisposition==='HEALTHY_RETAINED'&&recoveredTasks.snapshot().attention===0,'restart Task recognizes healthy saved recovery without attention');
 const restored=await service.restore();
 check(restored.state==='RESTORED'&&snapshot===null,'successful Restore clears only verified recovery');
 check(tasks.snapshot().tasks.some(t=>t.kind==='RESTORE'&&t.state==='COMPLETED'&&t.correlationId===preview.id),'Restore task links to original Pair session for navigation');

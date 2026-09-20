@@ -43,7 +43,7 @@ export class OperationTasks {
       if(this.restoreStarted){this.tasks.update(this.restoreId,{state:'FAILED',phase:'RECOVERY',result:'NETWORK_RECOVERY'});this.restoreStarted=false;}
       this.tasks.update(this.pairId,{state:'NEEDS_ATTENTION',phase:'RECOVERY',result:'NETWORK_RECOVERY'},true);return;
     }
-    if(s==='PAIRED'){this.tasks.update(this.pairId,{state:'NEEDS_ATTENTION',phase:pair.cameraReachabilityVerified?'RESPONDED':'PAIRED',result:'NETWORK_RECOVERY'},true);return;}
+    if(s==='PAIRED'){this.tasks.update(this.pairId,{state:pair.recoveryDisposition==='HEALTHY_RETAINED'?'COMPLETED':'NEEDS_ATTENTION',phase:pair.cameraReachabilityVerified?'RESPONDED':'PAIRED',result:'NETWORK_RECOVERY'},true);return;}
     if(s==='READY_FOR_CONFIRMATION'){this.tasks.update(this.pairId,{state:'NEEDS_ATTENTION',phase:'CONFIRM',result:'NETWORK_RECOVERY'},true);return;}
     this.tasks.update(this.pairId,{state:s==='FAILED'?'FAILED':s==='CANCELLED'?'CANCELLED':'RUNNING',phase:s==='FAILED'?'FAILED':s==='CANCELLED'?'CANCELLED':s==='APPLYING'?'APPLYING':s==='VERIFYING'?'VERIFYING':'PREPARING'},true);
   }

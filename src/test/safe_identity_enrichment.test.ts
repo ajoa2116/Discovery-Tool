@@ -66,7 +66,7 @@ async function run(){
  let rejected=false;try{await guarded.apply(target,{username:'test',password:'test'},'NTP',{})}catch{rejected=true}check(rejected&&writes===0,'conflict invalidates earlier provider authorization');
  for(const bound of [false,true]){
   const db=new SiteProjectDatabase(),d=bound?bind(camera('B')):camera('B');d.status='DIFFERENT_SUBNET';db.upsertDevice(d);let adapter=fieldEthernet(),writes=0;
-  const adapters={inspectAdapters:async()=>[adapter],isAdministrator:async()=>true,applyTemporary:async(_i:number,address:string,prefixLength:number)=>{writes++;adapter={...adapter,ipv4Addresses:[{address,prefixLength}]};return adapter},restore:async()=>adapter};
+  const adapters={inspectAdapters:async()=>[adapter],isAdministrator:async()=>true,applyTemporary:async(_i:number,address:string,prefixLength:number)=>{writes++;adapter={...adapter,dhcpEnabled:false,ipv4Addresses:[{address,prefixLength}]};return adapter},restore:async()=>adapter};
   const service=new PairService(adapters,{check:async()=>({availability:'AVAILABLE',evidence:[]})},{diagnose:async(x:Device)=>x} as any,{load:async()=>null,save:async()=>{},clear:async()=>{}},db,{neighbors:neighbor(),windowMs:10,settleMs:1});
   const preview=await service.prepare(d.id,8);const result=await service.confirmAndApply(preview.id,true);
   check(result.state==='PAIRED'&&writes===1&&db.getDeviceById(d.id)?.anchor.macAddress===(bound?macB:null),'Pair ownership policy bound='+bound);

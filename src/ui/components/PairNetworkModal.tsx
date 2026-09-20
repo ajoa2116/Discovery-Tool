@@ -22,7 +22,7 @@ export const PairNetworkModal: React.FC<Props> = ({ isOpen, device, pair, onClos
     setBusy(true); setError('');
     try {
       const response = await fetch(`http://localhost:3001${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-      const data = await response.json(); if (!response.ok) throw new Error(data.error || 'Pair operation failed.'); onPairUpdated(data);
+      const data = await response.json(); if (!response.ok) throw new Error(data.error || 'Pair operation failed.'); onPairUpdated(data); if(path==='/api/pair/keep')onClose();
     } catch (err) { setError(err instanceof Error ? err.message : String(err)); }
     finally { setBusy(false); }
   };
@@ -43,14 +43,15 @@ export const PairNetworkModal: React.FC<Props> = ({ isOpen, device, pair, onClos
 
         {currentPair?.recoveryAvailable && ['PAIRED', 'ROLLBACK_REQUIRED', 'RESTORING'].includes(currentPair.state) ? <>
           <div className="p-4 bg-slate-950 border border-slate-800 rounded-xl space-y-2">
-            <div className="flex justify-between"><span>Pair state</span><strong className="text-amber-300">{currentPair.state}</strong></div>
+            <div className="flex justify-between"><span>Pair state</span><strong className={currentPair.recoveryDisposition==='HEALTHY_RETAINED'?'text-sky-300':'text-amber-300'}>{currentPair.recoveryDisposition==='HEALTHY_RETAINED'?'Configuration retained':currentPair.state}</strong></div>
             <div className="flex justify-between"><span>Adapter</span><strong>{currentPair.originalAdapter.interfaceAlias}</strong></div>
-            <div className="flex justify-between"><span>Temporary IP</span><strong className="font-mono">{currentPair.selectedCandidate?.ipAddress}</strong></div>
+            <div className="flex justify-between"><span>Temporary IP</span><strong className="font-mono">{currentPair.adapter.ipv4Addresses.map(ip=>`${ip.address}/${ip.prefixLength}`).join(', ')}</strong></div>
             <div className="flex justify-between"><span>Adapter verified</span><strong>{currentPair.adapterConfigurationVerified ? 'Yes' : 'No / uncertain'}</strong></div>
             <div className="flex justify-between"><span>Camera responded</span><strong>{currentPair.cameraReachabilityVerified ? 'Yes' : 'Not verified'}</strong></div>
             <p className="text-slate-400">{currentPair.message}</p>
           </div>
-          <button disabled={busy||currentPair.state==='RESTORING'} onClick={() => action('/api/pair/restore')} className="w-full py-2.5 rounded-lg bg-amber-600 hover:bg-amber-500 text-slate-950 font-bold flex items-center justify-center gap-2 disabled:opacity-50"><RotateCcw className="w-4 h-4" />Restore Original Network Configuration</button>
+          {currentPair.recoveryDisposition==='HEALTHY_RETAINED'&&<><p className="text-slate-300">Configuration previously applied by CCTV Network Assistant. Original configuration safely retained.</p><button disabled={busy} onClick={()=>action('/api/pair/keep')} className="w-full py-2 rounded bg-sky-800">Keep Current</button></>}
+          <button disabled={currentPair.errorCode==='INVALID_RECOVERY'||busy||currentPair.state==='RESTORING'} onClick={() => action('/api/pair/restore')} className="w-full py-2.5 rounded-lg bg-amber-600 hover:bg-amber-500 text-slate-950 font-bold flex items-center justify-center gap-2 disabled:opacity-50"><RotateCcw className="w-4 h-4" />Restore Original Network Configuration</button>
         </> : <>
           {!ready && <div className="space-y-3">
             <div><label className="block text-slate-400 mb-1">Camera</label><div className="p-2 bg-slate-950 border border-slate-800 rounded font-mono">{device ? `${device.technician?.name || device.anchor.vendor} — ${device.network.ipAddress} / ${device.network.subnetMask || 'unknown mask'}` : 'Select a camera'}</div></div>

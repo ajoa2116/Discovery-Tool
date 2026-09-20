@@ -1,7 +1,7 @@
 import { Device, WindowsAdapterSnapshot, NICInfo } from '../../types/index.ts';
 
 // Software regression fixture derived from technician evidence; not a hardware test.
-export const fieldEthernet = (): WindowsAdapterSnapshot => ({ interfaceIndex:8,interfaceAlias:'Ethernet',mediaType:'ETHERNET',operationalStatus:'Up',eligible:true,dhcpEnabled:true,ipv4Addresses:[{address:'192.168.0.124',prefixLength:24}],defaultGateways:[],dnsAutomatic:true,dnsServers:[],capturedAt:'2026-09-12T12:00:00Z' });
+export const fieldEthernet = (): WindowsAdapterSnapshot => ({ interfaceGuid:'11111111-2222-3333-4444-555555555555',interfaceIndex:8,interfaceAlias:'Ethernet',mediaType:'ETHERNET',operationalStatus:'Up',eligible:true,dhcpEnabled:true,ipv4Addresses:[{address:'192.168.0.124',prefixLength:24}],defaultGateways:[],dnsAutomatic:true,dnsServers:[],capturedAt:'2026-09-12T12:00:00Z' });
 export const fieldNic = (): NICInfo => ({name:'Ethernet',interfaceIndex:8,ipAddress:'192.168.0.124',netmask:'255.255.255.0',broadcast:'192.168.0.255',mac:'00:11:22:33:44:66',isInternal:false});
 export const fieldCamera = (): Device => ({id:'mac:e4:30:22:cd:68:85',anchor:{macAddress:'e4:30:22:cd:68:85',vendor:'Hanwha Vision'},network:{ipAddress:'192.168.1.100',subnetMask:null,port:0,protocol:'MANUAL'},status:'UNKNOWN',sessionVerification:'NOT_VERIFIED',discoveredPhase:1,firstSeenAt:'2026-09-12T12:00:00Z',lastSeenAt:'2026-09-12T12:00:00Z'});
 export const fieldHello = (ip = '192.168.1.100', uuid = '11111111-2222-3333-4444-555555555555') => `<?xml version="1.0"?>

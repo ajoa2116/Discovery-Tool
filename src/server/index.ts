@@ -434,6 +434,7 @@ app.post('/api/pair/confirm', async (req, res) => {
     broadcast({ type: 'PAIR_STATE_CHANGED', data: { pair, project: projectDb.getProject() } }); res.json(pair);
   } catch (error: any) { const pair = pairService.getStatus(); broadcast({ type: 'PAIR_STATE_CHANGED', data: { pair } }); safeError(res,error,error?.code === 'ADMIN_REQUIRED' ? 403 : 400,'PAIR_APPLY',pair?.deviceId); }
 });
+app.post('/api/pair/keep', (_req, res) => { try { res.json(pairService.keepCurrent()); } catch(error:any) { safeError(res,error,400,'PAIR_KEEP'); } });
 app.post('/api/pair/restore', async (req, res) => {
   try { const pair = await pairService.restore(); broadcast({ type: 'PAIR_STATE_CHANGED', data: { pair, project: projectDb.getProject() } }); res.json(pair); }
   catch (error: any) { const pair = pairService.getStatus(); broadcast({ type: 'PAIR_STATE_CHANGED', data: { pair } }); safeError(res,error,400,'PAIR_RESTORE',pair?.deviceId); }

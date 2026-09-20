@@ -6,7 +6,7 @@ import { NetworkConfigurationError, WindowsNetworkAdapterService } from '../core
 import { SiteProjectDatabase } from '../core/storage/project_db.ts';
 
 const adapter = (index: number, overrides: Partial<WindowsAdapterSnapshot> = {}): WindowsAdapterSnapshot => ({
-  interfaceIndex: index, interfaceAlias: `Ethernet ${index}`, mediaType: 'ETHERNET', operationalStatus: 'Up', eligible: true,
+  interfaceGuid: `11111111-2222-3333-4444-${String(index).padStart(12,'0')}`,interfaceIndex: index, interfaceAlias: `Ethernet ${index}`, mediaType: 'ETHERNET', operationalStatus: 'Up', eligible: true,
   dhcpEnabled: false, ipv4Addresses: [{ address: `10.0.${index}.10`, prefixLength: 24 }], defaultGateways: [`10.0.${index}.1`],
   dnsAutomatic: false, dnsServers: ['10.0.0.53'], capturedAt: '2026-01-01T00:00:00.000Z', ...overrides,
 });
@@ -17,7 +17,7 @@ class FakeAdapterService implements WindowsNetworkAdapterService {
   constructor(public adapters: WindowsAdapterSnapshot[]) {}
   async inspectAdapters() { return structuredClone(this.changedBaseline ? this.adapters.map((item, i) => i === 0 ? { ...item, ipv4Addresses: [{ address: '172.16.0.99', prefixLength: 24 }] } : item) : this.adapters); }
   async isAdministrator() { return this.admin; }
-  async applyTemporary(index: number, ip: string, prefix: number) { this.applied = { index, ip, prefix }; const base = this.adapters.find(item => item.interfaceIndex === index)!; return { ...structuredClone(base), dhcpEnabled: false, ipv4Addresses: [{ address: ip, prefixLength: prefix }], defaultGateways: [] }; }
+  async applyTemporary(index: number, ip: string, prefix: number) { this.applied = { index, ip, prefix }; const base = this.adapters.find(item => item.interfaceIndex === index)!; const applied={ ...structuredClone(base), dhcpEnabled: false, ipv4Addresses: [{ address: ip, prefixLength: prefix }], defaultGateways: [] };this.adapters=this.adapters.map(a=>a.interfaceIndex===index?applied:a);return structuredClone(applied); }
   async restore(snapshot: WindowsAdapterSnapshot) { this.restored = structuredClone(snapshot); return this.failRestoreVerification ? { ...structuredClone(snapshot), dnsServers: [] } : structuredClone(snapshot); }
 }
 class FakeChecker implements CandidateAddressChecker {
@@ -121,8 +121,8 @@ async function run() {
   const restoreFailure = setup(); const rf = await restoreFailure.service.prepare('camera-1', 1); await restoreFailure.service.confirmAndApply(rf.id, true); restoreFailure.adapterService.failRestoreVerification = true;
   assert(await rejectsCode(() => restoreFailure.service.restore(), 'RESTORE_VERIFICATION_FAILED') && restoreFailure.service.getStatus()?.state === 'ROLLBACK_REQUIRED', 'restore verification failure retains recovery state');
 
-  const recovery = new MemoryRecovery(); recovery.value = paired; const recoveredService = setup(undefined, undefined, true, recovery).service; const recovered = await recoveredService.initializeRecovery();
-  assert(recovered?.state === 'ROLLBACK_REQUIRED' && recovered.recoveryAvailable, 'unexpected restart detects unfinished Pair recovery');
+  const recovery = new MemoryRecovery(); recovery.value = paired; const recoveredService = setup(new FakeAdapterService([paired.adapter]), undefined, true, recovery).service; const recovered = await recoveredService.initializeRecovery();
+  assert(recovered?.state === 'PAIRED' && recovered.recoveryDisposition==='HEALTHY_RETAINED' && recovered.recoveryAvailable, 'restart recognizes verified retained Pair recovery');
 
   const exportJson = success.db.exportProjectJson();
   assert(!exportJson.includes('selectedCandidate') && !exportJson.includes('originalAdapter') && !exportJson.includes('PAIR'), 'Pair session is not persisted as permanent project device state');

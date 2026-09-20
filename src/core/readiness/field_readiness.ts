@@ -83,7 +83,7 @@ export class WindowsPreflightService {
   }
 }
 
-export const recoveryRequiresReview=(inspectionComplete:boolean,session:{recoveryAvailable?:boolean}|null)=>!inspectionComplete||Boolean(session?.recoveryAvailable);
+export const recoveryRequiresReview=(inspectionComplete:boolean,session:{recoveryAvailable?:boolean;recoveryDisposition?:string}|null)=>!inspectionComplete||Boolean(session?.recoveryAvailable&&session.recoveryDisposition!=='HEALTHY_RETAINED');
 
 export interface Stoppable { stop?: () => void; cancelCurrent?: () => void }
 export class ShutdownCoordinator {

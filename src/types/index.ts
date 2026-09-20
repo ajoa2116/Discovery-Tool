@@ -345,6 +345,7 @@ export interface NICInfo {
 }
 
 export interface WindowsAdapterSnapshot {
+  interfaceGuid?: string;
   interfaceIndex: number;
   interfaceAlias: string;
   interfaceDescription?: string;
@@ -381,6 +382,8 @@ export interface PairVerificationEvidence {
 }
 
 export interface PairSessionState {
+  recoveryDisposition?: 'HEALTHY_RETAINED' | 'ALREADY_RESTORED' | 'ATTENTION_REQUIRED';
+  adapterMutationActive?: boolean;
   purpose?: 'CAMERA_PAIR' | 'NETWORK_MATCH';
   temporaryGateway?: string;
   subnetSource?: 'CAMERA_EVIDENCE' | 'ADAPTER_PREFIX_PROPOSAL';
