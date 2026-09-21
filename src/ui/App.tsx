@@ -1,3 +1,4 @@
+import { isActiveCollision } from '../shared/collision_state.ts';
 import { isAdapterCollection } from '../shared/advanced_scan_contract.ts';
 import { prefixMask } from '../shared/address_validation.ts';
 import { Tasks } from './components/Tasks.tsx';
@@ -466,7 +467,7 @@ export default function App() {
   });
 
   const selectedDevicesList = (project?.devices || []).filter((d) => selectedDeviceIds.has(d.id));
-  const activeCollisionsCount = project?.collisions.filter((c) => !c.resolved).length || 0;
+  const activeCollisionsCount = project?.collisions.filter(isActiveCollision).length || 0;
 
   return (
     <div className="min-h-screen flex flex-col bg-[#f4f6f8] text-slate-800 dark:bg-slate-950 dark:text-slate-100 font-sans antialiased">

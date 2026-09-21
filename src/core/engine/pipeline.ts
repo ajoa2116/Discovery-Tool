@@ -1,5 +1,6 @@
+import { canonicalMac, selectIdentity } from '../../shared/identity_policy.ts';
 import { DiscoveryContext } from '../../shared/discovery_session.ts';
-import { hasCctvEvidence, matchesAdvancedScanFilters, sameDiscoveryIdentity } from '../../shared/discovery_evidence.ts';
+import { hasCctvEvidence, matchesAdvancedScanFilters } from '../../shared/discovery_evidence.ts';
 import { AdvancedScanRequest } from '../../shared/advanced_scan.ts';
 import { appStateDb } from '../storage/app_db.ts';
 import { PhaseState, NICInfo } from '../../types/index.ts';
@@ -245,7 +246,7 @@ export class BatchExecutionPipeline {
     result.devices = result.devices.filter(device => localHost.isRemoteDevice(device));
     const observed = result.devices.length;
     const excluded = result.devices.filter(device => {
-      const known = database.getDevices().find(existing => sameDiscoveryIdentity(existing,device));
+      const known = database.getDevices()[selectIdentity(database.getDevices(),device).index];
       return !(known || (filters ? matchesAdvancedScanFilters(device,filters) : hasCctvEvidence(device)));
     });
     const excludedSet = new Set(excluded);
@@ -255,7 +256,9 @@ export class BatchExecutionPipeline {
       appStateDb.logAudit({id:crypto.randomUUID(),timestamp:new Date().toISOString(),category:'DISCOVERY',level:'INFO',message:'Neighbor evidence inventory policy applied.',details:{observed,promoted:result.devices.length,excluded:excluded.length,samples:excluded.slice(0,32).map(device=>({ip:device.network.ipAddress,mac:device.anchor.macAddress,sourceAdapter:device.reachability?.discoveryInterface,classification:hasCctvEvidence(device)?'FILTERED_CCTV':'GENERIC_NETWORK',reason:'Does not meet current inventory discovery policy.'}))}});
     }
     for (let device of result.devices) {
-      const known = database.getDevices().find(existing => sameDiscoveryIdentity(existing,device));
+      const known = database.getDevices()[selectIdentity(database.getDevices(),device).index];
+      if(known&&!hasCctvEvidence(device)&&!canonicalMac(device.anchor.macAddress))continue;
+      if (known && !hasCctvEvidence(device) && database.getCollisions().some(c=>!c.resolved&&(c.deviceIds||c.collidingDevices.map(d=>d.id)).includes(known.id))) continue;
       if (known && !hasCctvEvidence(device)) {
         const unchangedAddress = known.network.ipAddress === device.network.ipAddress;
         device = {...device,anchor:{...known.anchor,macAddress:device.anchor.macAddress || known.anchor.macAddress},network:{...known.network,ipAddress:device.network.ipAddress},technician:known.technician,sessionVerification:unchangedAddress?known.sessionVerification:'NOT_VERIFIED',status:unchangedAddress?known.status:device.status,statusMessage:unchangedAddress?known.statusMessage:device.statusMessage};
@@ -265,7 +268,7 @@ export class BatchExecutionPipeline {
         (device.anchor.onvifEndpointUuid && existing.anchor.onvifEndpointUuid?.toLowerCase() === device.anchor.onvifEndpointUuid.toLowerCase()) ||
         (device.anchor.serialNumber && existing.anchor.serialNumber?.toLowerCase() === device.anchor.serialNumber.toLowerCase())
       ));
-      const stored = database.upsertDevice(device);
+      const stored = database.upsertDevice(device,'DEVICE_ADDED',this.context?.origin==='MONITORING');
       if (emitDeviceEvents) this.emit({ type: 'DEVICE_DISCOVERED', phaseNumber: 2, data: { device: stored, isNew, project: database.getProject() } });
     }
     phase.logs.push(...result.logs);

@@ -1,3 +1,4 @@
+import { pairBlocksMonitoring } from '../core/engine/incremental_discovery_monitor.ts';
 import {existsSync} from 'node:fs';
 import {join} from 'node:path';
 import {readBuildIdentity} from '../core/readiness/build_identity.ts';
@@ -113,10 +114,10 @@ const safeBroadcastError=(type:string,error:unknown,operation:string,extra:Recor
 
 const diagnosticMonitor = new DiagnosticRefreshMonitor(
   diagnosticEngine,
-  () => projectDb.getDevices().filter(device=>{const pair=pairService.getStatus();return pair?.deviceId!==device.id||!['APPLYING','VERIFYING','RESTORING'].includes(pair.state);}),
+  () => !recoveryInspected||pairBlocksMonitoring(pairService.getStatus()) ? [] : projectDb.getDevices(),
   device => {
-    projectDb.upsertDevice(device);
-    broadcast({ type: 'DEVICE_DIAGNOSTICS_UPDATED', context: { origin: 'DIAGNOSTICS' }, data: { device, project: projectDb.getProject(), refresh: monitoringState() } });
+    const updated=projectDb.applyDiagnosticRefresh(device);if(!updated)return;
+    broadcast({ type: 'DEVICE_DIAGNOSTICS_UPDATED', context: { origin: 'DIAGNOSTICS' }, data: { device:updated, project: projectDb.getProject(), refresh: monitoringState() } });
   },
   DEFAULT_MONITORING_INTERVAL_MS,
   3,
@@ -137,7 +138,7 @@ const incrementalMonitor = new IncrementalDiscoveryMonitor({
     if (pipelineEngine.getIsRunning()) return { allowed: false, reason: 'Discovery cycle skipped because a manual scan is active.' };
     if (advancedScanService.getStatus().running) return { allowed: false, reason: 'Discovery cycle skipped because Advanced Scan is active.' };
     const pair = pairService.getStatus();
-    if (pair && ['PREPARING','CHECKING_ADDRESS','READY_FOR_CONFIRMATION','APPLYING','VERIFYING','PAIRED','RESTORING','ROLLBACK_REQUIRED'].includes(pair.state)) return { allowed: false, reason: 'Discovery cycle skipped because Pair or restore work is active.' };
+    if (!recoveryInspected || pairBlocksMonitoring(pair)) return { allowed: false, reason: 'Discovery cycle skipped because Pair or restore work is active.' };
     if (cameraNetworkControllers.size || cameraNetworkService.hasActiveOperation() || bulkNetworkService.hasActiveOperation() || cameraConfigurationService.hasActiveOperation() || duplicateRemediationService.isActive()) return { allowed: false, reason: 'Discovery cycle skipped because camera or network configuration is active.' };
     return { allowed: true };
   },
@@ -429,14 +430,14 @@ app.post('/api/pair/candidate', (req, res) => {
 app.post('/api/pair/confirm', async (req, res) => {
   try {
     if(foregroundDiscovery.isActive()||receiveMatrix?.isActive()||supportTrace.isActive())return res.status(409).json({error:'Finish the active discovery operation before Pair.'});
-    await incrementalMonitor.yieldToTechnician();
+    await incrementalMonitor.yieldToTechnician(); diagnosticMonitor.cancelCurrent();
     const pair = await pairService.confirmAndApply(String(req.body.sessionId || ''), req.body.confirmed === true);
     broadcast({ type: 'PAIR_STATE_CHANGED', data: { pair, project: projectDb.getProject() } }); res.json(pair);
   } catch (error: any) { const pair = pairService.getStatus(); broadcast({ type: 'PAIR_STATE_CHANGED', data: { pair } }); safeError(res,error,error?.code === 'ADMIN_REQUIRED' ? 403 : 400,'PAIR_APPLY',pair?.deviceId); }
 });
 app.post('/api/pair/keep', (_req, res) => { try { res.json(pairService.keepCurrent()); } catch(error:any) { safeError(res,error,400,'PAIR_KEEP'); } });
 app.post('/api/pair/restore', async (req, res) => {
-  try { const pair = await pairService.restore(); broadcast({ type: 'PAIR_STATE_CHANGED', data: { pair, project: projectDb.getProject() } }); res.json(pair); }
+  try { await incrementalMonitor.yieldToTechnician(); diagnosticMonitor.cancelCurrent(); const pair = await pairService.restore(); broadcast({ type: 'PAIR_STATE_CHANGED', data: { pair, project: projectDb.getProject() } }); res.json(pair); }
   catch (error: any) { const pair = pairService.getStatus(); broadcast({ type: 'PAIR_STATE_CHANGED', data: { pair } }); safeError(res,error,400,'PAIR_RESTORE',pair?.deviceId); }
 });
 app.post('/api/pair/cancel', (req, res) => { const pair = pairService.cancelPreparation(); broadcast({ type: 'PAIR_STATE_CHANGED', data: { pair } }); res.json(pair); });

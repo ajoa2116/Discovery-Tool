@@ -55,7 +55,7 @@ export class Phase3ActiveProbing {
           (device.anchor.serialNumber && existing.anchor.serialNumber?.toLowerCase() === device.anchor.serialNumber.toLowerCase())
         ));
         if (isNew && options.acceptDevice && !options.acceptDevice(device)) { traceStage('INVENTORY_REJECTED',device,'ADVANCED_FILTER'); logs.push('[Phase 3] ONVIF observation excluded by explicit Advanced Scan filters.'); return; }
-        const stored = database.upsertDevice(device);
+        const stored = database.upsertDevice(device,'DEVICE_ADDED',options.context?.origin==='MONITORING');
         record('INVENTORY_RECONCILED',stored); traceStage('RECONCILED',stored);
         options.onDevice?.(stored, isNew);
         traceStage(database.getProject().devices.some(d=>d.id===stored.id)?'INVENTORY_PROMOTION':'INVENTORY_NOT_VISIBLE',stored);
@@ -65,7 +65,7 @@ export class Phase3ActiveProbing {
             signal: options.signal,
             onEvidence: stage => record(stage,stored),
             onUpdate: (updated, changedFields) => {
-              const enriched = database.upsertDevice({...updated,evidenceProvenance:stored.evidenceProvenance});
+              const enriched = database.upsertDevice({...updated,evidenceProvenance:stored.evidenceProvenance},'DEVICE_ADDED',options.context?.origin==='MONITORING');
               record('ENRICHMENT_RECONCILED',enriched);
               options.onEnrichment?.(enriched, changedFields);
             },

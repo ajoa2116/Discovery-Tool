@@ -1,3 +1,8 @@
+import { PairSessionState } from '../../types/index.ts';
+
+/** Phase 3 distinguishes stable retention from current adapter ownership. */
+export const pairBlocksMonitoring=(pair:PairSessionState|null):boolean=>Boolean(pair&&(pair.adapterMutationActive===true||pair.recoveryDisposition==='ATTENTION_REQUIRED'||['APPLYING','VERIFYING','RESTORING','ROLLBACK_REQUIRED'].includes(pair.state)));
+
 export const DEFAULT_MONITORING_INTERVAL_MS = 30_000;
 
 export interface IncrementalDiscoveryStatus {

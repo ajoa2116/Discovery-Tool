@@ -1,3 +1,4 @@
+import { reconcileCollisionState } from '../engine/collision_reconciliation.ts';
 import { canonicalAnchor, canonicalMac, mergeAnchors, selectIdentity, sameIdentity } from '../../shared/identity_policy.ts';
 import { promises as fs } from 'node:fs';
 import { dirname } from 'node:path';
@@ -123,7 +124,7 @@ export class SiteProjectDatabase {
     return project;
   }
 
-  public upsertDevice(device: Device, membershipHistory: 'DEVICE_ADDED'|'DEVICE_RE_ADDED' = 'DEVICE_ADDED'): Device {
+  public upsertDevice(device: Device, membershipHistory: 'DEVICE_ADDED'|'DEVICE_RE_ADDED' = 'DEVICE_ADDED', runtime = false): Device {
     if (!this.acceptsEvidence(device)) throw new ProjectValidationError('Nonphysical discovery evidence requires an isolated test inventory.');
     const devices = this.session.project.devices;
     device.anchor = canonicalAnchor(device.anchor);
@@ -167,12 +168,22 @@ export class SiteProjectDatabase {
       storedDevice.reachability = { ...candidate.reachability, ...storedDevice.reachability };
       devices.splice(i, 1);
     }
-    this.markDirty();
-    if (this.session.mode === 'PROJECT') {
+    this.session.project.totalDevices=devices.length;
+    if(!runtime)this.markDirty();
+    if (!runtime && this.session.mode === 'PROJECT') {
       if (existingIndex < 0) this.appendHistory({ type:membershipHistory, title:membershipHistory==='DEVICE_RE_ADDED'?'Re-added to Project':'Added to Project', summary:membershipHistory==='DEVICE_RE_ADDED'?'A previously removed stable identity was explicitly re-added to the Project.':'A stable device identity was added to the Project.', deviceId:storedDevice.id, details:{operation:'ADD_TO_EXISTING_PROJECT',result:membershipHistory==='DEVICE_RE_ADDED'?'RE_ADDED':'ADDED'} });
       else if (previousIp !== storedDevice.network.ipAddress) this.appendHistory({ type:'IP_ADDRESS_CHANGED', title:'IP Address Changed', summary:`IP changed from ${previousIp} to ${storedDevice.network.ipAddress}.`, deviceId:storedDevice.id, details:{ previousIp, currentIp:storedDevice.network.ipAddress } });
     }
     return storedDevice;
+  }
+
+  public applyDiagnosticRefresh(observed:Device):Device|undefined {
+    const current=this.getDeviceById(observed.id);
+    if(!current||current.network.ipAddress!==observed.network.ipAddress)return;
+    return this.upsertDevice({...current,diagnostics:observed.diagnostics,
+      status:current.status==='COLLISION'?'COLLISION':observed.status,
+      statusMessage:current.status==='COLLISION'?current.statusMessage:observed.statusMessage,
+      sessionVerification:observed.sessionVerification},'DEVICE_ADDED',true);
   }
 
   public updateDeviceTechnicianFields(id: string, fields: { name?: string; location?: string; notes?: string }): Device {
@@ -197,6 +208,7 @@ export class SiteProjectDatabase {
     this.currentOnlyDeviceIds = new Set(liveOnlyDevices.filter(device => !memberIds.has(device.id)).map(device => device.id));
     for (const device of memberDevices) if (device.sessionVerification === 'VERIFIED') this.hiddenCurrentDeviceIds.delete(device.id);
     this.session.project.totalDevices = this.session.project.devices.length;
+    reconcileCollisionState(this.session.project.devices,this.session.project.collisions);
     this.session.dirty = dirtyBefore || persistentChanged;
     if (persistentChanged) this.session.project.updatedAt = new Date().toISOString();
   }
