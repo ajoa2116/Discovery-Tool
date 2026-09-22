@@ -4,9 +4,11 @@ import { BrowserPreference, CameraAccessEndpoint, ConnectReadiness, ConnectionHi
 import { DeviceDiagnosticEngine } from '../engine/diagnostic_engine.ts';
 import { SiteProjectDatabase, projectDb } from '../storage/project_db.ts';
 import { OSCredentialVault, osVault } from '../storage/vault.ts';
+import { CameraAccessDecision, decideCameraAccess } from '../../shared/camera_access.ts';
+import { sameIdentity } from '../../shared/identity_policy.ts';
 
-export class ConnectError extends Error { constructor(message: string, public readonly code: string) { super(message); } }
-export interface BrowserLauncher { available(): Promise<BrowserPreference[]>; launch(url: string, preference: BrowserPreference): Promise<{ used: BrowserPreference; fallback: boolean }>; }
+export class ConnectError extends Error { constructor(message: string, public readonly code: string, public readonly accessDecision?:CameraAccessDecision) { super(message); } }
+export interface BrowserLauncher { available(): Promise<BrowserPreference[]>; launch(url: string, preference: BrowserPreference, authorize:()=>void): Promise<{ used: BrowserPreference; fallback: boolean }>; }
 
 const run = (file: string, args: string[]) => new Promise<void>((resolve, reject) => execFile(file, args, { windowsHide: true }, error => error ? reject(error) : resolve()));
 /** A GUI launch is acknowledged by process creation, not by the browser's later exit code. */
@@ -16,6 +18,7 @@ export function launchExternalProcess(file:string,args:string[],create:typeof sp
   });
 }
 export class WindowsBrowserLauncher implements BrowserLauncher {
+  constructor(private readonly dispatch:(file:string,args:string[])=>Promise<void>=launchExternalProcess){}
   async available() {
     const result: BrowserPreference[] = ['SYSTEM', 'EMBEDDED'];
     for (const [name, executable] of [['EDGE', 'msedge.exe'], ['CHROME', 'chrome.exe']] as const) {
@@ -23,13 +26,14 @@ export class WindowsBrowserLauncher implements BrowserLauncher {
     }
     return result;
   }
-  async launch(url: string, preference: BrowserPreference) {
+  async launch(url: string, preference: BrowserPreference, authorize:()=>void) {
     const supported = await this.available();
     const used = supported.includes(preference) ? preference : 'SYSTEM';
+    authorize(); // Revalidate after asynchronous browser detection, immediately before dispatch.
     if (used === 'EMBEDDED') return { used, fallback: false };
-    if (used === 'EDGE') await launchExternalProcess('msedge.exe', [url]);
-    else if (used === 'CHROME') await launchExternalProcess('chrome.exe', [url]);
-    else await launchExternalProcess('explorer.exe', [url]);
+    if (used === 'EDGE') await this.dispatch('msedge.exe', [url]);
+    else if (used === 'CHROME') await this.dispatch('chrome.exe', [url]);
+    else await this.dispatch('explorer.exe', [url]);
     return { used, fallback: used !== preference };
   }
 }
@@ -41,10 +45,11 @@ function validEndpoint(url: URL, device: Device): boolean {
 export class ConnectService {
   constructor(private readonly database: SiteProjectDatabase = projectDb, private readonly launcher: BrowserLauncher = new WindowsBrowserLauncher(), private readonly vault: OSCredentialVault = osVault, private readonly diagnostics = new DeviceDiagnosticEngine()) {}
 
-  resolve(deviceId: string): { deviceId: string; endpoint: CameraAccessEndpoint; readiness: ConnectReadiness; identity: Record<string, unknown>; availableBrowsers?: BrowserPreference[] } {
+  resolve(deviceId: string): { deviceId: string; endpoint: CameraAccessEndpoint; readiness: ConnectReadiness; identity: Record<string, unknown>; accessDecision:CameraAccessDecision; availableBrowsers?: BrowserPreference[] } {
     const device = this.requireDevice(deviceId);
+    const accessDecision=decideCameraAccess(deviceId,this.database.getDevices(),this.database.getCollisions());
     const checks = [...(device.diagnostics?.checks || [])].reverse();
-    const usableWeb = (type: 'HTTPS' | 'HTTP') => checks.find(check => check.type === type && check.success && check.port && !check.ambiguousIdentity);
+    const usableWeb = (type: 'HTTPS' | 'HTTP') => checks.find(check => check.type === type && check.targetIp===device.network.ipAddress && check.success && check.port && !check.ambiguousIdentity);
     const web = usableWeb('HTTPS') || usableWeb('HTTP');
     let endpoint: CameraAccessEndpoint | undefined;
     if (web) {
@@ -59,24 +64,31 @@ export class ConnectService {
       if (preferred) endpoint = { url: `${preferred.protocol}//${preferred.host}`, scheme: preferred.protocol.slice(0, -1) as 'http' | 'https', port: preferred.port ? Number(preferred.port) : undefined, verified: false, source: 'XADDR' };
     }
     if (!endpoint) endpoint = { url: `http://${device.network.ipAddress}`, scheme: 'http', verified: false, source: 'IP_FALLBACK' };
-    const ambiguous = device.status === 'COLLISION' || this.database.getDevices().some(other => other.id !== device.id && other.network.ipAddress === device.network.ipAddress);
-    const readiness: ConnectReadiness = ambiguous
-      ? { state: 'AMBIGUOUS', canOpenManually: true, pairAvailable: false, retryDiagnoseAvailable: true, warning: 'This IP is shared by distinct identities; browser access cannot be attributed to the selected physical device.' }
+    const readiness: ConnectReadiness = !accessDecision.allowed
+      ? { state: accessDecision.code==='AMBIGUOUS_COLLISION'?'AMBIGUOUS':'UNKNOWN', canOpenManually: false, pairAvailable: false, retryDiagnoseAvailable: true, warning: accessDecision.message }
       : device.status === 'DIFFERENT_SUBNET'
         ? { state: 'DIFFERENT_SUBNET', canOpenManually: true, pairAvailable: true, retryDiagnoseAvailable: true, warning: 'Pair is available, but the PC network will never be changed automatically.' }
         : device.status === 'UNREACHABLE' || device.status === 'OFFLINE'
           ? { state: 'UNREACHABLE', canOpenManually: true, pairAvailable: false, retryDiagnoseAvailable: true, warning: 'The device is currently unreachable. Retry Diagnose or open cautiously.' }
           : endpoint.verified ? { state: 'READY', canOpenManually: true, pairAvailable: false, retryDiagnoseAvailable: true }
             : { state: 'UNKNOWN', canOpenManually: true, pairAvailable: false, retryDiagnoseAvailable: true, warning: 'The web endpoint is unverified; manual opening is still available.' };
-    return { deviceId: device.id, endpoint, readiness, identity: { technicianName: device.technician?.name, location: device.technician?.location, manufacturer: device.anchor.vendor, model: device.anchor.model, ip: device.network.ipAddress, mac: device.anchor.macAddress, uuid: device.anchor.onvifEndpointUuid, status: device.status } };
+    return { deviceId: device.id, endpoint, readiness, accessDecision, identity: { technicianName: device.technician?.name, location: device.technician?.location, manufacturer: device.anchor.vendor, model: device.anchor.model, ip: device.network.ipAddress, mac: device.anchor.macAddress, uuid: device.anchor.onvifEndpointUuid, status: device.status } };
   }
 
   async open(deviceId: string, preference: BrowserPreference) {
     if (!['SYSTEM', 'EDGE', 'CHROME', 'EMBEDDED'].includes(preference)) throw new ConnectError('Unsupported browser preference.', 'INVALID_BROWSER');
     const resolved = this.resolve(deviceId);
-    const result = await this.launcher.launch(resolved.endpoint.url, preference);
+    const selected=structuredClone(this.requireDevice(deviceId));
+    const authorize=()=>{
+      const current=decideCameraAccess(deviceId,this.database.getDevices(),this.database.getCollisions());
+      if(!current.allowed)throw new ConnectError(current.message,current.code,current);
+      if(current.ipAddress!==resolved.accessDecision.ipAddress)throw new ConnectError('The device address changed before browser launch. Retry access using the current device row.','STALE_ADDRESS',{...current,allowed:false,code:'STALE_ADDRESS'});
+      if(!sameIdentity(selected,this.requireDevice(deviceId)))throw new ConnectError('The selected physical identity changed before browser launch. Review the current device row.','INSUFFICIENT_IDENTITY_EVIDENCE',{...current,allowed:false,code:'INSUFFICIENT_IDENTITY_EVIDENCE'});
+    };
+    authorize();
+    const result = await this.launcher.launch(resolved.endpoint.url, preference,authorize);
     const device = this.requireDevice(deviceId);
-    const history: ConnectionHistoryEntry = { id: crypto.randomUUID(), timestamp: new Date().toISOString(), mode: result.used, url: resolved.endpoint.url, statusBeforeOpen: device.status, event: 'OPEN_ATTEMPT', result: result.fallback ? 'Preferred browser unavailable; used System Default.' : 'Technician initiated camera access.' };
+    const history: ConnectionHistoryEntry = { id: crypto.randomUUID(), timestamp: new Date().toISOString(), mode: result.used, url: resolved.endpoint.url, statusBeforeOpen: device.status, event: 'OPEN_ATTEMPT', result: result.used==='EMBEDDED'?'Embedded access requested; page and device response are not verified.':result.fallback ? 'Preferred browser unavailable; System Default launch requested. Page and device response are not verified.' : 'External browser launch requested; page and device response are not verified.' };
     device.connectionHistory = [...(device.connectionHistory || []), history].slice(-100);
     this.database.upsertDevice(device);
     return { ...resolved, browser: result };

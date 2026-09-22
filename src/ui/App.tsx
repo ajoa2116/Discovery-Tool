@@ -408,7 +408,7 @@ export default function App() {
       setSelectedDeviceForBrowser(dev);
     } else {
       fetch(`http://localhost:3001/api/connect/${encodeURIComponent(dev.id)}/open`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ preference: requested }) })
-        .then(async response => { const data = await response.json(); if (!response.ok) throw new Error(data.error); if (data.browser?.fallback) window.alert('Preferred browser was unavailable; opened with the Windows default browser.'); })
+        .then(async response => { const data = await response.json(); if (!response.ok) throw new Error(data.error); if (data.browser?.fallback) window.alert('Preferred browser was unavailable; launch requested using the Windows default browser. Page and device response are not verified.'); })
         .catch(error => window.alert(error.message));
     }
   };
@@ -726,7 +726,9 @@ export default function App() {
       <BrowserModal
         isOpen={selectedDeviceForBrowser !== null}
         onClose={() => setSelectedDeviceForBrowser(null)}
-        device={selectedDeviceForBrowser}
+        device={project?.devices.find(device=>device.id===selectedDeviceForBrowser?.id)||selectedDeviceForBrowser}
+        devices={project?.devices||[]}
+        collisions={project?.collisions||[]}
       />
 
       {/* Section 13.1: Legacy Hardware Manual Onboarding */}

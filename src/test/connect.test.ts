@@ -26,6 +26,7 @@ async function run() {
   s.device.status = 'UNREACHABLE'; assert(s.service.resolve(s.device.id).readiness.retryDiagnoseAvailable, 'Unreachable presents Retry Diagnose');
   s.device.status = 'UNKNOWN'; assert(s.service.resolve(s.device.id).readiness.canOpenManually, 'Unknown permits cautious manual open');
   const duplicate = makeDevice(); duplicate.id = 'duplicate-2'; duplicate.anchor.macAddress = '00:40:8c:00:00:65'; duplicate.anchor.onvifEndpointUuid = 'uuid-2'; s.db.upsertDevice(duplicate); s.device.status = 'COLLISION'; resolved = s.service.resolve(s.device.id); assert(resolved.readiness.state === 'AMBIGUOUS' && resolved.deviceId === 'stable-camera' && resolved.identity.mac === '00:40:8c:00:00:64', 'duplicate ambiguity and selected stable identity preserved');
+  let sharedBlocked=false;try{await s.service.open(s.device.id,'SYSTEM')}catch(error){sharedBlocked=error instanceof ConnectError&&error.accessDecision?.code==='AMBIGUOUS_COLLISION'}assert(sharedBlocked&&!s.launcher.launches.length,'shared address cannot launch a browser');s.db.removeDeviceFromProject(duplicate.id);
   s.device.status = 'ONLINE'; await s.service.open(s.device.id, 'SYSTEM'); assert(s.launcher.launches.at(-1)?.preference === 'SYSTEM', 'external browser defaults to Windows System Default');
   const fallback = await s.service.open(s.device.id, 'CHROME'); assert(fallback.browser.fallback && fallback.browser.used === 'SYSTEM', 'unavailable preferred browser falls back safely');
   const embedded = await s.service.open(s.device.id, 'EMBEDDED'); assert(embedded.browser.used === 'EMBEDDED' && !s.launcher.launches.at(-1)?.url.includes('@'), 'embedded mode remains optional with external-safe URL');
@@ -46,7 +47,7 @@ async function run() {
   s.device.network.xAddrs = ['file:///etc/passwd', 'javascript:alert(1)', 'data:text/html,test', 'http://10.0.0.1/admin']; s.device.diagnostics!.checks = []; resolved = s.service.resolve(s.device.id); assert(resolved.endpoint.source === 'IP_FALLBACK' && /^http:\/\/192\.168\.2\.64$/.test(resolved.endpoint.url), 'URL/protocol validation prevents arbitrary URL and SSRF targets');
   let invalidBrowser = false; try { await s.service.open(s.device.id, 'SAFARI' as BrowserPreference); } catch (error) { invalidBrowser = error instanceof ConnectError && error.code === 'INVALID_BROWSER'; } assert(invalidBrowser, 'arbitrary browser/process launch prevented');
   assert(!('launchUrl' in s.service) && !('execute' in s.service), 'no arbitrary URL or process execution surface');
-  s.db.getDeviceById(s.device.id)!.status = 'COLLISION'; assert(s.service.resolve(s.device.id).readiness.warning?.includes('cannot be attributed'), 'duplicate shared-IP access remains visibly ambiguous');
+  s.db.getDeviceById(s.device.id)!.status = 'COLLISION'; assert(s.service.resolve(s.device.id).readiness.warning?.includes('cannot safely determine'), 'duplicate shared-IP access remains visibly ambiguous');
   console.log(`\nConnect summary: ${passed} passed, ${failed} failed`); if (failed) process.exit(1);
 }
 run().catch(error => { console.error(error); process.exit(1); });

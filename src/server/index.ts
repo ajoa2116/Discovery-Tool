@@ -33,7 +33,7 @@ import { ProjectReverificationWorkflow } from '../core/engine/reverification.ts'
 import { ProjectValidationError } from '../core/storage/project_db.ts';
 import { DeviceDiagnosticEngine, DiagnosticRefreshMonitor } from '../core/engine/diagnostic_engine.ts';
 import { PairService } from '../core/network/pair_service.ts';
-import { ConnectService } from '../core/connect/connect_service.ts';
+import { ConnectService, ConnectError } from '../core/connect/connect_service.ts';
 import { CameraNetworkConfigurationService } from '../core/network/camera_network_service.ts';
 import { CameraConfigurationService } from '../core/network/camera_configuration_service.ts';
 import { PreferredCameraConfigurationProvider } from '../core/drivers/vendor_configuration_provider.ts';
@@ -444,7 +444,7 @@ app.post('/api/pair/cancel', (req, res) => { const pair = pairService.cancelPrep
 
 app.get('/api/connect/browsers', async (req, res) => res.json(await connectService.availableBrowsers()));
 app.get('/api/connect/:deviceId', (req, res) => { try { res.json(connectService.resolve(req.params.deviceId)); } catch (error: any) { res.status(404).json({ error: error.message, code: error.code }); } });
-app.post('/api/connect/:deviceId/open', async (req, res) => { try { res.json(await connectService.open(req.params.deviceId, req.body.preference || 'SYSTEM')); } catch (error: any) { safeError(res,error,400,'CONNECT',req.params.deviceId); } });
+app.post('/api/connect/:deviceId/open', async (req, res) => { try { res.json(await connectService.open(req.params.deviceId, req.body.preference || 'SYSTEM')); } catch (error: any) { if(error instanceof ConnectError&&error.accessDecision){res.status(409).json({error:error.message,code:error.code,accessDecision:error.accessDecision});return;}safeError(res,error,400,'CONNECT',req.params.deviceId); } });
 app.post('/api/connect/:deviceId/recheck', async (req, res) => { const id = req.params.deviceId; connectRecheckControllers.get(id)?.abort(); const controller = new AbortController(); connectRecheckControllers.set(id, controller); try { const result = await connectService.recheck(id, controller.signal); broadcast({ type: 'DEVICE_DIAGNOSTICS_UPDATED', context: { origin: 'DIAGNOSTICS' }, data: { device: result.device, project: projectDb.getProject() } }); res.json(result); } catch (error: any) { safeError(res,error,400,'CONNECT_RECHECK',id); } finally { connectRecheckControllers.delete(id); } });
 app.post('/api/connect/:deviceId/recheck/cancel', (req, res) => { connectRecheckControllers.get(req.params.deviceId)?.abort(); res.status(202).json({ cancelled: true }); });
 app.post('/api/connect/:deviceId/activation', (req, res) => { try { res.json({ activationState: connectService.markFirstLogin(req.params.deviceId, req.body.required === true) }); } catch (error: any) { res.status(400).json({ error: error.message }); } });
