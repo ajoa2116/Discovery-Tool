@@ -315,7 +315,7 @@ export class BatchExecutionPipeline {
     phase.startTime = new Date().toISOString();
     this.emit({ type: 'PHASE_START', phaseNumber: 4 });
 
-    const result = await Phase4IdentityReconciliation.execute(database);
+    const result = await Phase4IdentityReconciliation.execute(database, this.currentInterfaces);
     phase.logs.push(...result.logs);
     phase.devicesFoundCount = result.reconciledDevices.length;
     phase.progressPct = 100;

@@ -17,7 +17,7 @@ async function run(){
   assert(plan.changedIpCount===1&&plan.projectDevices[0].network.ipAddressHistory?.includes('192.168.1.20')&&plan.possibleReplacements.length===0,'B changed IP preserves identity/history without replacement');
   const ten=Array.from({length:10},(_,i)=>device(`p${i}`,`192.168.1.${i+10}`,`00:00:00:00:00:${String(i+1).padStart(2,'0')}`));const twelve=[...ten.map(x=>structuredClone(x)),device('new-a','192.168.1.100','aa:00:00:00:00:01'),device('new-b','192.168.1.101','aa:00:00:00:00:02')];
   const growthDb=cleanProject(ten);let result=await workflow(growthDb,twelve).run();
-  assert(result.recognizedCount===10&&result.newDevicesCount===2&&growthDb.getProjectMemberDevices().length===10&&growthDb.getSession().dirty,'C growth keeps 2 devices live-only and records Reverify history');
+  assert(result.recognizedCount===10&&result.newDevicesCount===2&&growthDb.getProjectMemberDevices().length===10&&!growthDb.getSession().dirty&&growthDb.listProjectHistory().some(event=>event.type==='REVERIFY_COMPLETED'),'C growth stays clean, keeps 2 devices live-only, and records Reverify history');
   assert(JSON.parse(growthDb.exportProjectJson()).project.devices.length===10,'C live-only devices are excluded from Project export');
   const missingDb=cleanProject([saved]);result=await workflow(missingDb,[]).run();
   assert(result.notVerifiedCount===1&&missingDb.getProjectMemberDevices()[0].sessionVerification==='NOT_FOUND'&&missingDb.getProjectMemberDevices().length===1,'D missing device is preserved as Not Verified');

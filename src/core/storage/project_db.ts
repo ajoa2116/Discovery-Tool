@@ -257,7 +257,9 @@ export class SiteProjectDatabase {
   public getCollisions(): IPCollisionRecord[] { return this.session.project.collisions; }
   public recordRogueDhcp(event: RogueDHCPOffer): void { this.session.project.rogueDhcpEvents.push(event); this.markDirty(); }
   public getRogueDhcpEvents(): RogueDHCPOffer[] { return this.session.project.rogueDhcpEvents; }
-  public appendHistory(event: AppendProjectHistory): void { if (this.session.mode !== 'PROJECT') return; this.session.project.auditLogs = ProjectHistoryService.bounded([...this.session.project.auditLogs, ProjectHistoryService.create(event)]); this.markDirty(); }
+  // Operational observations remain visible and are captured by the next explicit Save,
+  // like monitoring snapshots. They do not independently represent a document edit.
+  public appendHistory(event: AppendProjectHistory, runtime = false): void { if (this.session.mode !== 'PROJECT') return; this.session.project.auditLogs = ProjectHistoryService.bounded([...this.session.project.auditLogs, ProjectHistoryService.create(event)]); if(!runtime)this.markDirty(); }
   public recordProjectAudit(entry: SiteProject['auditLogs'][number]): void { if (this.session.mode !== 'PROJECT') return; this.session.project.auditLogs = ProjectHistoryService.bounded([...this.session.project.auditLogs, clone(entry)]); this.markDirty(); }
   public listProjectHistory(filter: ProjectHistoryFilter = 'ALL', deviceId?: string) { return this.session.mode === 'PROJECT' ? ProjectHistoryService.list(this.session.project.auditLogs, filter, deviceId) : []; }
   public recordConfigurationHistory(deviceId:string, operation:string, result:'SUCCESS'|'FAILED'|'CANCELLED'|'UNKNOWN', details:Record<string,unknown>={}) { this.appendHistory({type:'CONFIGURATION',title:'Configuration Operation',summary:`${operation} completed with result ${result}.`,deviceId,result,level:result==='SUCCESS'?'SUCCESS':result==='FAILED'?'ERROR':'INFO',category:'PROVISIONING',details:{operation,...details}}); }
