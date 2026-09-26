@@ -6,7 +6,8 @@ export class DuplicateAssistantService {
   private pending=new Map<string,Promise<ReturnType<DuplicateAssistantService['result']>>>();
   constructor(private db:SiteProjectDatabase,private monitor:Pick<IncrementalDiscoveryMonitor,'runNow'|'getState'>){}
   get(key:string) {
-    const view=duplicateAssistantView(this.db.getCollisions(),this.db.getDevices(),key);
+    const visible=new Set(this.db.getProject().devices.map(d=>d.id));
+    const view=duplicateAssistantView(this.db.getCollisions(),this.db.getDevices(),key,new Set(this.db.getDevices().filter(d=>!visible.has(d.id)).map(d=>d.id)));
     if(!view)throw new Error('This collision is no longer available in the current project.');
     return view;
   }

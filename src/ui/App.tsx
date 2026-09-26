@@ -213,13 +213,14 @@ export default function App() {
     return connectProgress((event) => {
       try {
         const data = JSON.parse(event.data);
+        if(data.data?.currentListSuppression)setProjectSession(current=>current?{...current,currentListSuppression:data.data.currentListSuppression}:current);
         if (data.type === 'PHASE_COMPLETE' && data.phaseNumber === 1 && data.data?.interfaces) {
           setInterfaces(pairAdapterInterfaces(data.data.interfaces,currentPairRef.current?.state==='RESTORED'?null:currentPairRef.current));
         }
         if ((data.type === 'DEVICE_DISCOVERED' || data.type === 'DEVICE_ENRICHED') && data.data?.project) {
           setProject(data.data.project);
         }
-        if (data.type === 'DEVICE_DISCOVERED' && data.data?.isNew === true && shouldNotifyForDiscovery(preferencesRef.current,true) && data.data?.device) {
+        if (data.type === 'DEVICE_DISCOVERED' && data.data?.isNew === true && data.data?.project?.devices?.some((d:Device)=>d.id===data.data.device?.id) && shouldNotifyForDiscovery(preferencesRef.current,true) && data.data?.device) {
           const notification = discoveryNotification(data.data.device);
           if (notification) setNewDeviceDetected(notification);
         }
@@ -502,9 +503,17 @@ export default function App() {
     await fetchData();
   };
 
+  const [currentListFeedback,setCurrentListFeedback]=useState(''),[rediscoverBusy,setRediscoverBusy]=useState(false);
+  const rediscoverRemoved=async()=>{
+    if(rediscoverBusy||isScanning||scanStarting||stopPending)return;
+    setRediscoverBusy(true);setOpenMenu(null);
+    try{const {response}=await requestJson('http://localhost:3001/api/current-list/rediscover',{method:'POST'},fetch,5000);if(!response.ok)throw Error();setCurrentListFeedback('Manually removed cameras can return after fresh discovery.');await fetchData();await handleScanNetwork();}
+    catch{setCurrentListFeedback('Rediscover could not be confirmed. Refresh the list before retrying.');}
+    finally{setRediscoverBusy(false);}
+  };
   const handleRemoveDevice = async (deviceId: string, scope: 'current' | 'project') => {
     const response = await fetch(`http://localhost:3001/api/devices/${encodeURIComponent(deviceId)}/remove-${scope}`, { method: 'POST' });
-    if (!response.ok) throw new Error((await response.json()).error || 'Device could not be removed.');
+    const result=await response.json();if (!response.ok) throw new Error(result.error || 'Device could not be removed.');if(scope==='current')setCurrentListFeedback(result.removal?.message||'Removed from Current List.');
     setSelectedDeviceIds(current => { const next = new Set(current); next.delete(deviceId); return next; });
     await fetchData();
   };
@@ -600,7 +609,7 @@ export default function App() {
           <div className="relative flex shrink-0" onMouseDown={event=>event.stopPropagation()}>
             <button disabled={scanStarting || stopPending} onClick={handleScanNetwork} className={`h-9 flex items-center gap-2 rounded-l-md px-4 font-bold text-xs text-white ${isScanning?'bg-red-600 hover:bg-red-500':'bg-blue-600 hover:bg-blue-500'}`}>{isScanning?<><RefreshCw className="w-4 h-4 animate-spin"/>Stop</>:<><Play className="w-4 h-4 fill-current"/>Scan</>}</button>
             {!isScanning&&<button aria-label="Scan choices" aria-haspopup="menu" aria-expanded={openMenu==='SCAN'} onClick={()=>setOpenMenu(openMenu==='SCAN'?null:'SCAN')} className="h-9 rounded-r-md border-l border-blue-500 bg-blue-600 px-2 text-white hover:bg-blue-500"><ChevronDown className="w-4 h-4"/></button>}
-            {openMenu==='SCAN'&&!isScanning&&<div role="menu" aria-label="Scan choices" className="ui-menu left-0 right-auto top-10 min-w-72"><button onClick={()=>{void handleScanNetwork();setOpenMenu(null)}}><span className="block font-semibold">Quick Scan <span className="font-normal text-blue-600">· Default</span></span><span className="block text-[10px] text-slate-500">Fast discovery on local network</span></button><button onClick={()=>{setAdvancedScanOpen(true);setOpenMenu(null)}}><span className="block font-semibold">Advanced Scan</span><span className="block text-[10px] text-slate-500">Customize adapters, ranges, ports, and discovery methods</span></button></div>}
+            {openMenu==='SCAN'&&!isScanning&&<div role="menu" aria-label="Scan choices" className="ui-menu left-0 right-auto top-10 min-w-72"><button onClick={()=>{void handleScanNetwork();setOpenMenu(null)}}><span className="block font-semibold">Quick Scan <span className="font-normal text-blue-600">· Default</span></span><span className="block text-[10px] text-slate-500">Fast discovery on local network</span></button><button disabled={rediscoverBusy||scanStarting||stopPending||!(projectSession?.currentListSuppression?.count)} onClick={()=>void rediscoverRemoved()}>Rediscover manually removed cameras<span className="block text-[10px]">Manually removed: {projectSession?.currentListSuppression?.count||0}</span></button><button onClick={()=>{setAdvancedScanOpen(true);setOpenMenu(null)}}><span className="block font-semibold">Advanced Scan</span><span className="block text-[10px] text-slate-500">Customize adapters, ranges, ports, and discovery methods</span></button></div>}
           </div>
           {/* Search Box (Section 7) */}
           <div className="flex-1 min-w-[220px] relative">
@@ -778,6 +787,7 @@ export default function App() {
       />
 
       {reportSetOpen&&<ReportSetPanel snapshot={reportSet} error={reportSetError} onClose={()=>setReportSetOpen(false)} onRemove={id=>updateReportSet('remove',{memberIds:[id]})} onClear={()=>updateReportSet('clear',{confirmed:true})} onReport={()=>{setReportSetOpen(false);setReportScope('REPORT_SET');setIsSiteSurveyModalOpen(true);}}/>}
+      {currentListFeedback&&<div role="status" className="fixed bottom-10 left-4 z-40 max-w-lg rounded border border-blue-200 bg-blue-50 p-3 text-sm text-blue-900">{currentListFeedback}<button aria-label="Dismiss Current List message" className="ml-3 underline" onClick={()=>setCurrentListFeedback('')}>Dismiss</button></div>}
       {/* Milestone 12: contextual reporting and field documentation */}
       {project && (
         <><SiteSurveyReportModal
@@ -798,7 +808,7 @@ export default function App() {
 
       {/* Section 12: Duplicate Assistant (Separate Window / Drawer) */}
       {project && (
-        <DuplicateDrawer
+        <DuplicateDrawer hiddenDeviceIds={projectSession?.currentListSuppression?.hiddenDeviceIds}
           isOpen={isDuplicateDrawerOpen}
           onClose={() => setIsDuplicateDrawerOpen(false)}
           collisions={project.collisions}

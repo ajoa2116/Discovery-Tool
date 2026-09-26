@@ -18,7 +18,7 @@ assert(!quick.getProject().devices.some(value=>value.id===unknown.id||value.id==
 quick.removeDeviceFromCurrentList(discovered.id);
 assert(quick.getProject().devices.length===0,'removing the final visible device produces an empty current list');
 const rediscovered=quick.upsertDevice({...discovered,lastSeenAt:'later'});quick.restoreDiscoveredDevice(rediscovered);
-assert(quick.getProject().devices[0]?.id===discovered.id,'genuine rediscovery restores the same stable identity');
+assert(!quick.getProject().devices.some(d=>d.id===discovered.id),'genuine rediscovery respects explicit session suppression');quick.rediscoverManuallyRemoved();quick.restoreDiscoveredDevice(rediscovered);assert(quick.getProject().devices[0]?.id===discovered.id,'explicit Rediscover permits fresh evidence to return');
 
 const duplicates=new SiteProjectDatabase();duplicates.startQuickWork();const dupA=device('mac:a','10.0.0.20','ONVIF','ONLINE','00:00:00:00:00:01'),dupB=device('mac:b','10.0.0.20','ONVIF','ONLINE','00:00:00:00:00:02');duplicates.upsertDevice(dupA);duplicates.upsertDevice(dupB);duplicates.removeDeviceFromCurrentList(dupA.id);
 assert(duplicates.getProject().devices.length===1&&duplicates.getProject().devices[0].id===dupB.id,'duplicate-IP identities remain independently targetable by stable ID');
@@ -30,7 +30,7 @@ project.restoreDiscoveredDevice(projectA);project.removeDeviceFromProject(projec
 assert(project.getSession().dirty&&!project.getDevices().some(value=>value.id===projectA.id),'Remove from Project explicitly removes membership and marks Unsaved');
 assert(project.getDevices().length===1&&project.getDevices()[0].id===projectB.id,'Project removal does not alter unrelated devices');
 const currentOnly=project.upsertDevice({...projectA,lastSeenAt:'rediscovered'});project.restoreDiscoveredDevice(currentOnly);
-assert(project.getProject().devices.some(value=>value.id===projectA.id),'physically rediscovered Project-removed device may return to current results');
+assert(!project.getProject().devices.some(value=>value.id===projectA.id),'separate Project removal does not clear current-list suppression');project.rediscoverManuallyRemoved();project.restoreDiscoveredDevice(currentOnly);assert(project.getProject().devices.some(value=>value.id===projectA.id),'explicit Rediscover permits Project-removed live device');
 assert(!JSON.parse(project.exportProjectJson()).project.devices.some((value:Device)=>value.id===projectA.id),'rediscovery does not silently re-add removed Project membership');
 
 const server=readFileSync('src/server/index.ts','utf8'),dialog=readFileSync('src/ui/components/DeviceRemovalDialog.tsx','utf8'),menu=readFileSync('src/ui/components/FloatingDeviceActionsMenu.tsx','utf8');

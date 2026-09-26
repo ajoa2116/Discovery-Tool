@@ -1,3 +1,5 @@
+import {createCurrentListRouter} from './current_list_routes.ts';
+import {hasIdentity} from '../shared/identity_policy.ts';
 import { pairBlocksMonitoring } from '../core/engine/incremental_discovery_monitor.ts';
 import {existsSync} from 'node:fs';
 import {join} from 'node:path';
@@ -102,7 +104,7 @@ app.use(['/api/devices','/api/project'],(_req,_res,next)=>{reportSet.snapshot();
 
 // Broadcast WebSocket message to all connected clients
 const broadcast = (data: any) => {
-  if(data.data?.project||data.data?.session)reportSet.snapshot();
+  if(data.data?.project||data.data?.session){reportSet.snapshot();data.data.currentListSuppression=projectDb.getSession().currentListSuppression;}
   if(data.type==='FOREGROUND_SCAN_STATE'){const snapshot=data.data.foreground;operationTasks.foreground(snapshot,()=>foregroundDiscovery.stop(snapshot.session?.sessionId),snapshot.session?.sessionId===advancedTaskSessionId?advancedScanService.getStatus():undefined);}
   if(data.type==='PAIR_STATE_CHANGED')operationTasks.pair(data.data.pair);
   const msg = JSON.stringify(data);
@@ -180,6 +182,8 @@ app.use(taskIntegration.middleware);
 app.use('/api/tasks',taskIntegration.router);
 // ==================== REST API ROUTES ====================
 
+app.use('/api/current-list',createCurrentListRouter(projectDb,()=>broadcast({type:'PROJECT_SESSION_CHANGED',data:{session:projectDb.getSession()}})));
+
 // Project & Devices
 app.get('/api/project', (req, res) => {
   res.json(projectDb.getProject());
@@ -199,7 +203,7 @@ app.post('/api/devices/:id/remove-current', (req, res) => {
   try {
     const device = projectDb.removeDeviceFromCurrentList(req.params.id);
     appStateDb.logAudit({ id: crypto.randomUUID(), timestamp: new Date().toISOString(), category: 'SYSTEM', level: 'INFO', message: 'Device removed from current list; physical device unchanged.', deviceId: device.id });
-    const session = projectDb.getSession(); broadcast({ type: 'PROJECT_SESSION_CHANGED', data: { session } }); res.json(session);
+    const session = projectDb.getSession(); broadcast({ type: 'PROJECT_SESSION_CHANGED', data: { session } }); res.json({...session,removal:{suppressed:hasIdentity(device),message:hasIdentity(device)?'Removed from Current List. This camera stays hidden for this backend session until you choose Rediscover manually removed cameras. Project and Report Set membership are unchanged.':'Removed this row only. Identity is too weak for session suppression; discovery may show it again. Project and Report Set membership are unchanged.'}});
   } catch (error) { res.status(404).json({ error: error instanceof Error ? error.message : String(error) }); }
 });
 
@@ -478,7 +482,7 @@ app.get('/api/system/support-bundle', async (_req, res) => {
     // SupportBundleBuilder recursively filters password|credential|authorization material after this security-event exclusion.
     const supportEvents=appStateDb.getAuditLogs().filter(entry => entry.category !== 'SECURITY');
     taskIntegration.refresh();
-    const bundle = supportBundleBuilder.build({tasks:tasks.snapshot(),wsDiscoveryTransport:{...wsDiscoveryEvidence.snapshot(),matrix:receiveMatrix?.snapshot(),supportTrace:supportTrace.snapshot()},application:{name:'CCTV Network Assistant',version:'1.6.0',runtime:process.version,platform:process.platform,build:buildIdentity},readiness:preflight,network:adapters.map(adapter=>({interfaceIndex:adapter.interfaceIndex,interfaceAlias:adapter.interfaceAlias,mediaType:adapter.mediaType,operationalStatus:adapter.operationalStatus,eligible:adapter.eligible,ipv4Addresses:adapter.ipv4Addresses})),monitoring:monitoringState(),discovery:{foreground:foregroundDiscovery.getState(),running:foregroundDiscovery.isActive(),engineRunning:pipelineEngine.getIsRunning(),phases:pipelineEngine.getStates().slice(0,4),advanced:advancedScanService.getStatus()},projectSession:projectDb.getSession(),events:supportEvents,pair:pairService.getStatus()?{purpose:pairService.getStatus()!.purpose||'CAMERA_PAIR',verification:pairService.getStatus()!.verification,cameraResponded:pairService.getStatus()!.cameraReachabilityVerified,adapter:pairService.getStatus()!.adapter,state:pairService.getStatus()!.state,recoveryAvailable:pairService.getStatus()!.recoveryAvailable,errorCode:pairService.getStatus()!.errorCode,preview:{cameraIp:pairService.getStatus()!.cameraIp,interfaceIndex:pairService.getStatus()!.adapter.interfaceIndex,subnetSource:pairService.getStatus()!.subnetSource,candidate:pairService.getStatus()!.selectedCandidate}}:null});
+    const bundle = supportBundleBuilder.build({currentListSuppression:projectDb.getSuppressionDiagnostics(),tasks:tasks.snapshot(),wsDiscoveryTransport:{...wsDiscoveryEvidence.snapshot(),matrix:receiveMatrix?.snapshot(),supportTrace:supportTrace.snapshot()},application:{name:'CCTV Network Assistant',version:'1.6.0',runtime:process.version,platform:process.platform,build:buildIdentity},readiness:preflight,network:adapters.map(adapter=>({interfaceIndex:adapter.interfaceIndex,interfaceAlias:adapter.interfaceAlias,mediaType:adapter.mediaType,operationalStatus:adapter.operationalStatus,eligible:adapter.eligible,ipv4Addresses:adapter.ipv4Addresses})),monitoring:monitoringState(),discovery:{foreground:foregroundDiscovery.getState(),running:foregroundDiscovery.isActive(),engineRunning:pipelineEngine.getIsRunning(),phases:pipelineEngine.getStates().slice(0,4),advanced:advancedScanService.getStatus()},projectSession:projectDb.getSession(),events:supportEvents,pair:pairService.getStatus()?{purpose:pairService.getStatus()!.purpose||'CAMERA_PAIR',verification:pairService.getStatus()!.verification,cameraResponded:pairService.getStatus()!.cameraReachabilityVerified,adapter:pairService.getStatus()!.adapter,state:pairService.getStatus()!.state,recoveryAvailable:pairService.getStatus()!.recoveryAvailable,errorCode:pairService.getStatus()!.errorCode,preview:{cameraIp:pairService.getStatus()!.cameraIp,interfaceIndex:pairService.getStatus()!.adapter.interfaceIndex,subnetSource:pairService.getStatus()!.subnetSource,candidate:pairService.getStatus()!.selectedCandidate}}:null});
     res.setHeader('Content-Disposition', 'attachment; filename="CCTV_Safe_Support_Bundle.json"'); res.json(bundle);
   } catch { res.status(500).json({ error: 'The safe support bundle could not be generated.' }); }
 });

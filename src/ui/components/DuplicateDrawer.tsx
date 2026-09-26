@@ -6,15 +6,15 @@ import { X } from 'lucide-react';
 
 interface Props {
   isOpen:boolean; onClose:()=>void; collisions:IPCollisionRecord[]; devices:Device[];
-  selectedCollisionId?:string|null; onChanged:()=>Promise<void>;
+  selectedCollisionId?:string|null;hiddenDeviceIds?:string[]; onChanged:()=>Promise<void>;
   onDetails:(device:Device)=>void; onDiagnose:(device:Device)=>Promise<void>; onOpen:(device:Device)=>void;
 }
 const button='rounded border border-slate-300 bg-white px-3 py-2 text-slate-800 hover:bg-slate-100 disabled:opacity-50';
 const available=(value?:string|null)=>value||'Not available';
 const timestamp=(value?:string)=>value?new Date(value).toLocaleString():'Not available';
 
-export const DuplicateDrawer:React.FC<Props>=({isOpen,onClose,collisions,devices,selectedCollisionId,onChanged,onDetails,onDiagnose,onOpen})=>{
-  const view=duplicateAssistantView(collisions,devices,selectedCollisionId||'');
+export const DuplicateDrawer:React.FC<Props>=({isOpen,onClose,collisions,devices,selectedCollisionId,hiddenDeviceIds=[],onChanged,onDetails,onDiagnose,onOpen})=>{
+  const view=duplicateAssistantView(collisions,devices,selectedCollisionId||'',new Set(hiddenDeviceIds));
   const [busy,setBusy]=useState(false),[message,setMessage]=useState('');
   const controller=useRef<AbortController|null>(null),owner=useRef('');
   const key=JSON.stringify([isOpen,selectedCollisionId]);owner.current=key;
@@ -55,7 +55,8 @@ export const DuplicateDrawer:React.FC<Props>=({isOpen,onClose,collisions,devices
             <div className="flex flex-wrap items-start justify-between gap-2"><div><h3 className="font-bold">{p.name}</h3><p className="text-slate-600">{available(p.manufacturer)} · {available(p.model)}</p></div><span className="rounded bg-slate-100 px-2 py-1 text-xs">{p.status}</span></div>
             <div className="flex flex-wrap justify-between gap-3"><div>Current IP <strong className="block font-mono">{available(p.ip)}</strong></div><div>MAC Last 6 <strong className="block font-mono text-xl tracking-wider">{available(p.macLastSix)}</strong></div></div>
             <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 break-all text-xs"><dt>Full MAC</dt><dd className="font-mono">{available(p.mac)}</dd><dt>Serial</dt><dd>{available(p.serial)}</dd><dt>ONVIF UUID</dt><dd className="font-mono">{available(p.uuid)}</dd><dt>Stable ID</dt><dd className="font-mono">{p.id}</dd><dt>Adapter</dt><dd>{available(p.adapter)}</dd><dt>Last seen</dt><dd>{timestamp(p.lastSeen)}</dd></dl>
-            {!p.current&&<p className="text-amber-900">Historical participant; not in the current inventory. Current actions are unavailable.</p>}
+            {p.hiddenFromCurrentList&&<p className="text-blue-900">Hidden from Current List. Network collision evidence is retained independently of list visibility.</p>}
+            {!p.current&&!p.hiddenFromCurrentList&&<p className="text-amber-900">Historical participant; not in the current inventory. Current actions are unavailable.</p>}
             <details className="text-xs text-slate-600"><summary className="cursor-pointer py-1">Discovery and contextual evidence</summary><p>Discovery response: {timestamp(p.discoveryAt)}</p>{p.diagnostics.length?p.diagnostics.map((c,i)=><p key={i}>{c.type}: {c.success?'Response observed':'No response confirmed'} · {timestamp(c.at)}{c.ambiguous?' · Shared-IP evidence':''}</p>):<p>Diagnostics: Not available</p>}{p.neighbors.length?p.neighbors.map((n,i)=><p key={i}>Neighbor observation: {available(n.mac)} · {n.result} · {timestamp(n.at)}</p>):<p>Neighbor observations: Not available</p>}<p>These observations do not independently prove which camera a shared-IP request reaches.</p></details>
             <div className="flex flex-wrap gap-2"><button className={button} disabled={!current||busy} onClick={()=>current&&onDetails(current)}>Details</button><button className={button} disabled={!current||busy} onClick={()=>current&&void run(async()=>{await onDiagnose(current);return 'Diagnostics requested. Shared-IP results remain contextual evidence.';})}>Diagnose</button><button className={button} disabled={!p.mac||busy} onClick={()=>p.mac&&void copy(p.mac,'MAC')}>Copy MAC</button><button className={button} disabled={!p.serial||busy} onClick={()=>p.serial&&void copy(p.serial,'Serial')}>Copy Serial</button><button className={button} disabled={busy} onClick={()=>void copy(p.id,'Stable ID')}>Copy ID</button><button className={button} disabled={!current||!p.access.allowed||busy} onClick={()=>current&&p.access.allowed&&onOpen(current)}>Open</button></div>
             {!p.access.allowed&&<p className="text-xs text-amber-900">{p.access.message}</p>}

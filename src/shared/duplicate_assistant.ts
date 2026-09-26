@@ -12,7 +12,7 @@ export function collisionKeyForDevice(device:Device,collisions:IPCollisionRecord
 }
 
 /** Read-only projection of Phase 4 records; never creates or resolves a collision. */
-export function duplicateAssistantView(collisions:IPCollisionRecord[],devices:Device[],key:string) {
+export function duplicateAssistantView(collisions:IPCollisionRecord[],devices:Device[],key:string,hiddenIds:ReadonlySet<string>=new Set()) {
   const collision=collisions.find(c=>c.id===key||c.ipAddress===key);
   if(!collision)return undefined;
   const ids=[...new Set([...(collision.deviceIds||[]),...collision.collidingDevices.map(d=>d.id)])];
@@ -21,7 +21,7 @@ export function duplicateAssistantView(collisions:IPCollisionRecord[],devices:De
     if(!device)return [];
     const anchor=canonicalAnchor(device.anchor),adapter=device.reachability?.relationshipAdapter||device.reachability?.discoveryInterface;
     // Explicit fields only: no provider parameters, credential references, or raw payloads.
-    return [{id,current:Boolean(current),name:device.technician?.name||anchor.model||anchor.vendor||'Unknown',
+    return [{id,current:Boolean(current),hiddenFromCurrentList:hiddenIds.has(id),name:device.technician?.name||anchor.model||anchor.vendor||'Unknown',
       manufacturer:anchor.vendor||undefined,model:anchor.model,ip:device.network.ipAddress,
       mac:anchor.macAddress,macLastSix:anchor.macAddress?.replaceAll(':','').slice(-6).toUpperCase(),
       serial:anchor.serialNumber,uuid:anchor.onvifEndpointUuid,

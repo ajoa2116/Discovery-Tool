@@ -1,3 +1,4 @@
+import {SessionSuppression} from './session_suppression.ts';
 import { reconcileCollisionState } from '../engine/collision_reconciliation.ts';
 import { canonicalAnchor, canonicalMac, mergeAnchors, selectIdentity, sameIdentity } from '../../shared/identity_policy.ts';
 import { promises as fs } from 'node:fs';
@@ -80,14 +81,16 @@ export class SiteProjectDatabase {
     return device.evidenceProvenance === undefined || device.evidenceProvenance === 'PHYSICAL_NETWORK' || this.isolation === 'ISOLATED_TEST';
   }
   private session: ProjectSession = { mode: 'QUICK_WORK', project: makeProject('Quick Work'), dirty: false };
-  private hiddenCurrentDeviceIds = new Set<string>();
+  private hiddenCurrentDeviceIds = new Set<string>(); // Weak identity: row-only hiding, no physical suppression claim.
+  private suppression = new SessionSuppression();
+  private awaitingRediscovery = new SessionSuppression();
   private currentOnlyDeviceIds = new Set<string>();
   private removedProjectIdentities: Array<{ id: string; mac?: string; uuid?: string; serial?: string }> = [];
 
-  public getSession(): ProjectSession { return { ...clone(this.session), project: this.getProject() }; }
+  public getSession(): ProjectSession { const project=this.getProject(),visible=new Set(project.devices.map(d=>d.id));return { ...clone(this.session), project, currentListSuppression:{count:this.suppression.count,awaitingRediscovery:this.awaitingRediscovery.count,hiddenDeviceIds:this.getDevices().filter(d=>!visible.has(d.id)).map(d=>d.id)} }; }
   public getProject(): SiteProject {
     const project = clone(this.session.project);
-    project.devices = project.devices.filter(device => !this.hiddenCurrentDeviceIds.has(device.id));
+    project.devices = project.devices.filter(device => !this.hiddenCurrentDeviceIds.has(device.id)&&!this.suppression.hides(device,this.getDevices())&&!this.awaitingRediscovery.hides(device,this.getDevices()));
     project.totalDevices = project.devices.length;
     return project;
   }
@@ -209,7 +212,7 @@ export class SiteProjectDatabase {
     const memberIds = new Set(memberDevices.map(device => device.id));
     this.session.project.devices = [...clone(memberDevices), ...clone(liveOnlyDevices).filter(device => !memberIds.has(device.id))];
     this.currentOnlyDeviceIds = new Set(liveOnlyDevices.filter(device => !memberIds.has(device.id)).map(device => device.id));
-    for (const device of memberDevices) if (device.sessionVerification === 'VERIFIED') this.hiddenCurrentDeviceIds.delete(device.id);
+    for (const device of memberDevices) if (device.sessionVerification === 'VERIFIED') this.restoreDiscoveredDevice(device);
     this.session.project.totalDevices = this.session.project.devices.length;
     reconcileCollisionState(this.session.project.devices,this.session.project.collisions);
     this.session.dirty = dirtyBefore || persistentChanged;
@@ -233,7 +236,7 @@ export class SiteProjectDatabase {
   public removeDeviceFromCurrentList(id: string): Device {
     const device = this.getDeviceById(id);
     if (!device) throw new ProjectValidationError('Device not found.');
-    this.hiddenCurrentDeviceIds.add(id);
+    if(!this.suppression.add(device,this.getDevices()))this.hiddenCurrentDeviceIds.add(id);
     return clone(device);
   }
   public removeDeviceFromProject(id: string): Device {
@@ -247,7 +250,14 @@ export class SiteProjectDatabase {
     this.markDirty();
     return clone(device);
   }
+  public getSuppressionDiagnostics(){return {...this.suppression.diagnostics(),awaitingRediscovery:this.awaitingRediscovery.count,weakHiddenRows:this.hiddenCurrentDeviceIds.size};}
+  public rediscoverManuallyRemoved():void {
+    // Clearing intent does not turn retained database snapshots into new observations.
+    this.suppression.moveTo(this.awaitingRediscovery);
+  }
   public restoreDiscoveredDevice(device: Device): void {
+    this.suppression.hides(device,this.getDevices());
+    this.awaitingRediscovery.releaseObserved(device,this.getDevices());
     this.hiddenCurrentDeviceIds.delete(device.id);
     const mac=device.anchor.macAddress?.toLowerCase(),uuid=device.anchor.onvifEndpointUuid?.toLowerCase(),serial=device.anchor.serialNumber?.toLowerCase();
     const removed = this.removedProjectIdentities.find(identity => identity.id===device.id || Boolean((mac&&identity.mac===mac)||(uuid&&identity.uuid===uuid)||(serial&&identity.serial===serial)));
@@ -286,7 +296,7 @@ export class SiteProjectDatabase {
     try { parsed = JSON.parse(jsonData); } catch { throw new ProjectValidationError('The project file is not valid JSON.'); }
     const project = this.parseBundle(parsed);
     this.resetTransientDeviceState(); this.session = { mode: 'PROJECT', project, dirty: false };
-    return project;
+    return this.getProject();
   }
 
   public async openProject(filePath: string): Promise<SiteProject> { const project = this.importProjectJson(await fs.readFile(filePath, 'utf8')); this.session.filePath = filePath; return project; }
