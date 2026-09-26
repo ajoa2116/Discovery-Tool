@@ -196,6 +196,8 @@ export class SiteProjectDatabase {
     const device = this.getDeviceById(id);
     if (!device) throw new ProjectValidationError('Device not found.');
     if(fields.name!==undefined && (typeof fields.name!=='string'||fields.name.length>100))throw new ProjectValidationError('Name must be text with at most 100 characters.');
+    if(fields.notes!==undefined && (typeof fields.notes!=='string'||fields.notes.length>1000))throw new ProjectValidationError('Notes must be text with at most 1000 characters.');
+    if(Object.keys(fields).length===1 && fields.notes!==undefined && fields.notes===(device.technician?.notes||''))return device;
     if(Object.keys(fields).length===1 && fields.name!==undefined && fields.name===(device.technician?.name||''))return device;
     const before = clone(device.technician || {}); device.technician = { ...device.technician, ...fields };
     this.markDirty();

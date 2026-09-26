@@ -398,28 +398,17 @@ export default function App() {
     finally { if (scanRequest.current === controller) scanRequest.current = null; quickStartPending.current = false; if (!controller.signal.aborted) setScanStarting(false); }
   };
 
-  // Section 6: Inline Device Name Update
-  const handleUpdateDeviceName = async (id: string, newName: string) => {
+  // Local technician fields share the same acknowledged, stable-ID update path.
+  const updateTechnicianField = async (id:string,field:'name'|'notes',value:string) => {
     if(!project?.devices.some(d=>d.id===id))throw Error('Device is no longer available.');
     const {response,body}=await requestJson(`http://localhost:3001/api/device/${encodeURIComponent(id)}/config`, {
-      method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({technician:{name:newName}})
+      method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({technician:{[field]:value}})
     },fetch,5000);
-    if(!response.ok || (body as any)?.status!=='LOCAL_METADATA_UPDATED' || (body as any)?.device?.id!==id)throw Error('Name save was not confirmed.');
+    if(!response.ok || (body as any)?.status!=='LOCAL_METADATA_UPDATED' || (body as any)?.device?.id!==id)throw Error('Metadata save was not confirmed.');
     await fetchData();
   };
-
-  // Section 5: Inline Notes Update
-  const handleUpdateDeviceNotes = async (id: string, notes: string) => {
-    const dev = project?.devices.find((d) => d.id === id);
-    if (dev) {
-      await fetch(`http://localhost:3001/api/device/${encodeURIComponent(dev.id)}/config`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ technician: { notes } }),
-      });
-      await fetchData();
-    }
-  };
+  const handleUpdateDeviceName = (id:string,name:string) => updateTechnicianField(id,'name',name);
+  const handleUpdateDeviceNotes = (id:string,notes:string) => updateTechnicianField(id,'notes',notes);
 
   // Section 39: Bulk Selection Handlers
   const handleToggleSelect = (id: string) => {

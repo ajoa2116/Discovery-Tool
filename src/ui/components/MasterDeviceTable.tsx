@@ -28,7 +28,7 @@ interface MasterDeviceTableProps {
   onToggleSelect: (id: string) => void;
   onToggleSelectAll: () => void;
   onUpdateDeviceName: (id: string, newName: string) => Promise<void> | void;
-  onUpdateDeviceNotes: (id: string, notes: string) => void;
+  onUpdateDeviceNotes: (id: string, notes: string) => Promise<void> | void;
   onOpenDuplicateAssistant: (device: Device) => void;
   onConfigureDevice: (dev: Device) => void;
   onInspectDevice: (dev: Device) => void;
@@ -64,15 +64,13 @@ export const MasterDeviceTable: React.FC<MasterDeviceTableProps> = ({
   onRemoveProject,
   visibleColumns,
 }) => {
-  const [editingNameId, setEditingNameId] = useState<string | null>(null);
-  const [tempName, setTempName] = useState<string>('');
-  const nameEdit = useRef<{id:string;original:string;value:string}|null>(null);
-  const pendingNames = useRef(new Set<string>());
-  const [savingNames,setSavingNames] = useState(new Set<string>());
-  const [nameError,setNameError] = useState('');
-
-  const [editingNotesId, setEditingNotesId] = useState<string | null>(null);
-  const [tempNotes, setTempNotes] = useState<string>('');
+  type EditField = 'name' | 'notes';
+  const [editing,setEditing] = useState<{id:string;field:EditField}|null>(null);
+  const [draft,setDraft] = useState('');
+  const activeEdit = useRef<{id:string;field:EditField;label:string;original:string;value:string}|null>(null);
+  const pendingEdits = useRef(new Set<string>());
+  const [savingEdits,setSavingEdits] = useState(new Set<string>());
+  const [editError,setEditError] = useState('');
 
   const [openActionMenu, setOpenActionMenu] = useState<{ device: Device; anchor: DOMRect } | null>(null);
   const [removal, setRemoval] = useState<{ device: Device; scope: 'CURRENT' | 'PROJECT' } | null>(null);
@@ -82,41 +80,38 @@ export const MasterDeviceTable: React.FC<MasterDeviceTableProps> = ({
   const actionDevice = devices.find(device => device.id === openActionMenu?.device.id);
   const sortHeader = (column: DeviceSortColumn, label: React.ReactNode) => <th className="py-3 px-3" aria-sort={sort?.column === column ? sort.direction === 'asc' ? 'ascending' : 'descending' : 'none'}><button type="button" className="inline-flex items-center gap-1 font-semibold uppercase tracking-wider hover:text-sky-500" onClick={() => setSort(current => nextDeviceSort(current, column))}>{label}<span aria-hidden="true">{sort?.column === column ? sort.direction === 'asc' ? '↑' : '↓' : '↕'}</span></button></th>;
 
-  const saveEditName = () => {
-    const edit=nameEdit.current;
+  const saveEdit = () => {
+    const edit=activeEdit.current;
     if(!edit)return;
-    // Clear synchronously so Enter followed by blur cannot submit twice.
-    nameEdit.current=null;setEditingNameId(null);
+    // Clear synchronously so blur after a keyboard save/cancel cannot submit twice.
+    activeEdit.current=null;setEditing(null);
     if(edit.value===edit.original)return;
-    const value=edit.value.trim();
+    const value=edit.field==='name'?edit.value.trim():edit.value;
     if(value===edit.original)return;
-    if(value.length>100){setNameError('Name was not saved. Use 100 characters or fewer.');return;}
-    pendingNames.current.add(edit.id);setSavingNames(new Set(pendingNames.current));
+    const limit=edit.field==='name'?100:1000,label=edit.field==='name'?'Name':'Notes';
+    if(value.length>limit){setEditError(`${label} was not saved. Use ${limit} characters or fewer.`);return;}
+    const key=`${edit.id}:${edit.field}`;
+    pendingEdits.current.add(key);setSavingEdits(new Set(pendingEdits.current));
     void (async()=>{
-      try{await onUpdateDeviceName(edit.id,value);}
-      catch{setNameError(`Name was not saved for ${edit.original||'this camera'}. The last confirmed value is shown. Try again.`);}
-      finally{pendingNames.current.delete(edit.id);setSavingNames(new Set(pendingNames.current));}
+      try{await (edit.field==='name'?onUpdateDeviceName:onUpdateDeviceNotes)(edit.id,value);}
+      catch{setEditError(`${label} was not saved for ${edit.label}. The last confirmed value is shown. Try again.`);}
+      finally{pendingEdits.current.delete(key);setSavingEdits(new Set(pendingEdits.current));}
     })();
   };
-  const startEditName = (dev: Device, e?: React.MouseEvent) => {
+  const cancelEdit = () => {activeEdit.current=null;setEditing(null);};
+  const changeDraft = (value:string) => {setDraft(value);if(activeEdit.current)activeEdit.current.value=value;};
+  const startEdit = (dev:Device,field:EditField,e?:React.MouseEvent) => {
     e?.stopPropagation();
-    if(pendingNames.current.has(dev.id))return;
-    saveEditName();
-    const value=dev.technician?.name || dev.anchor.model || dev.anchor.vendor;
-    nameEdit.current={id:dev.id,original:value,value};
-    setEditingNameId(dev.id);setTempName(value);setNameError('');
+    if(activeEdit.current?.id===dev.id&&activeEdit.current.field===field)return;
+    if(pendingEdits.current.has(`${dev.id}:${field}`))return;
+    saveEdit();
+    const label=dev.technician?.name || dev.anchor.model || dev.anchor.vendor;
+    const value=field==='name'?label:dev.technician?.notes||'';
+    activeEdit.current={id:dev.id,field,label,original:value,value};
+    setEditing({id:dev.id,field});setDraft(value);setEditError('');
   };
-
-  const startEditNotes = (dev: Device, e?: React.MouseEvent) => {
-    e?.stopPropagation();
-    setEditingNotesId(dev.id);
-    setTempNotes(dev.technician?.notes || '');
-  };
-
-  const saveEditNotes = (devId: string) => {
-    onUpdateDeviceNotes(devId, tempNotes.trim());
-    setEditingNotesId(null);
-  };
+  const startEditName = (dev:Device,e?:React.MouseEvent) => startEdit(dev,'name',e);
+  const startEditNotes = (dev:Device,e?:React.MouseEvent) => startEdit(dev,'notes',e);
 
   const getStatusBadge = (status: DeviceStatus, dev: Device) => {
     switch (status) {
@@ -200,7 +195,7 @@ export const MasterDeviceTable: React.FC<MasterDeviceTableProps> = ({
 
   return (
     <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg overflow-hidden">
-      {nameError&&<p role="alert" className="px-3 py-2 text-sm text-red-700">{nameError}</p>}
+      {editError&&<p role="alert" className="px-3 py-2 text-sm text-red-700">{editError}</p>}
       <div className="overflow-x-auto">
         <table className="w-full text-left text-xs border-collapse">
           {/* Table Header per Section 5 */}
@@ -235,8 +230,8 @@ export const MasterDeviceTable: React.FC<MasterDeviceTableProps> = ({
             ) : (
               sortedDevices.map((dev) => {
                 const isSelected = selectedDeviceIds.has(dev.id);
-                const isEditingName = editingNameId === dev.id;
-                const isEditingNotes = editingNotesId === dev.id;
+                const isEditingName = editing?.id === dev.id && editing.field === 'name';
+                const isEditingNotes = editing?.id === dev.id && editing.field === 'notes';
                 const isActionOpen = openActionMenu?.device.id === dev.id;
 
                 return (
@@ -263,27 +258,28 @@ export const MasterDeviceTable: React.FC<MasterDeviceTableProps> = ({
                         <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
                           <input
                             type="text"
-                            value={tempName}
+                            value={draft}
                             aria-label="Camera Name"
                             maxLength={100}
-                            onChange={(e) => {setTempName(e.target.value);if(nameEdit.current)nameEdit.current.value=e.target.value;}}
+                            onChange={(e) => changeDraft(e.target.value)}
                             className="bg-slate-950 border border-sky-500 rounded px-2 py-0.5 text-xs text-white focus:outline-none"
                             autoFocus
-                            onBlur={saveEditName}
+                            onBlur={saveEdit}
                             onKeyDown={(e) => {
                               if(e.nativeEvent.isComposing)return;
-                              if(e.key==='Enter'){e.preventDefault();saveEditName();}
-                              if(e.key==='Escape'){e.preventDefault();nameEdit.current=null;setEditingNameId(null);}
+                              if(e.key==='Enter'){e.preventDefault();saveEdit();}
+                              if(e.key==='Escape'){e.preventDefault();cancelEdit();}
                             }}
                           />
                         </div>
                       ) : (
                         <div
+                          onMouseDown={e=>{if(e.button===0){e.preventDefault();startEditName(dev,e);}}}
                           onClick={(e) => startEditName(dev, e)}
                           className="group flex items-center gap-1.5 cursor-pointer hover:text-sky-300 transition"
                           role="button"
-                          tabIndex={savingNames.has(dev.id)?-1:0}
-                          aria-disabled={savingNames.has(dev.id)}
+                          tabIndex={savingEdits.has(`${dev.id}:name`)?-1:0}
+                          aria-disabled={savingEdits.has(`${dev.id}:name`)}
                           aria-label={`Edit name for ${dev.technician?.name || dev.anchor.model || dev.anchor.vendor}`}
                           onKeyDown={e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();e.stopPropagation();startEditName(dev);}}}
                           title="Click to rename inline"
@@ -317,30 +313,36 @@ export const MasterDeviceTable: React.FC<MasterDeviceTableProps> = ({
                     {visible('NOTES')&&<td className="py-2 px-3 text-slate-500">
                       {isEditingNotes ? (
                         <div className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
-                          <input
-                            type="text"
-                            value={tempNotes}
-                            onChange={(e) => setTempNotes(e.target.value)}
+                          <textarea
+                            aria-label="Camera Notes"
+                            rows={3}
+                            maxLength={1000}
+                            value={draft}
+                            onChange={(e) => changeDraft(e.target.value)}
                             placeholder="Add technician note..."
-                            className="bg-slate-950 border border-sky-500 rounded px-2 py-0.5 text-xs text-white focus:outline-none w-32"
+                            className="bg-slate-950 border border-sky-500 rounded px-2 py-1 text-xs text-white focus:outline-none w-64 max-w-full"
                             autoFocus
-                            onKeyDown={(e) => e.key === 'Enter' && saveEditNotes(dev.id)}
+                            onBlur={saveEdit}
+                            onKeyDown={(e) => {
+                              if(e.nativeEvent.isComposing)return;
+                              if(e.key==='Escape'){e.preventDefault();cancelEdit();}
+                            }}
                           />
-                          <button
-                            onClick={() => saveEditNotes(dev.id)}
-                            className="p-1 hover:bg-slate-800 rounded text-emerald-400"
-                          >
-                            <Check className="w-3.5 h-3.5" />
-                          </button>
                         </div>
                       ) : (
                         <div
+                          onMouseDown={e=>{if(e.button===0){e.preventDefault();startEditNotes(dev,e);}}}
                           onClick={(e) => startEditNotes(dev, e)}
                           className="cursor-pointer hover:text-slate-200 transition text-[11px] truncate max-w-[120px] flex items-center gap-1"
+                          role="button"
+                          tabIndex={savingEdits.has(`${dev.id}:notes`)?-1:0}
+                          aria-disabled={savingEdits.has(`${dev.id}:notes`)}
+                          aria-label={`Edit notes for ${dev.technician?.name || dev.anchor.model || dev.anchor.vendor}`}
+                          onKeyDown={e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();e.stopPropagation();startEditNotes(dev);}}}
                           title="Click to add/edit note"
                         >
-                          <StickyNote className="w-3 h-3 text-slate-600" />
-                          <span>{dev.technician?.notes || <span className="italic text-slate-600">Add note</span>}</span>
+                          <StickyNote className="w-3 h-3 shrink-0 text-slate-600" />
+                          <span className="truncate">{dev.technician?.notes || <span className="italic text-slate-600">Add note</span>}</span>
                         </div>
                       )}
                     </td>}
