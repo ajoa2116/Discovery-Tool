@@ -195,6 +195,8 @@ export class SiteProjectDatabase {
   public updateDeviceTechnicianFields(id: string, fields: { name?: string; location?: string; notes?: string }): Device {
     const device = this.getDeviceById(id);
     if (!device) throw new ProjectValidationError('Device not found.');
+    if(fields.name!==undefined && (typeof fields.name!=='string'||fields.name.length>100))throw new ProjectValidationError('Name must be text with at most 100 characters.');
+    if(Object.keys(fields).length===1 && fields.name!==undefined && fields.name===(device.technician?.name||''))return device;
     const before = clone(device.technician || {}); device.technician = { ...device.technician, ...fields };
     this.markDirty();
     if (this.session.mode === 'PROJECT') {

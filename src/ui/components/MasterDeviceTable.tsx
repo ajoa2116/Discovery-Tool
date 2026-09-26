@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import { Device, DeviceStatus } from '../../types/index.ts';
 import {
   ExternalLink,
@@ -27,7 +27,7 @@ interface MasterDeviceTableProps {
   selectedDeviceIds: Set<string>;
   onToggleSelect: (id: string) => void;
   onToggleSelectAll: () => void;
-  onUpdateDeviceName: (id: string, newName: string) => void;
+  onUpdateDeviceName: (id: string, newName: string) => Promise<void> | void;
   onUpdateDeviceNotes: (id: string, notes: string) => void;
   onOpenDuplicateAssistant: (device: Device) => void;
   onConfigureDevice: (dev: Device) => void;
@@ -66,6 +66,10 @@ export const MasterDeviceTable: React.FC<MasterDeviceTableProps> = ({
 }) => {
   const [editingNameId, setEditingNameId] = useState<string | null>(null);
   const [tempName, setTempName] = useState<string>('');
+  const nameEdit = useRef<{id:string;original:string;value:string}|null>(null);
+  const pendingNames = useRef(new Set<string>());
+  const [savingNames,setSavingNames] = useState(new Set<string>());
+  const [nameError,setNameError] = useState('');
 
   const [editingNotesId, setEditingNotesId] = useState<string | null>(null);
   const [tempNotes, setTempNotes] = useState<string>('');
@@ -78,17 +82,29 @@ export const MasterDeviceTable: React.FC<MasterDeviceTableProps> = ({
   const actionDevice = devices.find(device => device.id === openActionMenu?.device.id);
   const sortHeader = (column: DeviceSortColumn, label: React.ReactNode) => <th className="py-3 px-3" aria-sort={sort?.column === column ? sort.direction === 'asc' ? 'ascending' : 'descending' : 'none'}><button type="button" className="inline-flex items-center gap-1 font-semibold uppercase tracking-wider hover:text-sky-500" onClick={() => setSort(current => nextDeviceSort(current, column))}>{label}<span aria-hidden="true">{sort?.column === column ? sort.direction === 'asc' ? '↑' : '↓' : '↕'}</span></button></th>;
 
+  const saveEditName = () => {
+    const edit=nameEdit.current;
+    if(!edit)return;
+    // Clear synchronously so Enter followed by blur cannot submit twice.
+    nameEdit.current=null;setEditingNameId(null);
+    if(edit.value===edit.original)return;
+    const value=edit.value.trim();
+    if(value===edit.original)return;
+    if(value.length>100){setNameError('Name was not saved. Use 100 characters or fewer.');return;}
+    pendingNames.current.add(edit.id);setSavingNames(new Set(pendingNames.current));
+    void (async()=>{
+      try{await onUpdateDeviceName(edit.id,value);}
+      catch{setNameError(`Name was not saved for ${edit.original||'this camera'}. The last confirmed value is shown. Try again.`);}
+      finally{pendingNames.current.delete(edit.id);setSavingNames(new Set(pendingNames.current));}
+    })();
+  };
   const startEditName = (dev: Device, e?: React.MouseEvent) => {
     e?.stopPropagation();
-    setEditingNameId(dev.id);
-    setTempName(dev.technician?.name || dev.anchor.model || dev.anchor.vendor);
-  };
-
-  const saveEditName = (devId: string) => {
-    if (tempName.trim()) {
-      onUpdateDeviceName(devId, tempName.trim());
-    }
-    setEditingNameId(null);
+    if(pendingNames.current.has(dev.id))return;
+    saveEditName();
+    const value=dev.technician?.name || dev.anchor.model || dev.anchor.vendor;
+    nameEdit.current={id:dev.id,original:value,value};
+    setEditingNameId(dev.id);setTempName(value);setNameError('');
   };
 
   const startEditNotes = (dev: Device, e?: React.MouseEvent) => {
@@ -184,6 +200,7 @@ export const MasterDeviceTable: React.FC<MasterDeviceTableProps> = ({
 
   return (
     <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg overflow-hidden">
+      {nameError&&<p role="alert" className="px-3 py-2 text-sm text-red-700">{nameError}</p>}
       <div className="overflow-x-auto">
         <table className="w-full text-left text-xs border-collapse">
           {/* Table Header per Section 5 */}
@@ -247,28 +264,28 @@ export const MasterDeviceTable: React.FC<MasterDeviceTableProps> = ({
                           <input
                             type="text"
                             value={tempName}
-                            onChange={(e) => setTempName(e.target.value)}
+                            aria-label="Camera Name"
+                            maxLength={100}
+                            onChange={(e) => {setTempName(e.target.value);if(nameEdit.current)nameEdit.current.value=e.target.value;}}
                             className="bg-slate-950 border border-sky-500 rounded px-2 py-0.5 text-xs text-white focus:outline-none"
                             autoFocus
-                            onKeyDown={(e) => e.key === 'Enter' && saveEditName(dev.id)}
+                            onBlur={saveEditName}
+                            onKeyDown={(e) => {
+                              if(e.nativeEvent.isComposing)return;
+                              if(e.key==='Enter'){e.preventDefault();saveEditName();}
+                              if(e.key==='Escape'){e.preventDefault();nameEdit.current=null;setEditingNameId(null);}
+                            }}
                           />
-                          <button
-                            onClick={() => saveEditName(dev.id)}
-                            className="p-1 hover:bg-slate-800 rounded text-emerald-400"
-                          >
-                            <Check className="w-3.5 h-3.5" />
-                          </button>
-                          <button
-                            onClick={() => setEditingNameId(null)}
-                            className="p-1 hover:bg-slate-800 rounded text-slate-400"
-                          >
-                            <X className="w-3.5 h-3.5" />
-                          </button>
                         </div>
                       ) : (
                         <div
                           onClick={(e) => startEditName(dev, e)}
                           className="group flex items-center gap-1.5 cursor-pointer hover:text-sky-300 transition"
+                          role="button"
+                          tabIndex={savingNames.has(dev.id)?-1:0}
+                          aria-disabled={savingNames.has(dev.id)}
+                          aria-label={`Edit name for ${dev.technician?.name || dev.anchor.model || dev.anchor.vendor}`}
+                          onKeyDown={e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();e.stopPropagation();startEditName(dev);}}}
                           title="Click to rename inline"
                         >
                           <span>{dev.technician?.name || dev.anchor.model || dev.anchor.vendor}</span>{reportDeviceIds.includes(dev.id)&&<span title="Included in Report Set" className="ml-2 rounded bg-blue-50 px-1.5 text-[10px] text-blue-800">In Report</span>}
