@@ -1,6 +1,6 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { Activity, Edit2, Globe, Network, Shield, StickyNote, Video } from 'lucide-react';
+import { Activity, Globe, Network, Shield, Video } from 'lucide-react';
 import { Device } from '../../types/index.ts';
 import { canOfferPair } from '../../shared/network_relationship.ts';
 
@@ -22,8 +22,6 @@ interface Props {
   onDuplicateAssistant?: (device: Device) => void;
   onDiagnose: (device: Device) => void;
   onPair: (device: Device) => void;
-  onRename: (device: Device) => void;
-  onNotes: (device: Device) => void;
   onConfigure: (device: Device) => void;
   projectMode: boolean;
   inReport?:boolean;
@@ -32,7 +30,7 @@ interface Props {
   onRemoveProject: (device: Device) => void;
 }
 
-export const FloatingDeviceActionsMenu: React.FC<Props> = ({ device, anchor, onClose, onOpen, onDetails, onDuplicateAssistant, onDiagnose, onPair, onRename, onNotes, onConfigure, projectMode, onRemoveCurrent, onRemoveProject, inReport=false, onReportMembership }) => {
+export const FloatingDeviceActionsMenu: React.FC<Props> = ({ device, anchor, onClose, onOpen, onDetails, onDuplicateAssistant, onDiagnose, onPair, onConfigure, projectMode, onRemoveCurrent, onRemoveProject, inReport=false, onReportMembership }) => {
   const menu = useRef<HTMLDivElement>(null);
   const [pairTarget, setPairTarget] = useState(device);
   useEffect(() => {
@@ -73,9 +71,6 @@ export const FloatingDeviceActionsMenu: React.FC<Props> = ({ device, anchor, onC
     <button role="menuitem" onClick={action(onDiagnose)} className={button}><Activity className="h-3.5 w-3.5 text-emerald-400"/>Diagnose</button>
     {onReportMembership&&<button role="menuitem" className={button} onClick={()=>{onReportMembership(device,!inReport);onClose();}}>{inReport?'Remove from Report':'Add to Report'}</button>}
     {canOfferPair(pairTarget) && <button role="menuitem" onClick={() => { onPair(pairTarget); onClose(); }} className={button}><Network className="h-3.5 w-3.5 text-purple-400"/>Pair PC to Camera Network</button>}
-    <div className="my-1 border-t border-slate-200 dark:border-slate-800"/>
-    <button role="menuitem" onClick={action(onRename)} className={button}><Edit2 className="h-3.5 w-3.5 text-slate-400"/>Rename Device</button>
-    <button role="menuitem" onClick={action(onNotes)} className={button}><StickyNote className="h-3.5 w-3.5 text-slate-400"/>Edit Notes</button>
     <div className="my-1 border-t border-slate-200 dark:border-slate-800"/>
     <button role="menuitem" onClick={action(onConfigure)} className={button}><Shield className="h-3.5 w-3.5 text-purple-400"/>Device Configuration</button>
     <div className="my-1 border-t border-slate-200 dark:border-slate-700"/>
