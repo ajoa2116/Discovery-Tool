@@ -11,6 +11,7 @@ export interface TechnicianTask {
   startedAt: string; updatedAt: string; endedAt?: string;
   phase: string; progress?: { completed: number; total: number }; reference?: string;
   target?: string;
+  diagnosticDevices?: Array<{deviceId:string;state:'RUNNING'|'COMPLETED'|'FAILED'|'CANCELLED'}>;
   cancellable: boolean; cancellationRequested?: boolean;
   result?: 'PROJECT_HISTORY' | 'REPORTS' | 'NETWORK_RECOVERY';
 }

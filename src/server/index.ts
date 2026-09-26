@@ -350,18 +350,19 @@ app.use('/api/discovery', createForegroundDiscoveryRouter({
 app.use('/api/reports', createReportRouter({ getSession: () => projectDb.getSession(), getAuditLogs: () => appStateDb.getAuditLogs() }));
 
 app.post('/api/diagnostics/run', async (req, res) => {
-  const ids: string[] = Array.isArray(req.body.deviceIds) ? req.body.deviceIds : [req.body.deviceId].filter(Boolean);
+  const ids: string[] = [...new Set<string>(Array.isArray(req.body.deviceIds) ? req.body.deviceIds : [req.body.deviceId].filter(Boolean))];
   const devices = ids.map(id => projectDb.getDeviceById(id)).filter((device): device is NonNullable<typeof device> => Boolean(device));
   if (!devices.length) return res.status(404).json({ error: 'No matching devices were found.' });
   const topology = await advancedScanService.listAdapters().catch(() => []);
   const ownedControllers:AbortController[]=[];
   const taskId=tasks.begin('DIAGNOSTICS',undefined,()=>{for(const controller of ownedControllers)controller.abort();return ownedControllers.length>0;});
+  tasks.diagnosticTargets(taskId,devices.map(device=>device.id));
   tasks.update(taskId,{state:'RUNNING',phase:'WORKING',progress:{completed:0,total:devices.length}});
   let finished=0,failed=0,cancelled=0;
   const finishDiagnostic=()=>{finished++;tasks.update(taskId,{state:finished<devices.length?'RUNNING':failed?'FAILED':cancelled?'CANCELLED':'COMPLETED',phase:finished<devices.length?'WORKING':failed?'FAILED':cancelled?'CANCELLED':'DONE',progress:{completed:finished,total:devices.length}});};
   res.status(202).json({ started: devices.map(device => device!.id), taskId });
   for (const device of devices) {
-    const current = applyNetworkRelationship(device!, topology, projectDb.getDevices());
+    const current = applyNetworkRelationship(structuredClone(device), topology, projectDb.getDevices());
     diagnosticControllers.get(current.id)?.abort();
     const controller = new AbortController();
     diagnosticControllers.set(current.id, controller);ownedControllers.push(controller);
@@ -369,13 +370,15 @@ app.post('/api/diagnostics/run', async (req, res) => {
     diagnosticEngine.diagnose(current, {
       signal: controller.signal,
       ambiguousIdentity,
-      onEvidence: (evidence, updated) => broadcast({ type: 'DIAGNOSTIC_EVIDENCE', data: { deviceId: updated.id, evidence, device: updated } }),
+      onEvidence: (evidence, updated) => {if(!controller.signal.aborted&&diagnosticControllers.get(current.id)===controller)broadcast({ type: 'DIAGNOSTIC_EVIDENCE', data: { taskId, deviceId: updated.id, evidence, device: updated } });},
     }).then(updated => {
-      if(controller.signal.aborted){cancelled++;return;}
-      projectDb.upsertDevice(updated);
+      if(controller.signal.aborted){cancelled++;tasks.diagnosticResult(taskId,current.id,'CANCELLED');return;}
+      projectDb.applyDiagnosticRefresh(updated);
+      tasks.diagnosticResult(taskId,current.id,'COMPLETED');
       broadcast({ type: 'DEVICE_DIAGNOSTICS_UPDATED', context: { origin: 'DIAGNOSTICS' }, data: { device: updated, project: projectDb.getProject() } });
     }).catch(error => {
       if(controller.signal.aborted)cancelled++;else failed++;
+      tasks.diagnosticResult(taskId,current.id,controller.signal.aborted?'CANCELLED':'FAILED');
       const body=technicianErrorResponse(error,{operation:'DIAGNOSE',deviceId:current.id,fallbackCode:'OPERATION_FAILED'});broadcast({ type: 'DIAGNOSTIC_FAILED', data: { deviceId: current.id, ...body } });
     }).finally(() => {if(diagnosticControllers.get(current.id)===controller)diagnosticControllers.delete(current.id);finishDiagnostic();});
   }

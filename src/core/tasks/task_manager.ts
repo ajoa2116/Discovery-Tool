@@ -63,6 +63,14 @@ export class TaskManager {
     const valid=ip&&/^\d{1,3}(\.\d{1,3}){3}$/.test(ip)&&ip.split('.').every(p=>Number(p)<=255);
     task.target=`Adapter ${index}${valid?` • ${ip}`:''}`;
   }
+  diagnosticTargets(id:string,deviceIds:string[]) {
+    const task=this.entries.get(id);if(!task||task.kind!=='DIAGNOSTICS'||!taskActive(task))return;
+    task.diagnosticDevices=[...new Set(deviceIds)].map(deviceId=>({deviceId,state:'RUNNING'}));
+  }
+  diagnosticResult(id:string,deviceId:string,state:'COMPLETED'|'FAILED'|'CANCELLED') {
+    const task=this.entries.get(id);if(!task||!taskActive(task))return;
+    const item=task.diagnosticDevices?.find(d=>d.deviceId===deviceId);if(item?.state==='RUNNING')item.state=state;
+  }
   snapshot():TaskSnapshot {
     const tasks=[...this.entries.values()].reverse().map(t=>structuredClone(t));
     return {tasks,active:tasks.filter(taskActive).length,attention:tasks.filter(t=>t.state==='FAILED'||t.state==='NEEDS_ATTENTION').length};

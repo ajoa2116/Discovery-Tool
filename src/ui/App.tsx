@@ -1,6 +1,9 @@
 import { isActiveCollision } from '../shared/collision_state.ts';
 import { isAdapterCollection } from '../shared/advanced_scan_contract.ts';
 import { prefixMask } from '../shared/address_validation.ts';
+import { AttentionActions } from './components/AttentionActions.tsx';
+import { activeCollisionChoices, diagnosticPresentation, DiagnosticRequest, hasUnsavedAttention } from '../shared/technician_attention.ts';
+import { TaskSnapshot } from '../shared/tasks.ts';
 import { Tasks } from './components/Tasks.tsx';
 import { NetworkAdapterModal } from './components/NetworkAdapterModal.tsx';
 import { pairAdapterInterfaces } from '../shared/pair_adapter.ts';
@@ -115,6 +118,13 @@ export default function App() {
   const [selectedDeviceForConfig, setSelectedDeviceForConfig] = useState<Device | null>(null);
   const [selectedDeviceForBrowser, setSelectedDeviceForBrowser] = useState<Device | null>(null);
   const [selectedDeviceForInspector, setSelectedDeviceForInspector] = useState<Device | null>(null);
+  const [diagnosticsFocus,setDiagnosticsFocus]=useState(0);
+  const [diagnosticRequests,setDiagnosticRequests]=useState<Record<string,DiagnosticRequest>>({});
+  const [taskSnapshot,setTaskSnapshot]=useState<TaskSnapshot&{unavailable?:boolean}>({tasks:[],active:0,attention:0});
+  const [taskNavigation,setTaskNavigation]=useState({open:false,revision:0,taskId:undefined as string|undefined});
+  const [attentionAction,setAttentionAction]=useState<'COLLISIONS'|'SAVE'|null>(null);
+  const diagnosePending=useRef(new Set<string>());
+
   const [preferences, setPreferences] = useState<ApplicationPreferences>(() => readApplicationPreferences());
   const preferencesRef = useRef(preferences);
   const [openMenu, setOpenMenu] = useState<'PROJECT' | 'TOOLS' | 'SETTINGS' | 'SCAN' | null>(null);
@@ -188,6 +198,9 @@ export default function App() {
         if (data.type === 'DEVICE_DISCOVERED' && data.data?.isNew === true && shouldNotifyForDiscovery(preferencesRef.current,true) && data.data?.device) {
           const notification = discoveryNotification(data.data.device);
           if (notification) setNewDeviceDetected(notification);
+        }
+        if(data.type==='DIAGNOSTIC_EVIDENCE'&&data.data?.device){
+          setProject(current=>current?{...current,devices:current.devices.map(d=>d.id===data.data.device.id&&d.network.ipAddress===data.data.device.network.ipAddress?{...d,diagnostics:data.data.device.diagnostics}:d)}:current);
         }
         if (data.type === 'DEVICE_DIAGNOSTICS_UPDATED' && data.data?.project) {
           setProject(data.data.project);
@@ -425,11 +438,35 @@ export default function App() {
     }
   };
 
+  const closeAttentionPanels=()=>{setIsDuplicateDrawerOpen(false);setSelectedDeviceForBrowser(null);setAttentionAction(null);setOpenMenu(null);};
+  const foregroundDiagnostics=(device:Device,taskId?:string)=>{
+    if(taskId)setDiagnosticRequests(current=>({...current,[device.id]:{taskId}}));
+    closeAttentionPanels();setTaskNavigation(current=>({open:false,revision:current.revision+1,taskId:undefined}));
+    setSelectedDeviceForInspector(device);setDiagnosticsFocus(value=>value+1);
+  };
+  const openTasks=(taskId?:string)=>{closeAttentionPanels();setSelectedDeviceForInspector(null);setTaskNavigation(current=>({open:true,revision:current.revision+1,taskId}));};
+  const openCollision=(id:string)=>{
+    if(!project?.collisions.some(c=>(c.id||c.ipAddress)===id&&isActiveCollision(c))){setAttentionAction(null);return;}
+    setAttentionAction(null);setSelectedDeviceForInspector(null);setSelectedDeviceForBrowser(null);
+    setSelectedCollisionId(id);setIsDuplicateDrawerOpen(true);
+  };
   const handleDiagnose = async (devices: Device[]) => {
-    const response = await fetch('http://localhost:3001/api/diagnostics/run', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ deviceIds: devices.map(device => device.id) }),
-    });
-    if (!response.ok) throw new Error((await response.json()).error || 'Unable to start diagnostics.');
+    const ids=[...new Set(devices.map(device=>device.id))];if(!ids.length)return;
+    const requestKey=ids.slice().sort().join('|');if(diagnosePending.current.has(requestKey))return;
+    diagnosePending.current.add(requestKey);
+    if(ids.length===1)foregroundDiagnostics(devices[0]);else openTasks();
+    setDiagnosticRequests(current=>({...current,...Object.fromEntries(ids.map(id=>[id,{pending:true}]))}));
+    try{
+      const {response,body}=await requestJson('http://localhost:3001/api/diagnostics/run',{
+        method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({deviceIds:ids}),
+      },fetch,15000);
+      const result=body as {taskId?:string};if(!response.ok||!result.taskId)throw Error('Unable to start diagnostics.');
+      setDiagnosticRequests(current=>({...current,...Object.fromEntries(ids.map(id=>[id,{taskId:result.taskId}]))}));
+      if(ids.length>1)setTaskNavigation(current=>current.open?{...current,revision:current.revision+1,taskId:result.taskId}:current);
+    }catch{
+      setDiagnosticRequests(current=>({...current,...Object.fromEntries(ids.map(id=>[id,{failed:true}]))}));
+      if(ids.length>1)window.alert('Diagnostics could not be started or acknowledged. Check Tasks for any accepted operation before retrying.');
+    }finally{diagnosePending.current.delete(requestKey);}
   };
 
   const handleLegacyOnboard = async (payload: any) => {
@@ -494,7 +531,7 @@ export default function App() {
           <div className="relative"><button aria-haspopup="menu" aria-expanded={openMenu==='PROJECT'} onClick={()=>setOpenMenu(openMenu==='PROJECT'?null:'PROJECT')} className="ui-header-button">Project <ChevronDown className="w-3.5 h-3.5"/></button>{openMenu==='PROJECT'&&<div role="menu" className="ui-menu"><button onClick={()=>{void handleNewProject();setOpenMenu(null)}}>New Project</button>{projectSession?.mode==='QUICK_WORK'&&(project?.devices.length||0)>0&&<button onClick={()=>{void handleCreateFromCurrent();setOpenMenu(null)}}>Create Project from Results</button>}{projectSession?.mode==='QUICK_WORK'&&<button disabled={selectedDeviceIds.size===0} onClick={()=>{addExistingProjectInput.current?.click();setOpenMenu(null)}}>Add Selected to Existing Project</button>}<button onClick={()=>{openProjectInput.current?.click();setOpenMenu(null)}}>Open Project</button><button onClick={()=>{void handleSaveProject(false);setOpenMenu(null)}}>Save Project</button>{projectSession?.mode==='PROJECT'&&<><button onClick={()=>{void handleSaveProject(true);setOpenMenu(null)}}>Save As</button><button onClick={()=>{setProjectHistoryOpen(true);setOpenMenu(null)}}>History</button><button disabled={projectReverifyOpen} onClick={()=>{setProjectReverifyOpen(true);setOpenMenu(null)}}>Reverify</button></>}</div>}</div>
           <div className="relative"><button aria-haspopup="menu" aria-expanded={openMenu==='TOOLS'} onClick={()=>setOpenMenu(openMenu==='TOOLS'?null:'TOOLS')} className="ui-header-button">Tools <ChevronDown className="w-3.5 h-3.5"/></button>{openMenu==='TOOLS'&&<div role="menu" className="ui-menu"><button onClick={()=>{setNetworkAdapterOpen(true);setOpenMenu(null)}}>Network Adapter</button><button onClick={()=>{setIsLegacyModalOpen(true);setOpenMenu(null)}}>Add Device Manually</button><button onClick={()=>{setIsSiteSurveyModalOpen(true);setOpenMenu(null)}}>Reports</button></div>}</div>
           <div className="relative"><button aria-haspopup="menu" aria-expanded={openMenu==='SETTINGS'} onClick={()=>setOpenMenu(openMenu==='SETTINGS'?null:'SETTINGS')} className="ui-header-button"><Settings className="w-4 h-4"/>Settings <ChevronDown className="w-3.5 h-3.5"/></button>{openMenu==='SETTINGS'&&<SettingsMenu preferences={preferences} onPreferences={changePreferences} monitoring={diagnosticRefresh} preflight={preflight} onClose={()=>setOpenMenu(null)}/>}</div>
-          <Tasks onResult={(result,correlationId)=>{
+          <Tasks navigation={taskNavigation} onSnapshot={setTaskSnapshot} onOpen={()=>{closeAttentionPanels();setSelectedDeviceForInspector(null);}} onDiagnostic={(id,taskId)=>{const device=project?.devices.find(d=>d.id===id);if(device)foregroundDiagnostics(device,taskId);else window.alert('This device is no longer in the current inventory.');}} onResult={(result,correlationId)=>{
             if(result==='REPORTS')setIsSiteSurveyModalOpen(true);
             else if(result==='PROJECT_HISTORY')setProjectHistoryOpen(true);
             else void requestJson('http://localhost:3001/api/pair/status',{},fetch,5000).then(({response,body})=>{
@@ -663,8 +700,9 @@ export default function App() {
         <div className="flex items-center gap-4 font-mono text-[11px]">
           <span>Devices: <strong className="text-slate-800 dark:text-white">{project?.devices.length || 0}</strong></span>
           <span>•</span>
-          <span>Collisions: <strong className={activeCollisionsCount > 0 ? 'text-amber-400' : 'text-slate-400'}>{activeCollisionsCount}</strong></span>
-          <span>•</span><span>{isScanning?'Scanning…':'Ready'}</span>{projectSession?.dirty&&<><span>•</span><span className="text-amber-600">Unsaved changes</span></>}
+          {activeCollisionsCount>0?<button className="rounded px-1 text-amber-800 underline decoration-dotted underline-offset-4 hover:bg-amber-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-600" aria-haspopup="dialog" onClick={()=>{const choices=activeCollisionChoices(project?.collisions||[]);if(choices.length===1)openCollision(choices[0].id);else if(choices.length>1){closeAttentionPanels();setSelectedDeviceForInspector(null);setAttentionAction('COLLISIONS');}}}>Collisions: {activeCollisionsCount}</button>:<span>Collisions: 0</span>}
+          {taskSnapshot.tasks.length>0&&<><span>•</span><button className="rounded px-1 text-blue-800 underline decoration-dotted underline-offset-4 hover:bg-blue-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-600" aria-haspopup="dialog" onClick={()=>openTasks()}>Tasks: {taskSnapshot.unavailable?'status unavailable':`${taskSnapshot.active} active${taskSnapshot.attention?` • ${taskSnapshot.attention} need attention`:''}`}</button></>}
+          <span>•</span><span>{isScanning?'Scanning…':'Ready'}</span>{hasUnsavedAttention(projectSession)&&<><span>•</span><button className="rounded px-1 text-amber-800 underline decoration-dotted underline-offset-4 hover:bg-amber-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-600" aria-haspopup="dialog" onClick={()=>{closeAttentionPanels();setSelectedDeviceForInspector(null);setAttentionAction('SAVE');}}>Unsaved changes</button></>}
         </div>
 
         <span className="text-[11px]">Monitor: {diagnosticRefresh.enabled ? `${Math.round(diagnosticRefresh.intervalMs / 1000)}s${(diagnosticRefresh.incrementalDiscovery?.pausedForForeground || diagnosticRefresh.incrementalDiscovery?.pausedForSupport) ? ' - discovery deferred' : ''}` : 'Paused'}</span>
@@ -673,11 +711,14 @@ export default function App() {
       {/* ─────────────────────────────────────────────────────────────
           MODALS, DRAWERS & ZONE 4 INSPECTOR
       ───────────────────────────────────────────────────────────── */}
+      <AttentionActions kind={attentionAction==='SAVE'&&!hasUnsavedAttention(projectSession)?null:attentionAction} collisions={project?.collisions||[]} onCollision={openCollision} onSave={handleSaveProject} onClose={()=>setAttentionAction(null)}/>
       {/* Zone 4: Device Inspector Drawer (v1.5 Section 8) */}
       <DeviceInspectorDrawer
         isOpen={selectedDeviceForInspector !== null}
         onClose={() => setSelectedDeviceForInspector(null)}
-        device={selectedDeviceForInspector}
+        device={project?.devices.find(d=>d.id===selectedDeviceForInspector?.id)||selectedDeviceForInspector}
+        diagnosticsFocus={diagnosticsFocus}
+        diagnostic={selectedDeviceForInspector?diagnosticPresentation(project?.devices.find(d=>d.id===selectedDeviceForInspector.id)||selectedDeviceForInspector,taskSnapshot,diagnosticRequests[selectedDeviceForInspector.id]):undefined}
         onOpenConfigureModal={(dev) => {
           setSelectedDeviceForInspector(null);
           setSelectedDeviceForConfig(dev);
