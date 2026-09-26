@@ -33,8 +33,8 @@ assert(table.includes('Config ')&&table.indexOf('getStatusBadge(dev.status)')!==
 assert(table.includes('Actions</th>')&&table.includes('<MoreVertical'),'Actions overflow remains');
 assert(table.includes('key={dev.id}')&&table.includes('{ device: dev, anchor: event.currentTarget.getBoundingClientRect() }'),'stable device action targeting unchanged');
 assert(table.includes("onOpenBrowser(dev, 'SYSTEM')"),'IP remains clickable through Connect');
-assert(table.includes('startEditName(dev, e)')&&table.includes('saveEditName'),'inline Name editing preserved');
-assert(table.includes('startEditNotes(dev, e)')&&table.includes('saveEditNotes'),'inline Notes editing preserved');
+assert(table.includes('startEditName(dev, e)')&&table.includes("startEdit(dev,'name',e)")&&table.includes("if(e.key==='Enter'){e.preventDefault();saveEdit();}")&&table.includes('maxLength={100}'),'inline Name uses shared editor with Enter save and 100-character limit');
+assert(table.includes('startEditNotes(dev, e)')&&table.includes("startEdit(dev,'notes',e)")&&table.includes('<textarea')&&table.includes('maxLength={1000}')&&table.includes('onBlur={saveEdit}')&&table.includes("if(e.key==='Escape'){e.preventDefault();cancelEdit();}"),'inline Notes uses shared multiline editor with blur save, Escape cancel and 1000-character limit');
 assert(actions.includes('canOfferPair(pairTarget)')&&actions.includes('onPair'),'Pair remains conditional on topology and safe targeting');
 assert(actions.includes('Device Configuration')&&!actions.includes('Credentials & Parameters'),'contextual Device Configuration label is accurate');
 assert(!app.includes('Task Center\n')&&app.includes('useState<TaskItem[]>([])'),'seeded fake activity removed from primary UI');
