@@ -169,6 +169,9 @@ export class SiteProjectDatabase {
       devices.splice(i, 1);
     }
     this.session.project.totalDevices=devices.length;
+    // Read-only discovery can surface a new row without adding it to saved membership.
+    if(runtime&&existingIndex<0&&this.session.mode==='PROJECT')this.currentOnlyDeviceIds.add(storedDevice.id);
+    if(!runtime)this.currentOnlyDeviceIds.delete(storedDevice.id);
     if(!runtime)this.markDirty();
     if (!runtime && this.session.mode === 'PROJECT') {
       if (existingIndex < 0) this.appendHistory({ type:membershipHistory, title:membershipHistory==='DEVICE_RE_ADDED'?'Re-added to Project':'Added to Project', summary:membershipHistory==='DEVICE_RE_ADDED'?'A previously removed stable identity was explicitly re-added to the Project.':'A stable device identity was added to the Project.', deviceId:storedDevice.id, details:{operation:'ADD_TO_EXISTING_PROJECT',result:membershipHistory==='DEVICE_RE_ADDED'?'RE_ADDED':'ADDED'} });

@@ -337,7 +337,7 @@ export const MasterDeviceTable: React.FC<MasterDeviceTableProps> = ({
           </tbody>
         </table>
       </div>
-      {openActionMenu && actionDevice && <FloatingDeviceActionsMenu device={actionDevice} anchor={openActionMenu.anchor} onClose={() => setOpenActionMenu(null)} onOpen={device => onOpenBrowser(device, 'SYSTEM')} onDetails={onInspectDevice} onDiagnose={onDiagnose} onPair={onPair} onRename={device => startEditName(device)} onNotes={device => startEditNotes(device)} onConfigure={onConfigureDevice} projectMode={projectMode} onRemoveCurrent={device => setRemoval({ device, scope: 'CURRENT' })} onRemoveProject={device => setRemoval({ device, scope: 'PROJECT' })}/>}
+      {openActionMenu && actionDevice && <FloatingDeviceActionsMenu device={actionDevice} anchor={openActionMenu.anchor} onClose={() => setOpenActionMenu(null)} onOpen={device => onOpenBrowser(device, 'SYSTEM')} onDetails={onInspectDevice} onDuplicateAssistant={onOpenDuplicateAssistant} onDiagnose={onDiagnose} onPair={onPair} onRename={device => startEditName(device)} onNotes={device => startEditNotes(device)} onConfigure={onConfigureDevice} projectMode={projectMode} onRemoveCurrent={device => setRemoval({ device, scope: 'CURRENT' })} onRemoveProject={device => setRemoval({ device, scope: 'PROJECT' })}/>}
       {removal && <DeviceRemovalDialog
         device={removal.device}
         scope={removal.scope}

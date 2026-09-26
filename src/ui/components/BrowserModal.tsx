@@ -6,10 +6,10 @@ import { BrowserPreference, CameraAccessEndpoint, ConnectReadiness, Device, IPCo
 import { CameraAccessDecision, decideCameraAccess } from '../../shared/camera_access.ts';
 import { AlertTriangle, ExternalLink, RefreshCw, X } from 'lucide-react';
 
-interface Props { isOpen: boolean; onClose: () => void; device: Device | null; devices?:Device[]; collisions?:IPCollisionRecord[]; }
+interface Props { isOpen: boolean; onClose: () => void; device: Device | null; devices?:Device[]; collisions?:IPCollisionRecord[]; onOpenDuplicateAssistant?:(device:Device,blockedIp?:string)=>void; }
 interface SafeCredential { id: string; label: string; usernameHint: string; }
 
-export const BrowserModal: React.FC<Props> = ({ isOpen, onClose, device, devices, collisions=[] }) => {
+export const BrowserModal: React.FC<Props> = ({ isOpen, onClose, device, devices, collisions=[], onOpenDuplicateAssistant }) => {
   const [endpoint, setEndpoint] = useState<CameraAccessEndpoint | null>(null);
   const [readiness, setReadiness] = useState<ConnectReadiness | null>(null);
   const [approval,setApproval]=useState<{key:string;decision:CameraAccessDecision}|null>(null);
@@ -41,6 +41,7 @@ export const BrowserModal: React.FC<Props> = ({ isOpen, onClose, device, devices
     <div className="p-3 bg-slate-950 border-b border-slate-800 flex items-center justify-between"><div><strong>{device.technician?.name || device.anchor.vendor}</strong><span className="text-xs text-slate-400 ml-2">{device.technician?.location} • {device.anchor.vendor} {device.anchor.model} • {device.network.ipAddress}</span></div><button aria-label="Close Camera Access" onClick={onClose}><X className="w-5 h-5" /></button></div>
     <div className="p-3 border-b border-slate-800 space-y-2 text-xs">
       {(!localDecision.allowed||readiness?.warning) && <div role="alert" className="text-amber-300 flex gap-2"><AlertTriangle className="w-4 h-4" />{!localDecision.allowed?localDecision.message:readiness?.warning}</div>}
+      {(localDecision.code==='AMBIGUOUS_COLLISION'||approval?.decision.code==='AMBIGUOUS_COLLISION')&&onOpenDuplicateAssistant&&<button className="rounded bg-amber-100 px-3 py-2 text-amber-950" onClick={()=>onOpenDuplicateAssistant(device,approval?.decision.code==='AMBIGUOUS_COLLISION'?approval.decision.ipAddress:undefined)}>Open Duplicate Assistant</button>}
       {endpoint?.certificateWarning && <div className="text-amber-300">HTTPS responded, but certificate trust warning: {endpoint.certificateWarning}</div>}
       <div className="flex gap-2 items-center"><code className="flex-1 p-2 bg-slate-950 rounded">{endpoint?.url || 'Resolving…'} {endpoint && `— ${endpoint.verified ? 'Web response observed' : 'Endpoint unverified'} ${endpoint.source}`}</code><button disabled={!canOpen} onClick={() => openExternal().catch(e => setMessage(e.message))} className="px-3 py-2 bg-sky-600 rounded flex gap-1"><ExternalLink className="w-4 h-4" />Open External</button><button onClick={() => recheck().catch(e => setMessage(e.message))} className="px-3 py-2 bg-slate-700 rounded flex gap-1"><RefreshCw className="w-4 h-4" />Recheck</button></div>
       <FactoryCredentialSuggestions manufacturer={device.anchor.vendor} model={device.anchor.model} onUse={(hint,includePassword)=>{setUsername(hint.username||'');if(includePassword)setPassword(hint.passwordValue||'');setRemember(false);setSelectedCredentialId('');setMessage('Suggestion selected locally. No login or save was performed.');}}/>

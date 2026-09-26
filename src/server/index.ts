@@ -25,6 +25,7 @@ import { projectDb } from '../core/storage/project_db.ts';
 import { appStateDb } from '../core/storage/app_db.ts';
 import { osVault } from '../core/storage/vault.ts';
 import { DuplicateRemediationService } from '../core/edge_cases/duplicate_remediation_service.ts';
+import { DuplicateAssistantService } from '../core/edge_cases/duplicate_assistant_service.ts';
 import { LegacyHardwareOnboarding } from '../core/edge_cases/legacy_hardware.ts';
 import { applyNetworkRelationship } from '../shared/network_relationship.ts';
 import { createAdvancedScanRouter } from './advanced_scan_routes.ts';
@@ -144,6 +145,7 @@ const incrementalMonitor = new IncrementalDiscoveryMonitor({
   },
   log: (event, message) => { if (event !== 'CYCLE_STARTED' && event !== 'CYCLE_COMPLETED') monitoringAudit(event, message); },
 }, DEFAULT_MONITORING_INTERVAL_MS);
+const duplicateAssistantService=new DuplicateAssistantService(projectDb,incrementalMonitor);
 pairService.initializeRecovery().then(state => {
   recoveryInspected=true;
   if (state) broadcast({ type: 'PAIR_STATE_CHANGED', data: { pair: state } });
@@ -527,6 +529,8 @@ app.get('/api/edge/collisions', (req, res) => {
   res.json(projectDb.getCollisions());
 });
 
+app.get('/api/edge/collisions/:collisionId/assistant',(req,res)=>{try{res.json(duplicateAssistantService.get(req.params.collisionId))}catch(error:any){res.status(404).json({error:error.message})}});
+app.post('/api/edge/collisions/:collisionId/recheck',async(req,res)=>{try{const result=await duplicateAssistantService.recheck(req.params.collisionId);broadcast({type:'COLLISION_RECHECKED',context:{origin:'MONITORING'},data:{project:projectDb.getProject()}});res.json(result)}catch{res.status(409).json({error:'Collision recheck could not complete. Refresh the current project and retry.'})}});
 app.get('/api/edge/collisions/:collisionId',async(req,res)=>{try{res.json(await duplicateRemediationService.get(req.params.collisionId))}catch(error:any){res.status(404).json({error:error.message,code:error.code})}});
 app.post('/api/edge/collisions/:collisionId/candidates',async(req,res)=>{try{res.json({candidates:await duplicateRemediationService.candidates(req.params.collisionId,String(req.body.deviceId||''),Number(req.body.prefixLength),req.body.gateway)})}catch(error:any){res.status(400).json({error:error.message,code:error.code})}});
 app.post('/api/edge/collisions/:collisionId/preview',async(req,res)=>{try{res.json(await duplicateRemediationService.preview(req.params.collisionId,String(req.body.deviceId||''),String(req.body.credentialId||''),req.body.target))}catch(error:any){safeError(res,error,400,'DUPLICATE_REMEDIATION_PREVIEW',String(req.body.deviceId||''))}});

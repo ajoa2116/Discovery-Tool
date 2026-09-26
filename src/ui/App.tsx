@@ -19,6 +19,7 @@ import {
   PairSessionState,
 } from '../types/index.ts';
 import { MasterDeviceTable } from './components/MasterDeviceTable.tsx';
+import { collisionKeyForDevice } from '../shared/duplicate_assistant.ts';
 import { DuplicateDrawer } from './components/DuplicateDrawer.tsx';
 import { RogueDhcpBanner } from './components/RogueDhcpBanner.tsx';
 import { LegacyOnboardModal } from './components/LegacyOnboardModal.tsx';
@@ -209,6 +210,7 @@ export default function App() {
           data.type === 'PHASE_COMPLETE' ||
           data.type === 'PIPELINE_COMPLETE' ||
           data.type === 'COLLISION_RESOLVED' ||
+          data.type === 'COLLISION_RECHECKED' ||
           data.type === 'DEVICE_ONBOARDED' ||
           data.type === 'DEVICE_CONFIG_UPDATED'
         ) {
@@ -402,13 +404,23 @@ export default function App() {
     }
   };
 
+  const handleOpenDuplicateAssistant = (device: Device, blockedIp?: string) => {
+    const current=project?.devices.find(d=>d.id===device.id)||device;
+    // A backend block can arrive before the corresponding collision broadcast.
+    setSelectedCollisionId(blockedIp||collisionKeyForDevice(current,project?.collisions||[])||current.network.ipAddress);
+    setSelectedDeviceForBrowser(null);
+    setSelectedDeviceForInspector(null);
+    setIsDuplicateDrawerOpen(true);
+    void fetchData();
+  };
+
   const handleOpenBrowser = (dev: Device, mode: 'EMBEDDED' | 'EDGE' | 'CHROME' | 'SYSTEM') => {
     const requested=resolveOpenPreference(mode,preferences.browserPreference);
     if (requested === 'EMBEDDED') {
       setSelectedDeviceForBrowser(dev);
     } else {
       fetch(`http://localhost:3001/api/connect/${encodeURIComponent(dev.id)}/open`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ preference: requested }) })
-        .then(async response => { const data = await response.json(); if (!response.ok) throw new Error(data.error); if (data.browser?.fallback) window.alert('Preferred browser was unavailable; launch requested using the Windows default browser. Page and device response are not verified.'); })
+        .then(async response => { const data = await response.json(); if (!response.ok) { if(data.accessDecision?.code==='AMBIGUOUS_COLLISION'){handleOpenDuplicateAssistant(dev,data.accessDecision.ipAddress);return;} throw new Error(data.error); } if (data.browser?.fallback) window.alert('Preferred browser was unavailable; launch requested using the Windows default browser. Page and device response are not verified.'); })
         .catch(error => window.alert(error.message));
     }
   };
@@ -631,7 +643,7 @@ export default function App() {
           onToggleSelectAll={handleToggleSelectAll}
           onUpdateDeviceName={handleUpdateDeviceName}
           onUpdateDeviceNotes={handleUpdateDeviceNotes}
-          onOpenDuplicateAssistant={(device) => { const collision=project?.collisions.find(c=>!c.resolved&&c.ipAddress===device.network.ipAddress);setSelectedCollisionId(collision?.id||collision?.ipAddress||null);setIsDuplicateDrawerOpen(true); }}
+          onOpenDuplicateAssistant={handleOpenDuplicateAssistant}
           onConfigureDevice={(dev) => setSelectedDeviceForConfig(dev)}
           onInspectDevice={(dev) => setSelectedDeviceForInspector(dev)}
           onOpenBrowser={handleOpenBrowser}
@@ -717,6 +729,10 @@ export default function App() {
           isOpen={isDuplicateDrawerOpen}
           onClose={() => setIsDuplicateDrawerOpen(false)}
           collisions={project.collisions}
+          devices={project.devices}
+          onDetails={device=>{setIsDuplicateDrawerOpen(false);setSelectedDeviceForInspector(device);}}
+          onDiagnose={device=>handleDiagnose([device])}
+          onOpen={device=>{setIsDuplicateDrawerOpen(false);handleOpenBrowser(device,'SYSTEM');}}
           selectedCollisionId={selectedCollisionId}
           onChanged={fetchData}
         />
@@ -729,6 +745,7 @@ export default function App() {
         device={project?.devices.find(device=>device.id===selectedDeviceForBrowser?.id)||selectedDeviceForBrowser}
         devices={project?.devices||[]}
         collisions={project?.collisions||[]}
+        onOpenDuplicateAssistant={handleOpenDuplicateAssistant}
       />
 
       {/* Section 13.1: Legacy Hardware Manual Onboarding */}
