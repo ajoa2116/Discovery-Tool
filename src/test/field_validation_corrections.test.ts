@@ -34,10 +34,10 @@ async function run() {
 
   const service = new ReportService(), make = (count: number) => service.build({ mode: 'QUICK_WORK', project: project(Array.from({ length: count }, (_, i) => device(i + 1))), dirty: false }, [], { type: 'DEVICE_INVENTORY', scope: 'ALL', columns: ['NAME','IP','STATUS'], title: 'Device Inventory Report', generatedAt: '2026-09-02T00:21:15.508Z' });
   const zero = service.pdf(make(0)).toString('ascii'), ten = service.pdf(make(10)).toString('ascii'), fifty = service.pdf(make(50)).toString('ascii');
-  assert(zero.includes('Devices detected: 0') && zero.includes('No devices were detected in the selected report scope.'), 'zero-device PDF contains explicit count and field message');
+  assert(zero.includes('Devices: 0') && zero.includes('No devices are included in the selected report scope.'), 'zero-device PDF contains explicit count and field message');
   assert(/September|August|October/.test(formatReportTimestamp('2026-09-02T00:21:15.508Z')) && !formatReportTimestamp('2026-09-02T00:21:15.508Z').includes('T00:21'), 'report timestamp is local and human readable');
-  assert(ten.includes('Technician Name') && ten.includes('IP') && ten.includes('Status') && ten.includes(' re ') && !ten.includes('Technician Name | Status'), '10-device PDF uses selected columns and drawing-based table layout');
-  assert((fifty.match(/\/Type \/Page\b/g) || []).length === 3 && (fifty.match(/Technician Name/g) || []).length === 3, '50-device PDF paginates with repeated headers');
+  assert(ten.includes('Camera Name') && ten.includes('IP') && ten.includes('Status') && ten.includes(' re ') && !ten.includes('Camera Name | Status'), '10-device PDF uses selected columns and drawing-based table layout');
+  assert((fifty.match(/\/Type \/Page\b/g) || []).length === 3 && (fifty.match(/Camera Name/g) || []).length === 3, '50-device PDF paginates with repeated headers');
   assert(fifty.includes('Page 2 of 3') && fifty.includes('CCTV Network Assistant - Field Test'), 'multi-page PDF includes technician footer and page numbering');
   assert(!/(password|authorization|credential|token|cookie|secret)/i.test(zero + ten + fifty), 'generated PDFs contain no secret-like material');
 

@@ -1,3 +1,4 @@
+import {reportGeneration} from '../../shared/report_configuration.ts';
 import { TASK_TITLES, TaskKind, TaskSnapshot, TaskState, TechnicianTask, taskActive } from '../../shared/tasks.ts';
 
 // Only controlled phrases cross this boundary. Raw operation errors, request bodies,
@@ -63,6 +64,7 @@ export class TaskManager {
     const valid=ip&&/^\d{1,3}(\.\d{1,3}){3}$/.test(ip)&&ip.split('.').every(p=>Number(p)<=255);
     task.target=`Adapter ${index}${valid?` • ${ip}`:''}`;
   }
+  reportGenerated(id:string,instant:string,timeZone:string){const task=this.entries.get(id);if(task?.kind==='REPORT'&&taskActive(task))task.reportGeneration=reportGeneration(instant,timeZone);}
   diagnosticTargets(id:string,deviceIds:string[]) {
     const task=this.entries.get(id);if(!task||task.kind!=='DIAGNOSTICS'||!taskActive(task))return;
     task.diagnosticDevices=[...new Set(deviceIds)].map(deviceId=>({deviceId,state:'RUNNING'}));

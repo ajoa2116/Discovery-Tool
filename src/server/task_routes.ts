@@ -49,6 +49,7 @@ export function taskHttpIntegration(tasks:TaskManager,d:Dependencies){
       if(res.statusCode>=400){tasks.update(id,{state:body?.code==='CANCELLED'?'CANCELLED':'FAILED',phase:body?.code==='CANCELLED'?'CANCELLED':'FAILED',reference:body?.presentation?.reference});return;}
       if(planning&&body?.batchId){tasks.correlate(id,body.batchId);tasks.update(id,{state:'NEEDS_ATTENTION',phase:body.state==='READY'?'CONFIRM':'ATTENTION'});return;}
       if(bulk&&body?.items){observeBatch(tasks,id,body);return;}
+      if(kind==='REPORT'&&res.locals.reportGeneration)tasks.reportGenerated(id,res.locals.reportGeneration.instant,res.locals.reportGeneration.timeZone);
       const attention=Boolean(body?.result?.possibleReplacements?.length)||(kind==='CAMERA'&&body?.verified!==true);
       tasks.update(id,{state:attention?'NEEDS_ATTENTION':'COMPLETED',phase:attention?'ATTENTION':'DONE',result:kind==='REPORT'?'REPORTS':kind==='REVERIFY'||kind==='PROJECT'?'PROJECT_HISTORY':undefined});
     };

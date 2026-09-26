@@ -1,3 +1,4 @@
+import type {ReportGeneration} from './report_configuration.ts';
 export type TaskState = 'QUEUED' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'CANCELLED' | 'NEEDS_ATTENTION';
 export const TASK_TITLES = {
   SCAN: 'Quick Scan', ADVANCED: 'Advanced Scan', REVERIFY: 'Project Reverify',
@@ -11,6 +12,7 @@ export interface TechnicianTask {
   startedAt: string; updatedAt: string; endedAt?: string;
   phase: string; progress?: { completed: number; total: number }; reference?: string;
   target?: string;
+  reportGeneration?:ReportGeneration;
   diagnosticDevices?: Array<{deviceId:string;state:'RUNNING'|'COMPLETED'|'FAILED'|'CANCELLED'}>;
   cancellable: boolean; cancellationRequested?: boolean;
   result?: 'PROJECT_HISTORY' | 'REPORTS' | 'NETWORK_RECOVERY';

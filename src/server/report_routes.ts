@@ -31,6 +31,7 @@ export function createReportRouter(dependencies: ReportRouteDependencies) {
   router.post('/export/:format', (req, res) => {
     try {
       const model = build(req.body as ReportRequest), format = String(req.params.format).toLowerCase();
+      res.locals.reportGeneration=model.generation;
       if (format === 'pdf') {
         const data = reportService.pdf(model);
         res.setHeader('Content-Type', 'application/pdf');
