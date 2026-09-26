@@ -1,3 +1,4 @@
+import {ModalViewport} from './ModalViewport.tsx';
 import React, { useEffect, useState } from 'react';
 import { Device, PairSessionState, WindowsAdapterSnapshot } from '../../types/index.ts';
 import { AlertTriangle, CheckCircle, Info, Network, RefreshCw, RotateCcw, X } from 'lucide-react';
@@ -31,13 +32,13 @@ export const PairNetworkModal: React.FC<Props> = ({ isOpen, device, pair, onClos
   const ready = currentPair?.state === 'READY_FOR_CONFIRMATION';
   const selected = currentPair?.selectedCandidate;
 
-  return <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-5">
+  return <ModalViewport className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-5">
     <div className="w-full max-w-2xl bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl overflow-hidden">
       <div className="p-4 bg-slate-950 border-b border-slate-800 flex justify-between">
         <div><h2 className="font-bold flex items-center gap-2"><Network className="w-5 h-5 text-sky-400" />Pair PC to Camera Network</h2><p className="text-xs text-slate-400 mt-1">Temporarily changes only the adapter you select. The camera IP is never changed.</p></div>
         <button onClick={onClose}><X className="w-5 h-5 text-slate-400" /></button>
       </div>
-      <div className="p-5 space-y-4 text-xs max-h-[75vh] overflow-y-auto">
+      <div className="modal-body p-5 space-y-4 text-xs">
         <div className="p-3 rounded-lg bg-sky-950/30 border border-sky-700/40 text-sky-200 flex gap-2"><Info className="w-4 h-4 shrink-0" />Pair temporarily assigns a compatible IPv4 address to the selected PC adapter. Your original DHCP/static, gateway, and DNS state is captured for explicit restoration.</div>
         {error && <div className="p-3 rounded-lg bg-rose-950/40 border border-rose-700 text-rose-300 flex gap-2"><AlertTriangle className="w-4 h-4" />{error}</div>}
 
@@ -74,5 +75,5 @@ export const PairNetworkModal: React.FC<Props> = ({ isOpen, device, pair, onClos
         </>}
       </div>
     </div>
-  </div>;
+  </ModalViewport>;
 };

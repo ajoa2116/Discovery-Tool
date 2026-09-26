@@ -1,3 +1,4 @@
+import {ModalViewport} from './ModalViewport.tsx';
 import React, { useEffect, useRef, useState } from 'react';
 import { Device, IPCollisionRecord } from '../../types/index.ts';
 import { duplicateAssistantView } from '../../shared/duplicate_assistant.ts';
@@ -37,13 +38,13 @@ export const DuplicateDrawer:React.FC<Props>=({isOpen,onClose,collisions,devices
     return result.outcome==='COMPLETED'?'Discovery check completed. The state below reflects current identity evidence.':result.outcome==='SKIPPED'?`Check deferred: ${result.reason||'another operation is active'}. Retry when it finishes.`:'Discovery check failed. Existing collision evidence is retained; retry when discovery is available.';
   });
   const copy=(value:string,label:string)=>run(async()=>{await navigator.clipboard.writeText(value);return `${label} copied.`;});
-  return <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/30 p-3 sm:p-6">
+  return <ModalViewport className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/30 p-3 sm:p-6">
     <section role="dialog" aria-modal="true" aria-label="Duplicate IP Assistant" className="flex max-h-[90vh] w-full max-w-3xl flex-col overflow-hidden rounded-xl border border-slate-300 bg-white text-sm text-slate-800 shadow-xl">
       <header className="flex shrink-0 items-start justify-between gap-3 border-b border-slate-200 p-4">
         <div><h2 className="text-lg font-bold">Duplicate IP Assistant</h2>{view&&<p><span className="font-mono">{view.ip}</span> · {view.active?`${view.currentAtSharedIp} devices currently share this address`:'Collision resolved'}</p>}</div>
         <button className={button} aria-label="Close Duplicate Assistant" onClick={onClose}><X className="h-4 w-4"/></button>
       </header>
-      <div className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4">
+      <div className="modal-body min-h-0 flex-1 space-y-4 overflow-y-auto p-4">
         {!view?<p>This collision is no longer available in the current project. Close this window and select a current device.</p>:<>
           <div role="status" className={`rounded-lg border p-3 ${view.active?'border-amber-300 bg-amber-50 text-amber-950':'border-emerald-300 bg-emerald-50 text-emerald-950'}`}>
             <strong>{view.active?'Active collision — access is ambiguous':'Collision resolved'}</strong>
@@ -65,5 +66,5 @@ export const DuplicateDrawer:React.FC<Props>=({isOpen,onClose,collisions,devices
       </div>
       <footer className="shrink-0 space-y-2 border-t border-slate-200 bg-slate-50 p-4"><button className={button} disabled={busy||!view} onClick={()=>void refresh()}>{busy?'Checking…':'Refresh / Recheck'}</button><p role="status" className="text-xs text-slate-700">{message||'Read-only discovery; missing responses alone do not resolve a collision.'}</p></footer>
     </section>
-  </div>;
+  </ModalViewport>;
 };

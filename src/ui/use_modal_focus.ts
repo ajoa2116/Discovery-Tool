@@ -1,3 +1,4 @@
+import {lockModalScroll} from './modal_scroll_lock.ts';
 import { RefObject, useEffect, useRef } from 'react';
 
 /** Portal siblings are inert; focus and wheel stay inside the visible dialog. */
@@ -11,7 +12,7 @@ export function useModalFocus(open: boolean, busy: boolean, dialog: RefObject<HT
     const siblings = Array.from(document.body.children).filter(node => node !== overlay && node instanceof HTMLElement) as HTMLElement[];
     const inert = siblings.map(node => node.inert);
     siblings.forEach(node => { node.inert = true; });
-    const overflow = document.body.style.overflow; document.body.style.overflow = 'hidden';
+    const releaseScroll = lockModalScroll();
     const controls = () => Array.from(element.querySelectorAll<HTMLElement>('button,input,select,textarea,[tabindex]')).filter(node => !node.matches(':disabled') && node.tabIndex >= 0 && node.getClientRects().length > 0);
     const focus = () => (controls()[0] || element).focus();
     focus();
@@ -28,7 +29,7 @@ export function useModalFocus(open: boolean, busy: boolean, dialog: RefObject<HT
     return () => {
       document.removeEventListener('keydown', keydown, true); document.removeEventListener('focusin', focusin);
       siblings.forEach((node, index) => { node.inert = inert[index]; });
-      document.body.style.overflow = overflow;
+      releaseScroll();
       if (previous?.isConnected) previous.focus();
     };
   }, [open, dialog]);

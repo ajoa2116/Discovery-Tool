@@ -44,3 +44,11 @@ html:not(.dark) ::-webkit-scrollbar-thumb { background: #cbd5e1; }
 ::-webkit-scrollbar-thumb:hover {
   background: #334155;
 }
+
+/* Opt-in modal layout: padding belongs to the viewport, not its height budget. */
+.modal-viewport { height: 100dvh; box-sizing: border-box; overflow: hidden; overscroll-behavior: none; }
+.modal-viewport > :first-child { display: flex; flex-direction: column; min-height: 0; min-width: 0; max-height: 100%; overflow: hidden; }
+.modal-viewport > :first-child > :not(.modal-body):not(.modal-form) { flex-shrink: 0; }
+.modal-viewport .modal-body { min-height: 0; min-width: 0; flex: 1 1 auto; overflow-y: auto; overscroll-behavior: contain; }
+.modal-viewport .modal-form { display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+.modal-viewport .modal-form > footer { flex-shrink: 0; }

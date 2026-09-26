@@ -1,3 +1,4 @@
+import {ModalViewport} from './ModalViewport.tsx';
 import { requestJson } from '../bounded_request.ts';
 import { operationFeedback } from '../operation_feedback.ts';
 import { FactoryCredentialSuggestions } from './FactoryCredentialSuggestions.tsx';
@@ -37,9 +38,9 @@ export const BrowserModal: React.FC<Props> = ({ isOpen, onClose, device, devices
   const mutateCredential = async (method: 'PUT' | 'DELETE') => { if (!selectedCredentialId) return; const response = await fetch(`http://localhost:3001/api/connect/${encodeURIComponent(device.id)}/credentials/${encodeURIComponent(selectedCredentialId)}`, { method, headers: { 'Content-Type': 'application/json' }, body: method === 'PUT' ? JSON.stringify({ username, password }) : undefined }); const data = await response.json(); if (!response.ok) throw new Error(data.error); setPassword(''); setMessage(method === 'PUT' ? 'Saved credential updated securely.' : 'Saved credential deleted; the camera and project were not changed.'); await load(); };
   const openExternal = async (preference: BrowserPreference = 'SYSTEM') => { try{const data = await post(`/api/connect/${encodeURIComponent(device.id)}/open`, { preference }); setMessage(data.browser?.fallback ? 'Preferred browser unavailable; Windows default launch requested. Page and device response are not verified.' : 'External browser launch requested. Page and device response are not verified. Return here and choose Recheck after making changes.');}catch(error){setApproval(null);throw error;} };
   const recheck = async () => { setMessage('Rechecking…'); await post(`/api/connect/${encodeURIComponent(device.id)}/recheck`); await load(); setMessage('Recheck completed using current-session evidence.'); };
-  return <div className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-5"><div role="dialog" aria-label="Camera Access" aria-modal="true" className="bg-slate-900 border border-slate-700 rounded-2xl w-full max-w-5xl h-[85vh] flex flex-col overflow-hidden">
+  return <ModalViewport className="fixed inset-0 z-50 bg-black/80 flex items-center justify-center p-5"><div role="dialog" aria-label="Camera Access" aria-modal="true" className="bg-slate-900 border border-slate-700 rounded-2xl w-full max-w-5xl h-[85vh] flex flex-col overflow-hidden">
     <div className="p-3 bg-slate-950 border-b border-slate-800 flex items-center justify-between"><div><strong>{device.technician?.name || device.anchor.vendor}</strong><span className="text-xs text-slate-400 ml-2">{device.technician?.location} • {device.anchor.vendor} {device.anchor.model} • {device.network.ipAddress}</span></div><button aria-label="Close Camera Access" onClick={onClose}><X className="w-5 h-5" /></button></div>
-    <div className="p-3 border-b border-slate-800 space-y-2 text-xs">
+    <div className="modal-body p-3 border-b border-slate-800 space-y-2 text-xs">
       {(!localDecision.allowed||readiness?.warning) && <div role="alert" className="text-amber-300 flex gap-2"><AlertTriangle className="w-4 h-4" />{!localDecision.allowed?localDecision.message:readiness?.warning}</div>}
       {(localDecision.code==='AMBIGUOUS_COLLISION'||approval?.decision.code==='AMBIGUOUS_COLLISION')&&onOpenDuplicateAssistant&&<button className="rounded bg-amber-100 px-3 py-2 text-amber-950" onClick={()=>onOpenDuplicateAssistant(device,approval?.decision.code==='AMBIGUOUS_COLLISION'?approval.decision.ipAddress:undefined)}>Open Duplicate Assistant</button>}
       {endpoint?.certificateWarning && <div className="text-amber-300">HTTPS responded, but certificate trust warning: {endpoint.certificateWarning}</div>}
@@ -50,5 +51,5 @@ export const BrowserModal: React.FC<Props> = ({ isOpen, onClose, device, devices
       {message && <p className="text-sky-300">{message}</p>}
     </div>
     <div className="flex-1 bg-slate-950 relative">{canOpen&&endpoint&&<iframe src={endpoint.url} title="Optional embedded camera interface" className="w-full h-full border-0 bg-white" sandbox="allow-same-origin allow-scripts allow-forms" />}{!canOpen&&<p className="p-5 text-slate-200">Camera navigation is blocked until current access safety is established. Inspect device evidence or Recheck, then retry.</p>}<div className="absolute bottom-3 left-3 right-3 p-2 bg-slate-950/90 text-xs text-slate-300 rounded">Embedded access may fail due to X-Frame-Options, CSP, mixed content, legacy plugins, or authentication restrictions. Use Open External if the camera does not render; browser protections are not bypassed.</div></div>
-  </div></div>;
+  </div></ModalViewport>;
 };
