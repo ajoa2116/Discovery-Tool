@@ -38,6 +38,8 @@ import { ConnectService, ConnectError } from '../core/connect/connect_service.ts
 import { CameraNetworkConfigurationService } from '../core/network/camera_network_service.ts';
 import { CameraConfigurationService } from '../core/network/camera_configuration_service.ts';
 import { PreferredCameraConfigurationProvider } from '../core/drivers/vendor_configuration_provider.ts';
+import {ReportSet} from '../core/reporting/report_set.ts';
+import {createReportSetRouter} from './report_set_routes.ts';
 import { createReportRouter } from './report_routes.ts';
 import { ShutdownCoordinator, WindowsPreflightService, recoveryRequiresReview } from '../core/readiness/field_readiness.ts';
 import { AdvancedScanService } from '../core/engine/advanced_scan.ts';
@@ -59,6 +61,7 @@ const startupFailure=(error:NodeJS.ErrnoException)=>{console.error(startupFailur
 server.once('error',startupFailure);
 wss.once('error',startupFailure);
 const diagnosticEngine = new DeviceDiagnosticEngine();
+const reportSet=new ReportSet(()=>projectDb.getSession());
 const diagnosticControllers = new Map<string, AbortController>();
 const pairService = new PairService(undefined,undefined,undefined,undefined,undefined,{changed:pair=>{if(['APPLYING','RESTORING'].includes(pair.state))diagnosticMonitor.cancelCurrent();broadcast({type:'PAIR_STATE_CHANGED',data:{pair,project:projectDb.getProject()}})}});
 const connectService = new ConnectService();
@@ -94,9 +97,12 @@ const getPreflight = async (refresh=false) => { const stateKey=JSON.stringify([r
 
 app.use(cors({ exposedHeaders: ['X-CCTV-Report-Renderer', 'Content-Disposition'] }));
 app.use(express.json());
+// Preserve the latest snapshot before any current-list/project transition.
+app.use(['/api/devices','/api/project'],(_req,_res,next)=>{reportSet.snapshot();next();});
 
 // Broadcast WebSocket message to all connected clients
 const broadcast = (data: any) => {
+  if(data.data?.project||data.data?.session)reportSet.snapshot();
   if(data.type==='FOREGROUND_SCAN_STATE'){const snapshot=data.data.foreground;operationTasks.foreground(snapshot,()=>foregroundDiscovery.stop(snapshot.session?.sessionId),snapshot.session?.sessionId===advancedTaskSessionId?advancedScanService.getStatus():undefined);}
   if(data.type==='PAIR_STATE_CHANGED')operationTasks.pair(data.data.pair);
   const msg = JSON.stringify(data);
@@ -346,8 +352,9 @@ app.use('/api/discovery', createForegroundDiscoveryRouter({
   failed: (error, context) => safeBroadcastError('DISCOVERY_SESSION_FAILED',error,'FOREGROUND_DISCOVERY',{context}),
 }));
 
+app.use('/api/report-set',createReportSetRouter(reportSet));
 // One production reporting boundary for preview and export prevents renderer drift.
-app.use('/api/reports', createReportRouter({ getSession: () => projectDb.getSession(), getAuditLogs: () => appStateDb.getAuditLogs() }));
+app.use('/api/reports', createReportRouter({ getSession: () => projectDb.getSession(), getAuditLogs: () => appStateDb.getAuditLogs(), reportSet }));
 
 app.post('/api/diagnostics/run', async (req, res) => {
   const ids: string[] = [...new Set<string>(Array.isArray(req.body.deviceIds) ? req.body.deviceIds : [req.body.deviceId].filter(Boolean))];

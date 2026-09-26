@@ -25,6 +25,7 @@ async function mock(page) {
    else if(path.endsWith('/diagnostics/refresh')||path.endsWith('/monitoring/preferences'))body=test.monitoring;
    else if(path.endsWith('/project/session')) body={mode:'QUICK_WORK',dirty:false,project:test.project||null};
    else if(path.endsWith('/pair/status')) body=null;
+   else if(path.endsWith('/report-set')) body={members:[]};
    if(mode==='throw') throw Error('Injected frontend request exception');
    if(mode==='network') return Promise.reject(new TypeError('Failed to fetch'));
    if(mode==='500') return json({error:'private diagnostic'},500);

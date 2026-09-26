@@ -36,6 +36,8 @@ interface MasterDeviceTableProps {
   onDiagnose: (dev: Device) => void;
   onPair: (dev: Device) => void;
   projectMode: boolean;
+  reportDeviceIds?:string[];
+  onReportMembership?:(device:Device,add:boolean)=>void;
   onRemoveCurrent: (deviceId: string) => Promise<void>;
   onRemoveProject: (deviceId: string) => Promise<void>;
   visibleColumns: TableColumnId[];
@@ -56,6 +58,8 @@ export const MasterDeviceTable: React.FC<MasterDeviceTableProps> = ({
   onDiagnose,
   onPair,
   projectMode,
+  reportDeviceIds=[],
+  onReportMembership,
   onRemoveCurrent,
   onRemoveProject,
   visibleColumns,
@@ -267,7 +271,7 @@ export const MasterDeviceTable: React.FC<MasterDeviceTableProps> = ({
                           className="group flex items-center gap-1.5 cursor-pointer hover:text-sky-300 transition"
                           title="Click to rename inline"
                         >
-                          <span>{dev.technician?.name || dev.anchor.model || dev.anchor.vendor}</span>
+                          <span>{dev.technician?.name || dev.anchor.model || dev.anchor.vendor}</span>{reportDeviceIds.includes(dev.id)&&<span title="Included in Report Set" className="ml-2 rounded bg-blue-50 px-1.5 text-[10px] text-blue-800">In Report</span>}
                           <Edit2 className="w-3 h-3 text-slate-500 opacity-0 group-hover:opacity-100 transition" />
                         </div>
                       )}
@@ -337,7 +341,7 @@ export const MasterDeviceTable: React.FC<MasterDeviceTableProps> = ({
           </tbody>
         </table>
       </div>
-      {openActionMenu && actionDevice && <FloatingDeviceActionsMenu device={actionDevice} anchor={openActionMenu.anchor} onClose={() => setOpenActionMenu(null)} onOpen={device => onOpenBrowser(device, 'SYSTEM')} onDetails={onInspectDevice} onDuplicateAssistant={onOpenDuplicateAssistant} onDiagnose={onDiagnose} onPair={onPair} onRename={device => startEditName(device)} onNotes={device => startEditNotes(device)} onConfigure={onConfigureDevice} projectMode={projectMode} onRemoveCurrent={device => setRemoval({ device, scope: 'CURRENT' })} onRemoveProject={device => setRemoval({ device, scope: 'PROJECT' })}/>}
+      {openActionMenu && actionDevice && <FloatingDeviceActionsMenu device={actionDevice} anchor={openActionMenu.anchor} onClose={() => setOpenActionMenu(null)} onOpen={device => onOpenBrowser(device, 'SYSTEM')} inReport={reportDeviceIds.includes(actionDevice.id)} onReportMembership={onReportMembership} onDetails={onInspectDevice} onDuplicateAssistant={onOpenDuplicateAssistant} onDiagnose={onDiagnose} onPair={onPair} onRename={device => startEditName(device)} onNotes={device => startEditNotes(device)} onConfigure={onConfigureDevice} projectMode={projectMode} onRemoveCurrent={device => setRemoval({ device, scope: 'CURRENT' })} onRemoveProject={device => setRemoval({ device, scope: 'PROJECT' })}/>}
       {removal && <DeviceRemovalDialog
         device={removal.device}
         scope={removal.scope}

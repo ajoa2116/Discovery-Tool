@@ -26,11 +26,13 @@ interface Props {
   onNotes: (device: Device) => void;
   onConfigure: (device: Device) => void;
   projectMode: boolean;
+  inReport?:boolean;
+  onReportMembership?:(device:Device,add:boolean)=>void;
   onRemoveCurrent: (device: Device) => void;
   onRemoveProject: (device: Device) => void;
 }
 
-export const FloatingDeviceActionsMenu: React.FC<Props> = ({ device, anchor, onClose, onOpen, onDetails, onDuplicateAssistant, onDiagnose, onPair, onRename, onNotes, onConfigure, projectMode, onRemoveCurrent, onRemoveProject }) => {
+export const FloatingDeviceActionsMenu: React.FC<Props> = ({ device, anchor, onClose, onOpen, onDetails, onDuplicateAssistant, onDiagnose, onPair, onRename, onNotes, onConfigure, projectMode, onRemoveCurrent, onRemoveProject, inReport=false, onReportMembership }) => {
   const menu = useRef<HTMLDivElement>(null);
   const [pairTarget, setPairTarget] = useState(device);
   useEffect(() => {
@@ -69,6 +71,7 @@ export const FloatingDeviceActionsMenu: React.FC<Props> = ({ device, anchor, onC
     {device.status==='COLLISION'&&onDuplicateAssistant&&<button role="menuitem" onClick={action(onDuplicateAssistant)} className={button}><Shield className="h-3.5 w-3.5"/>Duplicate Assistant</button>}
     <button role="menuitem" onClick={action(onDetails)} className={button}><Video className="h-3.5 w-3.5 text-blue-400"/>Details</button>
     <button role="menuitem" onClick={action(onDiagnose)} className={button}><Activity className="h-3.5 w-3.5 text-emerald-400"/>Diagnose</button>
+    {onReportMembership&&<button role="menuitem" className={button} onClick={()=>{onReportMembership(device,!inReport);onClose();}}>{inReport?'Remove from Report':'Add to Report'}</button>}
     {canOfferPair(pairTarget) && <button role="menuitem" onClick={() => { onPair(pairTarget); onClose(); }} className={button}><Network className="h-3.5 w-3.5 text-purple-400"/>Pair PC to Camera Network</button>}
     <div className="my-1 border-t border-slate-200 dark:border-slate-800"/>
     <button role="menuitem" onClick={action(onRename)} className={button}><Edit2 className="h-3.5 w-3.5 text-slate-400"/>Rename Device</button>

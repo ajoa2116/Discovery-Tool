@@ -4,6 +4,8 @@ import { prefixMask } from '../shared/address_validation.ts';
 import { AttentionActions } from './components/AttentionActions.tsx';
 import { activeCollisionChoices, diagnosticPresentation, DiagnosticRequest, hasUnsavedAttention } from '../shared/technician_attention.ts';
 import { TaskSnapshot } from '../shared/tasks.ts';
+import {ReportSetPanel} from './components/ReportSetPanel.tsx';
+import {ReportSetSnapshot} from '../shared/report_set.ts';
 import { Tasks } from './components/Tasks.tsx';
 import { NetworkAdapterModal } from './components/NetworkAdapterModal.tsx';
 import { pairAdapterInterfaces } from '../shared/pair_adapter.ts';
@@ -124,6 +126,28 @@ export default function App() {
   const [taskNavigation,setTaskNavigation]=useState({open:false,revision:0,taskId:undefined as string|undefined});
   const [attentionAction,setAttentionAction]=useState<'COLLISIONS'|'SAVE'|null>(null);
   const diagnosePending=useRef(new Set<string>());
+  const [reportSet,setReportSet]=useState<ReportSetSnapshot>({members:[]});
+  const [reportSetOpen,setReportSetOpen]=useState(false),[reportSetError,setReportSetError]=useState('');
+  const [reportScope,setReportScope]=useState<'REPORT_SET'|'SELECTED'|undefined>();
+  const reportReadRevision=useRef(0);
+  const loadReportSet=async()=>{
+    const revision=++reportReadRevision.current;
+    try{const {response,body}=await requestJson('http://localhost:3001/api/report-set',{},fetch,5000);if(!response.ok||!Array.isArray((body as ReportSetSnapshot)?.members))throw Error();if(revision===reportReadRevision.current){setReportSet(body as ReportSetSnapshot);setReportSetError('');}return body as ReportSetSnapshot;}
+    catch{if(revision===reportReadRevision.current)setReportSetError('Report Set is unavailable. Retained members have not been cleared.');}
+  };
+  useEffect(()=>{void loadReportSet();},[project,reportSetOpen]);
+  const openReports=async()=>{
+    const current=await loadReportSet();
+    if(!current){window.alert('Report Set status is unavailable. Retry before choosing report membership.');return;}
+    setReportScope(current.members.length?'REPORT_SET':undefined);setIsSiteSurveyModalOpen(true);
+  };
+  const updateReportSet=async(action:'add'|'remove'|'clear',body:unknown)=>{
+    ++reportReadRevision.current;
+    const result=await requestJson(`http://localhost:3001/api/report-set/${action}`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)},fetch,10000);
+    if(!result.response.ok||!Array.isArray((result.body as ReportSetSnapshot)?.members))throw Error('Report membership could not be updated. Select devices with unambiguous established identities and retry.');
+    ++reportReadRevision.current;setReportSet(result.body as ReportSetSnapshot);setReportSetError('');
+  };
+
 
   const [preferences, setPreferences] = useState<ApplicationPreferences>(() => readApplicationPreferences());
   const preferencesRef = useRef(preferences);
@@ -529,10 +553,10 @@ export default function App() {
         <div className="flex items-center gap-2 min-w-0"><ShieldCheck className="w-5 h-5 text-blue-600 shrink-0"/><div className="min-w-0"><h1 className="font-bold text-sm sm:text-base text-slate-900 dark:text-white truncate">CCTV Network Assistant</h1><p className="text-[11px] text-slate-500 truncate">{projectSession?.mode==='PROJECT'?(project?.name||'Project'):'Quick Work'}{projectSession?.dirty&&<span className="text-amber-600"> • Unsaved</span>}</p></div></div>
         <div ref={menuAreaRef} className="flex items-center gap-1.5 shrink-0">
           <div className="relative"><button aria-haspopup="menu" aria-expanded={openMenu==='PROJECT'} onClick={()=>setOpenMenu(openMenu==='PROJECT'?null:'PROJECT')} className="ui-header-button">Project <ChevronDown className="w-3.5 h-3.5"/></button>{openMenu==='PROJECT'&&<div role="menu" className="ui-menu"><button onClick={()=>{void handleNewProject();setOpenMenu(null)}}>New Project</button>{projectSession?.mode==='QUICK_WORK'&&(project?.devices.length||0)>0&&<button onClick={()=>{void handleCreateFromCurrent();setOpenMenu(null)}}>Create Project from Results</button>}{projectSession?.mode==='QUICK_WORK'&&<button disabled={selectedDeviceIds.size===0} onClick={()=>{addExistingProjectInput.current?.click();setOpenMenu(null)}}>Add Selected to Existing Project</button>}<button onClick={()=>{openProjectInput.current?.click();setOpenMenu(null)}}>Open Project</button><button onClick={()=>{void handleSaveProject(false);setOpenMenu(null)}}>Save Project</button>{projectSession?.mode==='PROJECT'&&<><button onClick={()=>{void handleSaveProject(true);setOpenMenu(null)}}>Save As</button><button onClick={()=>{setProjectHistoryOpen(true);setOpenMenu(null)}}>History</button><button disabled={projectReverifyOpen} onClick={()=>{setProjectReverifyOpen(true);setOpenMenu(null)}}>Reverify</button></>}</div>}</div>
-          <div className="relative"><button aria-haspopup="menu" aria-expanded={openMenu==='TOOLS'} onClick={()=>setOpenMenu(openMenu==='TOOLS'?null:'TOOLS')} className="ui-header-button">Tools <ChevronDown className="w-3.5 h-3.5"/></button>{openMenu==='TOOLS'&&<div role="menu" className="ui-menu"><button onClick={()=>{setNetworkAdapterOpen(true);setOpenMenu(null)}}>Network Adapter</button><button onClick={()=>{setIsLegacyModalOpen(true);setOpenMenu(null)}}>Add Device Manually</button><button onClick={()=>{setIsSiteSurveyModalOpen(true);setOpenMenu(null)}}>Reports</button></div>}</div>
+          <div className="relative"><button aria-haspopup="menu" aria-expanded={openMenu==='TOOLS'} onClick={()=>setOpenMenu(openMenu==='TOOLS'?null:'TOOLS')} className="ui-header-button">Tools <ChevronDown className="w-3.5 h-3.5"/></button>{openMenu==='TOOLS'&&<div role="menu" className="ui-menu"><button onClick={()=>{setNetworkAdapterOpen(true);setOpenMenu(null)}}>Network Adapter</button><button onClick={()=>{setIsLegacyModalOpen(true);setOpenMenu(null)}}>Add Device Manually</button><button onClick={()=>{setReportSetOpen(true);setOpenMenu(null)}}>Report Set ({reportSet.members.length})</button><button onClick={()=>{void openReports();setOpenMenu(null)}}>Reports</button></div>}</div>
           <div className="relative"><button aria-haspopup="menu" aria-expanded={openMenu==='SETTINGS'} onClick={()=>setOpenMenu(openMenu==='SETTINGS'?null:'SETTINGS')} className="ui-header-button"><Settings className="w-4 h-4"/>Settings <ChevronDown className="w-3.5 h-3.5"/></button>{openMenu==='SETTINGS'&&<SettingsMenu preferences={preferences} onPreferences={changePreferences} monitoring={diagnosticRefresh} preflight={preflight} onClose={()=>setOpenMenu(null)}/>}</div>
           <Tasks navigation={taskNavigation} onSnapshot={setTaskSnapshot} onOpen={()=>{closeAttentionPanels();setSelectedDeviceForInspector(null);}} onDiagnostic={(id,taskId)=>{const device=project?.devices.find(d=>d.id===id);if(device)foregroundDiagnostics(device,taskId);else window.alert('This device is no longer in the current inventory.');}} onResult={(result,correlationId)=>{
-            if(result==='REPORTS')setIsSiteSurveyModalOpen(true);
+            if(result==='REPORTS')void openReports();
             else if(result==='PROJECT_HISTORY')setProjectHistoryOpen(true);
             else void requestJson('http://localhost:3001/api/pair/status',{},fetch,5000).then(({response,body})=>{
               const current=body as PairSessionState|null;
@@ -652,6 +676,9 @@ export default function App() {
               >
                 <Activity className="w-3.5 h-3.5" />Diagnose Selected
               </button>
+              <button className="rounded border border-slate-300 bg-white px-3 py-1.5 text-blue-800" onClick={()=>void updateReportSet('add',{deviceIds:[...selectedDeviceIds]}).catch(error=>window.alert(error.message))}>Add to Report</button>
+              <button className="rounded border border-slate-300 bg-white px-3 py-1.5 text-blue-800" onClick={()=>void updateReportSet('remove',{deviceIds:[...selectedDeviceIds]}).catch(error=>window.alert(error.message))}>Remove from Report</button>
+              <button className="rounded border border-slate-300 bg-white px-3 py-1.5 text-blue-800" onClick={()=>{setReportScope('SELECTED');setIsSiteSurveyModalOpen(true);}}>Create Report from Selected</button>
               <button
                 disabled={selectedDeviceIds.size < 2}
                 onClick={() => setIsBulkReIpModalOpen(true)}
@@ -687,6 +714,8 @@ export default function App() {
           onDiagnose={(dev) => handleDiagnose([dev]).catch(error => window.alert(error.message))}
           onPair={(dev) => { setPairDevice(dev); setPairModalDismissed(false); }}
           projectMode={projectSession?.mode === 'PROJECT'}
+          reportDeviceIds={reportSet.members.flatMap(m=>m.currentDeviceId?[m.currentDeviceId]:[])}
+          onReportMembership={(device,add)=>void updateReportSet(add?'add':'remove',{deviceIds:[device.id]}).catch(error=>window.alert(error.message))}
           onRemoveCurrent={(deviceId) => handleRemoveDevice(deviceId, 'current')}
           onRemoveProject={(deviceId) => handleRemoveDevice(deviceId, 'project')}
           visibleColumns={preferences.visibleColumns}
@@ -748,12 +777,15 @@ export default function App() {
         onProjectChanged={fetchData}
       />
 
+      {reportSetOpen&&<ReportSetPanel snapshot={reportSet} error={reportSetError} onClose={()=>setReportSetOpen(false)} onRemove={id=>updateReportSet('remove',{memberIds:[id]})} onClear={()=>updateReportSet('clear',{confirmed:true})} onReport={()=>{setReportSetOpen(false);setReportScope('REPORT_SET');setIsSiteSurveyModalOpen(true);}}/>}
       {/* Milestone 12: contextual reporting and field documentation */}
       {project && (
         <><SiteSurveyReportModal
           isOpen={isSiteSurveyModalOpen}
           onClose={() => setIsSiteSurveyModalOpen(false)}
           project={project}
+          reportSetCount={reportSet.members.length}
+          initialScope={reportScope}
           selectedDeviceIds={[...selectedDeviceIds]}
           filteredDeviceIds={filteredDevices.map(device=>device.id)}
           projectMode={projectSession?.mode==='PROJECT'}

@@ -1,3 +1,4 @@
+import {ReportSet} from '../core/reporting/report_set.ts';
 import { Router } from 'express';
 import { ReportRequest, ReportService } from '../core/reporting/report_service.ts';
 import { AuditLogEntry, ProjectSession } from '../types/index.ts';
@@ -9,18 +10,27 @@ interface ReportRouteDependencies {
   getSession: () => ProjectSession;
   getAuditLogs: () => AuditLogEntry[];
   reportService?: ReportService;
+  reportSet?: ReportSet;
 }
 
 /** The single production route boundary used by preview and every report export. */
 export function createReportRouter(dependencies: ReportRouteDependencies) {
   const router = Router(), reportService = dependencies.reportService || new ReportService();
+  const build=(request:ReportRequest)=>{
+    const fromSet=request.scope==='REPORT_SET';
+    if(fromSet&&!dependencies.reportSet)throw Error('Report Set is unavailable.');
+    const session=fromSet?dependencies.reportSet!.reportSession():dependencies.getSession();
+    const model=reportService.build(session,fromSet?[]:dependencies.getAuditLogs(),request);
+    if(fromSet)model.metadata.liveEvidence=dependencies.reportSet!.snapshot().members.every(m=>m.current&&m.device.sessionVerification==='VERIFIED');
+    return model;
+  };
   router.post('/preview', (req, res) => {
-    try { res.json(reportService.build(dependencies.getSession(), dependencies.getAuditLogs(), req.body as ReportRequest)); }
+    try { res.json(build(req.body as ReportRequest)); }
     catch (error) { res.status(400).json(technicianErrorResponse(error,{operation:'REPORT_PREVIEW',fallbackCode:'REPORT_FAILED'})); }
   });
   router.post('/export/:format', (req, res) => {
     try {
-      const model = reportService.build(dependencies.getSession(), dependencies.getAuditLogs(), req.body as ReportRequest), format = String(req.params.format).toLowerCase();
+      const model = build(req.body as ReportRequest), format = String(req.params.format).toLowerCase();
       if (format === 'pdf') {
         const data = reportService.pdf(model);
         res.setHeader('Content-Type', 'application/pdf');
