@@ -1,0 +1,42 @@
+import assert from 'node:assert/strict';
+import {readFileSync} from 'node:fs';
+import {MatchCandidateService,matchCandidateChecker} from '../core/network/match_candidate_service.ts';
+import {SiteProjectDatabase} from '../core/storage/project_db.ts';
+import type {Device,WindowsAdapterSnapshot} from '../types/index.ts';
+let passed=0;const check=(v:unknown,n:string)=>{assert.ok(v,n);passed++;console.log('PASS: '+n)};
+const camera=(id='A',ip='192.168.1.100'):Device=>({id,anchor:{macAddress:null,onvifEndpointUuid:id,vendor:'Fixture'},network:{ipAddress:ip,subnetMask:'255.255.255.0',port:80,protocol:'ONVIF'},status:'ONLINE',discoveredPhase:3,firstSeenAt:'now',lastSeenAt:'now'});
+const nic:WindowsAdapterSnapshot={interfaceGuid:'nic',interfaceIndex:8,interfaceAlias:'Ethernet',mediaType:'ETHERNET',operationalStatus:'Up',eligible:true,dhcpEnabled:false,ipv4Addresses:[{address:'192.168.1.205',prefixLength:24}],defaultGateways:[],dnsAutomatic:false,dnsServers:[],capturedAt:'now'};
+async function run(){
+ const db=new SiteProjectDatabase();db.createNewProject('test');db.upsertDevice(camera());let mutations=0,mode='AVAILABLE',calls:string[]=[],change:(()=>void)|undefined;const adapters={inspectAdapters:async()=>structuredClone([nic]),isAdministrator:async()=>{mutations++;return true;},applyTemporary:async()=>{mutations++;return nic;},restore:async()=>{mutations++;return nic;}};
+ const service=new MatchCandidateService(db,adapters,()=>({check:async(ip)=>{calls.push(ip);change?.();return{availability:mode as 'AVAILABLE'|'UNCERTAIN'|'OCCUPIED',evidence:['Multi-signal fixture']};}}));
+ const before=JSON.stringify(db.getSession());let result=await service.preview('A',8);
+ check(result.network==='192.168.1.0'&&result.prefixLength===24,'device evidence derives target subnet');
+ check(result.candidates.length===2,'at most two preferred/fallback candidates');
+ check(result.candidates.every(c=>c.ipAddress.startsWith('192.168.1.')),'both candidates on target subnet');
+ check(result.candidates.every(c=>!['192.168.1.0','192.168.1.255','192.168.1.100','192.168.1.205'].includes(c.ipAddress)),'target network broadcast and local IP excluded');
+ check(JSON.stringify(db.getSession())===before&&mutations===0,'preview has zero state or Windows mutation');
+ const first=result.candidates[0].ipAddress;db.upsertDevice(camera('B',first));result=await service.preview('A',8);check(!result.candidates.some(c=>c.ipAddress===first),'known saved/discovered occupancy excluded');
+ const second=result.candidates[0].ipAddress;nic.ipv4Addresses.push({address:second,prefixLength:24});result=await service.preview('A',8);check(!result.candidates.some(c=>c.ipAddress===second),'all local adapter addresses excluded');nic.ipv4Addresses.pop();
+ const third=result.candidates[0].ipAddress;db.recordCollision({id:'collision',ipAddress:third,resolved:false,collidingDevices:[],detectedAt:'now'} as any);result=await service.preview('A',8);check(!result.candidates.some(c=>c.ipAddress===third),'active collision address excluded');
+ mode='OCCUPIED';calls=[];result=await service.preview('A',8);check(!result.candidates.length&&result.examined<=32&&calls.length<=32,'bounded occupied search returns none');mode='UNCERTAIN';result=await service.preview('A',8);check(result.state==='BLOCKED','ambiguous occupancy blocked');mode='AVAILABLE';
+ const a=db.getDeviceById('A')!;a.network.subnetMask=null;result=await service.preview('A',8);check(result.state==='BLOCKED'&&result.message.includes('Adapter prefixes are not substituted'),'missing subnet never guesses adapter prefix');a.network.subnetMask='255.255.255.0';
+ a.identityConflicts=[{} as any];check((await service.preview('A',8)).state==='BLOCKED','conflicting target blocked');a.identityConflicts=[];
+ db.upsertDevice(camera('C',a.network.ipAddress));check((await service.preview('A',8)).state==='BLOCKED','same-IP target blocked');db.getDeviceById('C')!.network.ipAddress='192.168.1.40';
+ a.network.subnetMask='255.255.255.252';a.network.ipAddress='192.168.1.101';result=await service.preview('A',8);check(result.candidates.length===1&&result.candidates[0].ipAddress==='192.168.1.102','small subnet yields one candidate without network/broadcast');a.network.subnetMask='255.255.255.0';a.network.ipAddress='192.168.1.100';
+ nic.ipv4Addresses[0].address='10.0.0.10';calls=[];result=await service.preview('A',8);check(!result.candidates.length&&!calls.length&&result.message.includes('on-link'),'off-subnet silence cannot establish vacancy');nic.ipv4Addresses[0].address='192.168.1.205';
+ change=()=>{a.anchor.onvifEndpointUuid='changed'};result=await service.preview('A',8);check(!result.candidates.length&&result.message.includes('changed'),'identity change invalidates result');change=undefined;
+
+ db.recordCollision({id:'target-collision',ipAddress:a.network.ipAddress,resolved:false,collidingDevices:[],detectedAt:'now'} as any);check((await service.preview('A',8)).state==='BLOCKED','active target collision blocks even without second row');db.recordCollision({id:'target-collision',ipAddress:a.network.ipAddress,resolved:true,collidingDevices:[],detectedAt:'now'} as any);
+ change=()=>{nic.ipv4Addresses[0].address='192.168.1.206'};result=await service.preview('A',8);check(!result.candidates.length&&result.message.includes('topology'),'topology change invalidates candidates');change=undefined;nic.ipv4Addresses[0].address='192.168.1.205';
+ a.network.subnetMask='255.0.0.0';mode='UNCERTAIN';calls=[];result=await service.preview('A',8);check(result.examined<=32&&calls.length<=32,'large subnet still examines at most 32');a.network.subnetMask='255.255.255.0';mode='AVAILABLE';
+ const gatewayCandidate=(await service.preview('A',8)).candidates[0].ipAddress;nic.defaultGateways=[gatewayCandidate];result=await service.preview('A',8);check(!result.candidates.some(c=>c.ipAddress===gatewayCandidate),'known gateway occupancy excluded');nic.defaultGateways=[];
+ const stable=await service.preview('A',8);db.getDevices().reverse();check(JSON.stringify((await service.preview('A',8)).candidates)===JSON.stringify(stable.candidates),'stable ID survives order changes');
+ const stalled=new MatchCandidateService(db,adapters,()=>({check:async()=>new Promise(()=>{})}),20);const start=Date.now();result=await stalled.preview('A',8);check(!result.candidates.length&&Date.now()-start<500,'deadline bounds stalled provider');
+ let entries:any[]=[],pingSuccess=false,tcpSuccess=false,category='TIMEOUT',tcpCategory='TIMEOUT';const providers={neighbors:{list:async()=>entries},ping:{check:async()=>({success:pingSuccess,errorCategory:category})},tcp:{check:async(_ip:string,o:any)=>{check(o.localAddress==='192.168.1.205','TCP bound to selected adapter');return {success:tcpSuccess,errorCategory:tcpCategory};}}} as any;
+ const checker=matchCandidateChecker(nic,'192.168.1.205',providers);
+ entries=[{ipAddress:'192.168.1.137',interfaceIndex:8,macAddress:'00:11:22:33:44:55'}];check((await checker.check('192.168.1.137')).availability==='OCCUPIED','positive neighbor occupancy rejected');entries=[];pingSuccess=true;check((await checker.check('192.168.1.137')).availability==='OCCUPIED','positive ICMP rejected');pingSuccess=false;tcpSuccess=true;check((await checker.check('192.168.1.137')).availability==='OCCUPIED','positive TCP rejected');tcpSuccess=false;tcpCategory='CONNECTION_REFUSED';check((await checker.check('192.168.1.137')).availability==='OCCUPIED','TCP refusal is occupancy evidence');tcpCategory='NETWORK_ERROR';check((await checker.check('192.168.1.137')).availability==='UNCERTAIN','failed ping alone cannot establish availability');tcpCategory='TIMEOUT';check((await checker.check('192.168.1.137')).availability==='AVAILABLE','clean repeated neighbor and bounded ICMP/TCP negatives support candidate');
+ entries=[{ipAddress:'192.168.1.137',interfaceIndex:8,macAddress:'00:11:22:33:44:55'},{ipAddress:'192.168.1.137',interfaceIndex:8,macAddress:'00:11:22:33:44:66'}];check((await checker.check('192.168.1.137')).availability==='UNCERTAIN','ambiguous neighbors reject candidate');
+ const source=readFileSync(new URL('../core/network/match_candidate_service.ts',import.meta.url),'utf8');check(!/recovery\.(save|clear)|applyTemporary\(|\.restore\(|initializeRecovery\(/.test(source),'preview cannot write recovery or invoke mutation');check(mutations===0,'all previews leave adapter mutation methods unused');
+ console.log(`Match candidates: ${passed} passed, 0 failed, 0 skipped`);
+}
+run().catch(e=>{console.error(e);process.exitCode=1});

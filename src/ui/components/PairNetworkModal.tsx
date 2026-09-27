@@ -1,3 +1,4 @@
+import {MatchCandidatePanel} from './MatchCandidatePanel.tsx';
 import {ModalViewport} from './ModalViewport.tsx';
 import React, { useEffect, useState } from 'react';
 import { Device, PairSessionState, WindowsAdapterSnapshot } from '../../types/index.ts';
@@ -58,6 +59,7 @@ export const PairNetworkModal: React.FC<Props> = ({ isOpen, device, pair, onClos
             <div><label className="block text-slate-400 mb-1">Camera</label><div className="p-2 bg-slate-950 border border-slate-800 rounded font-mono">{device ? `${device.technician?.name || device.anchor.vendor} — ${device.network.ipAddress} / ${device.network.subnetMask || 'unknown mask'}` : 'Select a camera'}</div></div>
             <div><label className="block text-slate-400 mb-1">Windows adapter to temporarily change</label><select value={interfaceIndex} onChange={event => setInterfaceIndex(Number(event.target.value))} className="w-full p-2 bg-slate-950 border border-slate-700 rounded"><option value="">Choose an eligible adapter…</option>{adapters.map(adapter => <option key={adapter.interfaceIndex} value={adapter.interfaceIndex}>{adapter.interfaceAlias} — {adapter.mediaType} — {adapter.ipv4Addresses.map(ip => ip.address).join(', ') || 'No IPv4'}</option>)}</select></div>
             <button disabled={busy || !device || interfaceIndex === ''} onClick={() => action('/api/pair/prepare', { deviceId: device!.id, interfaceIndex })} className="w-full py-2.5 bg-sky-600 hover:bg-sky-500 rounded-lg font-bold disabled:opacity-50">Check Addresses and Prepare Preview</button>
+            {device&&<MatchCandidatePanel device={device} interfaceIndex={interfaceIndex}/> }
             {busy && <button onClick={() => fetch('http://localhost:3001/api/pair/cancel', { method: 'POST' }).then(() => setBusy(false))} className="w-full py-2 bg-slate-800 hover:bg-slate-700 rounded-lg">Cancel Address Checking</button>}
           </div>}
 

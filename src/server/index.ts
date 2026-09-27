@@ -35,6 +35,7 @@ import { BulkNetworkConfigurationService } from '../core/engine/bulk_reip.ts';
 import { ProjectReverificationWorkflow } from '../core/engine/reverification.ts';
 import { ProjectValidationError } from '../core/storage/project_db.ts';
 import { DeviceDiagnosticEngine, DiagnosticRefreshMonitor } from '../core/engine/diagnostic_engine.ts';
+import { MatchCandidateService } from '../core/network/match_candidate_service.ts';
 import { PairService } from '../core/network/pair_service.ts';
 import { ConnectService, ConnectError } from '../core/connect/connect_service.ts';
 import { CameraNetworkConfigurationService } from '../core/network/camera_network_service.ts';
@@ -432,6 +433,8 @@ app.get('/api/pair/eligibility', async (req, res) => {
   try { res.json(await pairService.getEligibility(String(req.query.deviceId || ''))); }
   catch (error) { safeError(res, error, 400, 'PAIR_ELIGIBILITY'); }
 });
+const matchCandidateService=new MatchCandidateService(projectDb);
+app.post('/api/network-match/candidates',async(req,res)=>{try{res.json(await matchCandidateService.preview(String(req.body?.deviceId||''),Number(req.body?.interfaceIndex)));}catch(error){safeError(res,error,400,'NETWORK_MATCH_CANDIDATES');}});
 app.post('/api/network-match/prepare',async(req,res)=>{try{const pair=await pairService.prepareNetwork(req.body||{});broadcast({type:'PAIR_STATE_CHANGED',data:{pair}});res.json(pair);}catch(error){safeError(res,error,400,'NETWORK_MATCH_PREVIEW');}});
 app.post('/api/pair/prepare', async (req, res) => {
   try {
