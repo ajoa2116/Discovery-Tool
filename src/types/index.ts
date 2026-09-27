@@ -383,7 +383,7 @@ export interface PairVerificationEvidence {
 
 export interface PairSessionState {
   matchTargetAnchor?: DevicePhysicalAnchor;
-  recoveryDisposition?: 'HEALTHY_RETAINED' | 'ALREADY_RESTORED' | 'ATTENTION_REQUIRED';
+  recoveryDisposition?: 'HEALTHY_RETAINED' | 'ALREADY_RESTORED' | 'ATTENTION_REQUIRED' | 'LEGACY_UNVERIFIABLE' | 'LEGACY_RETIRED';
   adapterMutationActive?: boolean;
   purpose?: 'CAMERA_PAIR' | 'NETWORK_MATCH';
   temporaryGateway?: string;

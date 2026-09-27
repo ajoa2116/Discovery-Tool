@@ -2,7 +2,9 @@ import type {MatchApplyPlan} from '../../shared/match_candidate_preview.ts';
 import {canonicalAnchor,sharesAnchor} from '../../shared/identity_policy.ts';
 import {isActiveCollision} from '../../shared/collision_state.ts';
 import {addressRelationship} from '../../shared/address_validation.ts';
-import { validRecoverySnapshot, validRecoverySession, sameAdapterConfiguration, samePhysicalAdapter } from '../../shared/pair_recovery.ts';
+import { legacyRecoverySession, validRecoverySnapshot, validRecoverySession, sameAdapterConfiguration, samePhysicalAdapter } from '../../shared/pair_recovery.ts';
+import {createHash} from 'node:crypto';
+import {sanitizeSupportEvidence} from '../readiness/support_bundle.ts';
 import { observeNeighbor } from '../../shared/identity_enrichment.ts';
 import { NetworkMatchInput, networkMatchError } from '../../shared/network_match.ts';
 import { verifyAfterPair } from './post_pair_verification.ts';
@@ -26,6 +28,7 @@ export interface PairRecoveryStore {
   load(): Promise<PairSessionState | null>;
   save(session: PairSessionState): Promise<void>;
   clear(): Promise<void>;
+  retireLegacy?(expected:PairSessionState):Promise<void>;
 }
 
 export class JsonPairRecoveryStore implements PairRecoveryStore {
@@ -33,6 +36,17 @@ export class JsonPairRecoveryStore implements PairRecoveryStore {
   async load(): Promise<PairSessionState | null> { try { return JSON.parse(await fs.readFile(this.filePath, 'utf8')) as PairSessionState; } catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null; throw error; } }
   async save(session: PairSessionState): Promise<void> { await fs.mkdir(dirname(this.filePath), { recursive: true }); const temp = `${this.filePath}.${crypto.randomUUID()}.tmp`; await fs.writeFile(temp, JSON.stringify(session, null, 2), { flag: 'wx' }); await fs.rename(temp, this.filePath); }
   async clear(): Promise<void> { await fs.rm(this.filePath, { force: true }); }
+  async retireLegacy(expected:PairSessionState):Promise<void> {
+    const raw=await fs.readFile(this.filePath,'utf8'),record=JSON.parse(raw);
+    if(!legacyRecoverySession(record)||JSON.stringify(record)!==JSON.stringify(expected))throw new NetworkConfigurationError('Recovery evidence changed. Restart and review it again.','RECOVERY_CHANGED');
+    const hash=createHash('sha256').update(raw).digest('hex');
+    const archive=join(dirname(this.filePath),`pair-recovery.legacy-retired.${hash}.json`);
+    // Redact free-text diagnostic evidence; never export this local archive into projects.
+    const contents=JSON.stringify({format:'CCTV_LEGACY_RECOVERY_RETIRED',sourceSha256:hash,meaning:'Current Windows configuration accepted; no restore performed.',record:sanitizeSupportEvidence(record)},null,2);
+    try{const handle=await fs.open(archive,'wx');try{await handle.writeFile(contents);await handle.sync();}finally{await handle.close();}}catch(error){if((error as NodeJS.ErrnoException).code!=='EEXIST'||await fs.readFile(archive,'utf8')!==contents)throw error;}
+    if(await fs.readFile(this.filePath,'utf8')!==raw)throw new NetworkConfigurationError('Recovery evidence changed; active record preserved.','RECOVERY_CHANGED');
+    await fs.unlink(this.filePath);
+  }
 }
 
 export class ConservativeCandidateAddressChecker implements CandidateAddressChecker {
@@ -90,6 +104,7 @@ export class PairService {
   private retainedBeforeMatch:PairSessionState|null=null;
   private recoveryInspecting=false;
   private invalidRecovery=false;
+  private legacyRecord:PairSessionState|null=null;
   private networkPreparing=false;
   private mutationPending=false;
   private preparationController: AbortController | null = null;
@@ -103,6 +118,7 @@ export class PairService {
   ) {}
 
   async initializeRecovery(): Promise<PairSessionState | null> {
+    if(this.mutationPending||this.recoveryInspecting)throw new NetworkConfigurationError('Recovery operation already in progress.','PAIR_OPERATION_ACTIVE');
     this.recoveryInspecting=true;
     try { return await this.inspectRecovery(); } finally { this.recoveryInspecting=false; }
   }
@@ -112,6 +128,11 @@ export class PairService {
     try { recovered = await this.recovery.load(); }
     catch { return this.invalidRecoveryStatus(); }
     if (recovered === null) return this.getStatus();
+    if(legacyRecoverySession(recovered)){
+      this.legacyRecord=structuredClone(recovered);
+      this.session={...recovered,state:'ROLLBACK_REQUIRED',recoveryDisposition:'LEGACY_UNVERIFIABLE',recoveryAvailable:true,errorCode:'LEGACY_RECOVERY',message:'An older network recovery record was found. Its adapter identity cannot be verified using current safety rules. Automatic and normal Restore are blocked. Retiring this record keeps current Windows network settings unchanged.'};
+      return this.getStatus();
+    }
     if (!validRecoverySession(recovered)) return this.invalidRecoveryStatus();
     this.session = { ...recovered, state:'ROLLBACK_REQUIRED', recoveryDisposition:'ATTENTION_REQUIRED', recoveryAvailable:true,
       message:'Recovery requires review. The current adapter configuration has not been verified.', updatedAt:new Date().toISOString() };
@@ -149,6 +170,19 @@ export class PairService {
   keepCurrent():PairSessionState {
     if(this.getStatus()?.adapterMutationActive||this.session?.recoveryDisposition!=='HEALTHY_RETAINED')throw new NetworkConfigurationError('Only a verified retained configuration can be kept without review.','RECOVERY_REVIEW_REQUIRED');
     return this.getStatus()!;
+  }
+
+  async retireLegacy(sessionId:string,confirmed:boolean):Promise<PairSessionState>{
+    if(this.recoveryInspecting||this.mutationPending||this.networkPreparing)throw new NetworkConfigurationError('Another adapter operation is in progress.','PAIR_OPERATION_ACTIVE');
+    if(confirmed!==true)throw new NetworkConfigurationError('Explicit confirmation is required to accept current Windows settings.','CONFIRMATION_REQUIRED');
+    if(!this.legacyRecord||this.session?.id!==sessionId||this.session.recoveryDisposition!=='LEGACY_UNVERIFIABLE'||!this.recovery.retireLegacy)throw new NetworkConfigurationError('Only recognized legacy recovery can be retired.','RECOVERY_REVIEW_REQUIRED');
+    this.mutationPending=true;
+    try{
+      await this.recovery.retireLegacy(this.legacyRecord);
+      this.session={...this.session,state:'IDLE',recoveryDisposition:'LEGACY_RETIRED',recoveryAvailable:false,errorCode:undefined,message:'Legacy recovery retired and archived. Current Windows settings were kept unchanged. Original configuration was not restored.',updatedAt:new Date().toISOString()};
+      this.legacyRecord=null;
+      return this.getStatus()!;
+    }finally{this.mutationPending=false;}
   }
 
   getStatus(): PairSessionState | null {
@@ -342,6 +376,7 @@ export class PairService {
   }
 
   async restore(): Promise<PairSessionState> {
+    if(this.legacyRecord||this.session?.recoveryDisposition==='LEGACY_UNVERIFIABLE')throw new NetworkConfigurationError('Legacy adapter identity is unverifiable. Restore is blocked; review retirement instead.','LEGACY_RECOVERY');
     if (!this.session?.recoveryAvailable) throw new NetworkConfigurationError('No original adapter snapshot is available to restore.', 'NO_RECOVERY');
     if (this.mutationPending || ['APPLYING','VERIFYING','RESTORING'].includes(this.session.state)) throw new NetworkConfigurationError('Wait for the current Pair operation to finish before Restore.', 'PAIR_OPERATION_ACTIVE');
     this.mutationPending=true;

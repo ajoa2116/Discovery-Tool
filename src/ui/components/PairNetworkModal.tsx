@@ -1,3 +1,4 @@
+import {LegacyRecoveryRetirement} from './LegacyRecoveryRetirement.tsx';
 import {MatchCandidatePanel} from './MatchCandidatePanel.tsx';
 import {ModalViewport} from './ModalViewport.tsx';
 import React, { useEffect, useState } from 'react';
@@ -24,7 +25,7 @@ export const PairNetworkModal: React.FC<Props> = ({ isOpen, device, pair, onClos
     setBusy(true); setError('');
     try {
       const response = await fetch(`http://localhost:3001${path}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
-      const data = await response.json(); if (!response.ok) throw new Error(data.error || 'Pair operation failed.'); onPairUpdated(data); if(path==='/api/pair/keep')onClose();
+      const data = await response.json(); if (!response.ok) throw new Error(data.error || 'Pair operation failed.'); onPairUpdated(data); if(path==='/api/pair/keep'||path==='/api/pair/retire-legacy')onClose();
     } catch (err) { setError(err instanceof Error ? err.message : String(err)); }
     finally { setBusy(false); }
   };
@@ -43,7 +44,7 @@ export const PairNetworkModal: React.FC<Props> = ({ isOpen, device, pair, onClos
         <div className="p-3 rounded-lg bg-sky-950/30 border border-sky-700/40 text-sky-200 flex gap-2"><Info className="w-4 h-4 shrink-0" />Pair temporarily assigns a compatible IPv4 address to the selected PC adapter. Your original DHCP/static, gateway, and DNS state is captured for explicit restoration.</div>
         {error && <div className="p-3 rounded-lg bg-rose-950/40 border border-rose-700 text-rose-300 flex gap-2"><AlertTriangle className="w-4 h-4" />{error}</div>}
 
-        {currentPair?.recoveryAvailable && ['PAIRED', 'ROLLBACK_REQUIRED', 'RESTORING'].includes(currentPair.state) ? <>
+        {currentPair?.recoveryDisposition==='LEGACY_UNVERIFIABLE'?<LegacyRecoveryRetirement key={currentPair.id} pair={currentPair} adapters={adapters} busy={busy} onRetire={()=>action('/api/pair/retire-legacy',{sessionId:currentPair.id,confirmed:true})}/>:currentPair?.recoveryAvailable && ['PAIRED', 'ROLLBACK_REQUIRED', 'RESTORING'].includes(currentPair.state) ? <>
           <div className="p-4 bg-slate-950 border border-slate-800 rounded-xl space-y-2">
             <div className="flex justify-between"><span>Pair state</span><strong className={currentPair.recoveryDisposition==='HEALTHY_RETAINED'?'text-sky-300':'text-amber-300'}>{currentPair.recoveryDisposition==='HEALTHY_RETAINED'?'Configuration retained':currentPair.state}</strong></div>
             <div className="flex justify-between"><span>Adapter</span><strong>{currentPair.originalAdapter.interfaceAlias}</strong></div>

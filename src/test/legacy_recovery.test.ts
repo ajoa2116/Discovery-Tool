@@ -1,0 +1,66 @@
+import assert from 'node:assert/strict';
+import {mkdtemp,writeFile,readFile,readdir,rm,mkdir} from 'node:fs/promises';
+import {createHash} from 'node:crypto';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+import {legacyRecoverySession,validRecoverySession} from '../shared/pair_recovery.ts';
+import {PairService,JsonPairRecoveryStore} from '../core/network/pair_service.ts';
+import {SiteProjectDatabase} from '../core/storage/project_db.ts';
+import {TaskManager} from '../core/tasks/task_manager.ts';
+import {OperationTasks} from '../core/tasks/operation_tasks.ts';
+import {WindowsAdapterSnapshot,PairSessionState} from '../types/index.ts';
+const now=new Date().toISOString(),guid='11111111-2222-3333-4444-555555555555';
+const a:WindowsAdapterSnapshot={interfaceIndex:8,interfaceAlias:'Ethernet',mediaType:'ETHERNET',operationalStatus:'Up',eligible:true,dhcpEnabled:false,ipv4Addresses:[{address:'192.168.0.124',prefixLength:24}],defaultGateways:[],dnsAutomatic:true,dnsServers:[],capturedAt:now};
+const b={...a,ipv4Addresses:[{address:'192.168.1.137',prefixLength:24}]};
+const candidate={ipAddress:'192.168.1.137',prefixLength:24,confidence:'AVAILABLE' as const,evidence:['Checked']};
+const legacy=():PairSessionState=>({id:crypto.randomUUID(),purpose:'NETWORK_MATCH',state:'PAIRED',deviceId:'',cameraIp:'',cameraSubnetMask:'255.255.255.0',adapter:structuredClone(b),originalAdapter:structuredClone(a),candidates:[candidate],selectedCandidate:candidate,adapterConfigurationVerified:true,recoveryAvailable:true,createdAt:now,updatedAt:now,technicianConfirmedAt:now});
+let passed=0;const check=(v:unknown,n:string)=>{assert.ok(v,n);passed++;console.log('PASS: '+n)};
+async function run(){
+ const modern=legacy();modern.adapter.interfaceGuid=guid;modern.originalAdapter.interfaceGuid=guid;
+ check(validRecoverySession(modern)&&!legacyRecoverySession(modern),'modern valid recovery stays modern');
+ check(legacyRecoverySession(legacy()),'recognizes coherent pre-GUID recovery');
+ for(const mutate of [(r:any)=>r.verification={},(r:any)=>r.adapter.defaultGateways=['192.168.1.1'],(r:any)=>r.cameraReachabilityVerified='yes',(r:any)=>r.selectedCandidate.ipAddress=4]){const r=structuredClone(legacy());mutate(r);check(!legacyRecoverySession(r),'malformed optional evidence fails closed');}
+ for(const mutate of [(r:any)=>r.originalAdapter.interfaceGuid=guid,(r:any)=>r.adapter.interfaceGuid=null,(r:any)=>r.originalAdapter.interfaceIndex=9,(r:any)=>r.originalAdapter.interfaceAlias='Other',(r:any)=>r.adapter.ipv4Addresses[0].address='192.168.9.5',(r:any)=>r.selectedCandidate={bad:true},(r:any)=>r.createdAt='bad',(r:any)=>r.purpose='unsupported',(r:any)=>r.password='SYNTHETIC_NOT_FOR_ARCHIVE',(r:any)=>r.recoveryDisposition='ATTENTION_REQUIRED']){const r=legacy();mutate(r);check(!legacyRecoverySession(r),'incomplete contradictory or foreign evidence remains attention');}
+ for(const r of [null,{},[],{adapter:{}},'garbage'])check(!legacyRecoverySession(r),'arbitrary data is not legacy');
+ const root=await mkdtemp(join(tmpdir(),'cctv-legacy-test-'));
+ try{
+  const path=join(root,'pair-recovery.json'),store=new JsonPairRecoveryStore(path),db=new SiteProjectDatabase();db.createNewProject('Legacy isolated');
+  let writes=0,inspects=0;let current:WindowsAdapterSnapshot={...structuredClone(b),interfaceGuid:guid,ipv4Addresses:[{address:'192.168.1.205',prefixLength:24}]};
+  const adapters={async inspectAdapters(){inspects++;return[structuredClone(current)]},async isAdministrator(){return true},async applyTemporary(_i:number,ip:string,prefix:number){writes++;current={...current,ipv4Addresses:[{address:ip,prefixLength:prefix}],defaultGateways:[]};return structuredClone(current)},async restore(v:WindowsAdapterSnapshot){writes++;current=structuredClone(v);return current}};
+  const make=()=>new PairService(adapters,{async check(){return{availability:'AVAILABLE' as const,evidence:[]}}},undefined,store,db);
+  const old=legacy();await store.save(old);const raw=await readFile(path,'utf8');const service=make();const state=(await service.initializeRecovery())!;
+  check(state.recoveryDisposition==='LEGACY_UNVERIFIABLE','startup gives explicit legacy disposition');
+  check(inspects===0&&!state.adapter.interfaceGuid&&!state.originalAdapter.interfaceGuid,'name index and IP never infer current GUID');
+  await assert.rejects(()=>service.restore());check(writes===0&&(await readFile(path,'utf8'))===raw,'legacy Restore blocked before state or disk mutation');
+  await assert.rejects(()=>service.retireLegacy(state.id,false));check((await readFile(path,'utf8'))===raw,'confirmation required with no persistence change');
+  service.cancelPreparation();check((await readFile(path,'utf8'))===raw&&writes===0,'cancel preserves record and Windows');
+  await assert.rejects(()=>service.prepareNetwork({interfaceIndex:8,ipAddress:'192.168.2.5',prefixLength:24}));check(writes===0,'legacy blocks new baseline before retirement');
+  await assert.rejects(()=>service.retireLegacy('wrong-session',true));check((await readdir(root)).length===1,'stale confirmation cannot archive');
+  const before=JSON.stringify(current),project=JSON.stringify(db.getSession());const retired=await service.retireLegacy(state.id,true);
+  check(writes===0&&JSON.stringify(current)===before,'retirement preserves all current Windows configuration');
+  check(JSON.stringify(db.getSession())===project,'retirement leaves Project and device identity untouched');
+  check(retired.state==='IDLE'&&retired.recoveryDisposition==='LEGACY_RETIRED'&&!retired.recoveryAvailable,'retirement clears active obligation without claiming RESTORED');
+  const tasks=new TaskManager(),operations=new OperationTasks(tasks);operations.pair(state);operations.pair(retired);check(tasks.snapshot().active===0&&tasks.snapshot().attention===0,'retirement completes recovery attention task instead of leaving work running');
+  check(await store.load()===null,'active file retired');
+  const names=await readdir(root);check(names.length===1&&names[0].includes('legacy-retired'),'one local archive retained');
+  const archived=JSON.parse(await readFile(join(root,names[0]),'utf8'));check(archived.record.originalAdapter.ipv4Addresses[0].address==='192.168.0.124'&&!archived.record.originalAdapter.interfaceGuid,'archive preserves old baseline without invented GUID');
+  check(!db.exportProjectJson().includes('legacy-retired')&&!db.exportProjectJson().includes('originalAdapter'),'archive never enters project serialization');
+  for(let i=0;i<3;i++)check(await make().initializeRecovery()===null,'restart does not reactivate archive');
+  check((await readdir(root)).length===1,'restarts do not duplicate archives');
+  await assert.rejects(()=>service.retireLegacy(state.id,true));check((await readdir(root)).length===1,'repeat retirement does not duplicate archive');
+  db.upsertDevice({id:'camera-after-retirement',anchor:{macAddress:null,onvifEndpointUuid:'camera-after-retirement',vendor:'Unknown'},network:{ipAddress:'192.168.3.100',subnetMask:'255.255.255.0',port:80,protocol:'ONVIF'},status:'UNKNOWN',discoveredPhase:3,firstSeenAt:now,lastSeenAt:now});
+  const newPair=await service.prepare('camera-after-retirement',8);check(newPair.originalAdapter.interfaceGuid===guid&&newPair.originalAdapter.ipv4Addresses[0].address==='192.168.1.205','Pair preview after retirement captures current modern baseline');service.cancelPreparation();
+  const fresh=make();await fresh.initializeRecovery();const preview=await fresh.prepareNetwork({interfaceIndex:8,ipAddress:'192.168.2.5',prefixLength:24});await fresh.confirmAndApply(preview.id,true);
+  const saved=(await store.load())!;check(validRecoverySession(saved)&&saved.originalAdapter.ipv4Addresses[0].address==='192.168.1.205','new modern baseline uses current settings and GUID');
+  check(JSON.stringify(JSON.parse(await readFile(join(root,names[0]),'utf8')))===JSON.stringify(archived),'new baseline never overwrites archive');
+  check(fresh.keepCurrent().recoveryDisposition==='HEALTHY_RETAINED','modern Keep Current unchanged');await assert.rejects(()=>fresh.retireLegacy(saved.id,true));
+  await fresh.restore();check(current.ipv4Addresses[0].address==='192.168.1.205','modern Restore uses new original rather than archive');
+  await store.save(legacy());const changed=make();const initial=(await changed.initializeRecovery())!;await writeFile(path,'{ malformed');await assert.rejects(()=>changed.retireLegacy(initial.id,true));check((await readFile(path,'utf8'))==='{ malformed'&&changed.getStatus()?.recoveryAvailable,'changed record remains blocking and preserved');
+  const malformed=make();check((await malformed.initializeRecovery())?.recoveryDisposition==='ATTENTION_REQUIRED','malformed startup remains attention');await assert.rejects(()=>malformed.retireLegacy(initial.id,true));
+  const secret=legacy();secret.message='password=SYNTHETIC_ARCHIVE_SENTINEL';await store.save(secret);const redact=make();await redact.initializeRecovery();await redact.retireLegacy(secret.id,true);const archives=await readdir(root);check((await Promise.all(archives.map(n=>readFile(join(root,n),'utf8')))).every(s=>!s.includes('SYNTHETIC_ARCHIVE_SENTINEL')),'archive redacts credential-shaped diagnostic text');
+  const failure=legacy();await store.save(failure);const failureRaw=await readFile(path,'utf8'),blockedArchive=join(root,`pair-recovery.legacy-retired.${createHash('sha256').update(failureRaw).digest('hex')}.json`);await mkdir(blockedArchive);const failed=make();await failed.initializeRecovery();const writesBefore=writes;await assert.rejects(()=>failed.retireLegacy(failure.id,true));check((await readFile(path,'utf8'))===failureRaw&&failed.getStatus()?.recoveryAvailable&&writes===writesBefore,'archive failure preserves active obligation and Windows');await rm(blockedArchive,{recursive:true});
+  let release!:()=>void;const delayed={load:()=>store.load(),save:(s:PairSessionState)=>store.save(s),clear:()=>store.clear(),retireLegacy:async(s:PairSessionState)=>{await new Promise<void>(resolve=>{release=resolve});await store.retireLegacy(s)}};
+  const concurrent=new PairService(adapters,undefined,undefined,delayed,db);await concurrent.initializeRecovery();const pending=concurrent.retireLegacy(failure.id,true);await assert.rejects(()=>concurrent.retireLegacy(failure.id,true));await assert.rejects(()=>concurrent.initializeRecovery());await assert.rejects(()=>concurrent.prepareNetwork({interfaceIndex:8,ipAddress:'192.168.2.6',prefixLength:24}));release();await pending;check(writes===writesBefore,'concurrent retirement startup and new baseline cannot race');
+ }finally{await rm(root,{recursive:true,force:true})}
+ console.log(`Legacy recovery: ${passed} passed, 0 failed, 0 skipped`);
+}run().catch(e=>{console.error(e);process.exitCode=1});
