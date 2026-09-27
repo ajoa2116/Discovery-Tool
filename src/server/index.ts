@@ -435,6 +435,7 @@ app.get('/api/pair/eligibility', async (req, res) => {
 });
 const matchCandidateService=new MatchCandidateService(projectDb);
 app.post('/api/network-match/candidates',async(req,res)=>{try{res.json(await matchCandidateService.preview(String(req.body?.deviceId||''),Number(req.body?.interfaceIndex)));}catch(error){safeError(res,error,400,'NETWORK_MATCH_CANDIDATES');}});
+app.post('/api/network-match/review',async(req,res)=>{try{const pair=await pairService.prepareMatchPreview(matchCandidateService.takePreview(String(req.body?.previewId||'')));broadcast({type:'PAIR_STATE_CHANGED',data:{pair}});res.json(pair);}catch(error){safeError(res,error,400,'NETWORK_MATCH_REVIEW');}});
 app.post('/api/network-match/prepare',async(req,res)=>{try{const pair=await pairService.prepareNetwork(req.body||{});broadcast({type:'PAIR_STATE_CHANGED',data:{pair}});res.json(pair);}catch(error){safeError(res,error,400,'NETWORK_MATCH_PREVIEW');}});
 app.post('/api/pair/prepare', async (req, res) => {
   try {

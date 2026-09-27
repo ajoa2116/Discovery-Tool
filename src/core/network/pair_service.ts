@@ -1,3 +1,7 @@
+import type {MatchApplyPlan} from '../../shared/match_candidate_preview.ts';
+import {canonicalAnchor,sharesAnchor} from '../../shared/identity_policy.ts';
+import {isActiveCollision} from '../../shared/collision_state.ts';
+import {addressRelationship} from '../../shared/address_validation.ts';
 import { validRecoverySnapshot, validRecoverySession, sameAdapterConfiguration, samePhysicalAdapter } from '../../shared/pair_recovery.ts';
 import { observeNeighbor } from '../../shared/identity_enrichment.ts';
 import { NetworkMatchInput, networkMatchError } from '../../shared/network_match.ts';
@@ -83,6 +87,7 @@ function snapshotFingerprint(snapshot: WindowsAdapterSnapshot): string {
 
 export class PairService {
   private session: PairSessionState | null = null;
+  private retainedBeforeMatch:PairSessionState|null=null;
   private recoveryInspecting=false;
   private invalidRecovery=false;
   private networkPreparing=false;
@@ -94,7 +99,7 @@ export class PairService {
     private readonly diagnostics = new DeviceDiagnosticEngine(),
     private readonly recovery: PairRecoveryStore = new JsonPairRecoveryStore(),
     private readonly database: SiteProjectDatabase = projectDb,
-    private readonly verificationOptions: {windowMs?:number;settleMs?:number;neighbors?:NeighborProvider;changed?:(state:PairSessionState)=>void} = {},
+    private readonly verificationOptions: {windowMs?:number;settleMs?:number;neighbors?:NeighborProvider;matchCheckerFactory?:(adapter:WindowsAdapterSnapshot,localAddress:string)=>CandidateAddressChecker;changed?:(state:PairSessionState)=>void} = {},
   ) {}
 
   async initializeRecovery(): Promise<PairSessionState | null> {
@@ -207,10 +212,43 @@ export class PairService {
     }finally{this.networkPreparing=false;}
   }
 
+  async prepareMatchPreview(plan:MatchApplyPlan):Promise<PairSessionState> {
+    if(this.recoveryInspecting||this.networkPreparing||this.mutationPending||this.preparationController)throw new NetworkConfigurationError('Another adapter operation is in progress.','PAIR_SESSION_ACTIVE');
+    const retained=this.session?.state==='PAIRED'&&this.session.recoveryDisposition==='HEALTHY_RETAINED'?this.getStatus():null;
+    if(this.session?.recoveryAvailable&&!retained)throw new NetworkConfigurationError('Resolve the current recovery state first.','PAIR_SESSION_ACTIVE');
+    if(this.session?.state==='READY_FOR_CONFIRMATION')throw new NetworkConfigurationError('Cancel the current preview first.','PAIR_SESSION_ACTIVE');
+    this.networkPreparing=true;
+    try {
+      const adapters=await this.adapters.inspectAdapters(),current=adapters.find(a=>a.interfaceIndex===plan.adapter.interfaceIndex);
+      if(Date.now()-plan.createdAt>120000||!current||!validRecoverySnapshot(current)||!samePhysicalAdapter(current,plan.adapter)||snapshotFingerprint(current)!==snapshotFingerprint(plan.adapter)||!plan.preview.candidates.length)throw new NetworkConfigurationError('Adapter or candidate preview changed; search again.','BASELINE_CHANGED');
+      if(retained&&(!samePhysicalAdapter(retained.originalAdapter,current)||!sameAdapterConfiguration(retained.adapter,current)))throw new NetworkConfigurationError('Retained configuration must be resolved before changing another adapter.','BASELINE_CHANGED');
+      const now=new Date().toISOString();
+      const next:PairSessionState={id:crypto.randomUUID(),purpose:'CAMERA_PAIR',matchTargetAnchor:structuredClone(plan.anchor),state:'READY_FOR_CONFIRMATION',deviceId:plan.preview.deviceId,cameraIp:plan.preview.targetIp,cameraSubnetMask:prefixToSubnetMask(plan.preview.prefixLength!),subnetSource:'CAMERA_EVIDENCE',adapter:current,originalAdapter:retained?structuredClone(retained.originalAdapter):structuredClone(current),candidates:structuredClone(plan.preview.candidates),selectedCandidate:structuredClone(plan.preview.candidates[0]),recoveryAvailable:Boolean(retained),createdAt:now,updatedAt:now,message:'Match Network preview only. Confirm the displayed candidate to change this PC adapter; camera settings and credentials remain unchanged.'};
+      if(this.matchTargetUnsafe(next,adapters))throw new NetworkConfigurationError('Target identity changed or is ambiguous. Search again.','UNSAFE_TARGET');
+      this.retainedBeforeMatch=retained;this.session=next;return this.getStatus()!;
+    }finally{this.networkPreparing=false;}
+  }
+
+  private matchTargetUnsafe(session:PairSessionState,adapters:WindowsAdapterSnapshot[]):boolean {
+    const target=this.database.getDeviceById(session.deviceId);
+    return !target||target.network.ipAddress!==session.cameraIp||target.network.subnetMask!==session.cameraSubnetMask||JSON.stringify(canonicalAnchor(target.anchor))!==JSON.stringify(canonicalAnchor(session.matchTargetAnchor!))||Boolean(pairTargetBlock(target,adapters,this.database.getDevices()))||this.database.getDevices().some(other=>other.id!==target.id&&sharesAnchor(other,target))||this.database.getProject().collisions.some(c=>isActiveCollision(c)&&c.ipAddress===target.network.ipAddress);
+  }
+
+  private async recheckMatch(candidate:PairCandidate,adapter:WindowsAdapterSnapshot,adapters:WindowsAdapterSnapshot[]):Promise<boolean> {
+    const occupied=()=>[...this.database.getDevices().flatMap(d=>[d.network.ipAddress,d.network.gateway||'']),...adapters.flatMap(a=>[...a.ipv4Addresses.map(ip=>ip.address),...a.defaultGateways,...a.dnsServers]),...this.database.getProject().collisions.filter(isActiveCollision).map(c=>c.ipAddress)].includes(candidate.ipAddress);
+    const local=adapter.ipv4Addresses.find(ip=>addressRelationship(candidate.ipAddress,ip.address,ip.prefixLength)==='LOCAL');
+    if(!local||occupied())return false;
+    const factory=this.verificationOptions.matchCheckerFactory||(await import('./match_candidate_service.ts')).matchCandidateChecker;
+    const controller=new AbortController();let timer:ReturnType<typeof setTimeout>|undefined;
+    try {const result=await Promise.race([factory(adapter,local.address).check(candidate.ipAddress,{signal:controller.signal}),new Promise<never>((_,reject)=>{timer=setTimeout(()=>{controller.abort();reject(Error('Occupancy recheck timed out'));},8000);})]);return result.availability==='AVAILABLE'&&!occupied();}
+    catch{return false;}finally{if(timer)clearTimeout(timer);}
+  }
+
   selectCandidate(ipAddress: string): PairSessionState {
     if (this.mutationPending || !this.session || this.session.state !== 'READY_FOR_CONFIRMATION') throw new NetworkConfigurationError('Pair is not ready for candidate selection.', 'NOT_READY');
     const candidate = this.session.candidates.find(item => item.ipAddress === ipAddress && item.confidence === 'AVAILABLE');
     if (!candidate) throw new NetworkConfigurationError('Select one of the verified Pair candidates.', 'INVALID_CANDIDATE');
+    if(this.session.matchTargetAnchor)this.session.id=crypto.randomUUID();
     this.session.selectedCandidate = candidate; this.session.updatedAt = new Date().toISOString(); return this.getStatus()!;
   }
 
@@ -223,23 +261,40 @@ export class PairService {
     const adapters = await this.adapters.inspectAdapters();
     const current = adapters.find(item => item.interfaceIndex === this.session!.adapter.interfaceIndex);
     if (!current) throw new NetworkConfigurationError('The selected adapter no longer exists.', 'ADAPTER_NOT_FOUND');
-    if (!samePhysicalAdapter(current,this.session.originalAdapter) || snapshotFingerprint(current) !== snapshotFingerprint(this.session.originalAdapter)) throw new NetworkConfigurationError('The adapter configuration changed after preview. Prepare Pair again.', 'BASELINE_CHANGED');
+    if (!samePhysicalAdapter(current,this.session.originalAdapter) || snapshotFingerprint(current) !== snapshotFingerprint(this.session.matchTargetAnchor?this.session.adapter:this.session.originalAdapter)) throw new NetworkConfigurationError('The adapter configuration changed after preview. Prepare Pair again.', 'BASELINE_CHANGED');
     const standalone=this.session.purpose==='NETWORK_MATCH';
     const target = this.database.getDeviceById(this.session.deviceId);
     if (!current.eligible || (!standalone&&(!target || target.network.ipAddress !== this.session.cameraIp || pairTargetBlock(target, adapters, this.database.getDevices())))) throw new NetworkConfigurationError('The Pair target or adapter is no longer safe. Prepare Pair again.', 'UNSAFE_TARGET');
+    if(this.session.matchTargetAnchor){
+      if(this.matchTargetUnsafe(this.session,adapters))throw new NetworkConfigurationError('Target identity changed or is ambiguous.','UNSAFE_TARGET');
+      if(!await this.recheckMatch(this.session.selectedCandidate,current,adapters)){
+        const fallback=this.session.candidates.find(c=>c.ipAddress!==this.session!.selectedCandidate!.ipAddress);
+        if(fallback&&await this.recheckMatch(fallback,current,adapters)&&!this.matchTargetUnsafe(this.session,adapters)){
+          this.session.id=crypto.randomUUID();this.session.selectedCandidate=fallback;this.session.candidates=[fallback];this.session.message='Preferred candidate is no longer safe. Fallback was revalidated. Review and explicitly confirm this new candidate; no adapter change has been made.';return this.getStatus()!;
+        }
+        throw new NetworkConfigurationError('Candidate is occupied or uncertain. No fallback was applied. Search again.','CANDIDATE_CHANGED');
+      }
+      const latestAdapters=await this.adapters.inspectAdapters(),latest=latestAdapters.find(a=>samePhysicalAdapter(current,a));
+      if(!latest||snapshotFingerprint(latest)!==snapshotFingerprint(current)||this.matchTargetUnsafe(this.session,latestAdapters)||latestAdapters.some(a=>a.ipv4Addresses.some(ip=>ip.address===this.session!.selectedCandidate!.ipAddress))||this.database.getDevices().some(d=>d.network.ipAddress===this.session!.selectedCandidate!.ipAddress)||this.database.getProject().collisions.some(c=>isActiveCollision(c)&&c.ipAddress===this.session!.selectedCandidate!.ipAddress))throw new NetworkConfigurationError('Target or adapter changed during recheck.','BASELINE_CHANGED');
+    }else{
     if ([...this.database.getDevices().map(device => device.network.ipAddress), ...adapters.flatMap(adapter => adapter.ipv4Addresses.map(address => address.address))].includes(this.session.selectedCandidate.ipAddress)) throw new NetworkConfigurationError('The proposed address is now assigned to a known device or local adapter.', 'CANDIDATE_CHANGED');
     const recheck = await this.checker.check(this.session.selectedCandidate.ipAddress);
     if (recheck.availability !== 'AVAILABLE') throw new NetworkConfigurationError('The proposed address is no longer confidently available.', 'CANDIDATE_CHANGED');
 
+    }
+
     if(!validRecoverySnapshot(this.session.originalAdapter))throw new NetworkConfigurationError('A complete original snapshot and physical adapter identity are required.','INVALID_RECOVERY');
     this.session.state = 'APPLYING'; this.session.technicianConfirmedAt = new Date().toISOString(); this.session.updatedAt = this.session.technicianConfirmedAt; this.session.recoveryAvailable = true;
-    await this.recovery.save(this.session);
+    try{await this.recovery.save(this.session);}catch(error){if(this.session.matchTargetAnchor){this.session.state='ROLLBACK_REQUIRED';this.session.recoveryDisposition='ATTENTION_REQUIRED';this.session.errorCode='RECOVERY_SAVE_FAILED';this.session.message='Original configuration could not be saved. No adapter apply was attempted; recovery requires review.';}throw error;}
     this.audit(standalone?'NETWORK_MATCH_CONFIRMED':'Technician confirmed Pair', { deviceId: this.session.deviceId, interfaceIndex: current.interfaceIndex, temporaryIp: this.session.selectedCandidate.ipAddress });
     this.verificationOptions.changed?.(this.getStatus()!);
     try {
-      const applied = await this.adapters.applyTemporary(current.interfaceIndex, this.session.selectedCandidate.ipAddress, this.session.selectedCandidate.prefixLength, this.session.temporaryGateway, current.interfaceGuid);
+      this.retainedBeforeMatch=null;
+      if(this.session.matchTargetAnchor&&(this.matchTargetUnsafe(this.session,adapters)||this.database.getDevices().some(d=>d.network.ipAddress===this.session!.selectedCandidate!.ipAddress)||this.database.getProject().collisions.some(c=>isActiveCollision(c)&&c.ipAddress===this.session!.selectedCandidate!.ipAddress)))throw new NetworkConfigurationError('Target or occupancy changed before apply.','UNSAFE_TARGET');
+      let applied = await this.adapters.applyTemporary(current.interfaceIndex, this.session.selectedCandidate.ipAddress, this.session.selectedCandidate.prefixLength, this.session.temporaryGateway, current.interfaceGuid);
+      if(this.session.matchTargetAnchor){const observed=(await this.adapters.inspectAdapters()).find(a=>samePhysicalAdapter(current,a));if(!observed)throw new NetworkConfigurationError('Applied adapter could not be independently read back.','APPLY_VERIFICATION_FAILED');applied=observed;}
       this.session.state = 'VERIFYING';
-      const verified = samePhysicalAdapter(this.session.originalAdapter,applied) && !applied.dhcpEnabled && (!standalone || (applied.defaultGateways.length===(this.session.temporaryGateway?1:0)&&(!this.session.temporaryGateway||applied.defaultGateways.includes(this.session.temporaryGateway)))) && applied.ipv4Addresses.some(item => item.address === this.session!.selectedCandidate!.ipAddress && item.prefixLength === this.session!.selectedCandidate!.prefixLength);
+      const verified = (!this.session.matchTargetAnchor||(applied.defaultGateways.length===0&&applied.dnsAutomatic===current.dnsAutomatic&&(current.dnsAutomatic||JSON.stringify(applied.dnsServers)===JSON.stringify(current.dnsServers)))) && samePhysicalAdapter(this.session.originalAdapter,applied) && !applied.dhcpEnabled && (!standalone || (applied.defaultGateways.length===(this.session.temporaryGateway?1:0)&&(!this.session.temporaryGateway||applied.defaultGateways.includes(this.session.temporaryGateway)))) && applied.ipv4Addresses.some(item => item.address === this.session!.selectedCandidate!.ipAddress && item.prefixLength === this.session!.selectedCandidate!.prefixLength);
       this.session.adapterConfigurationVerified = verified;
       if (!verified) throw new NetworkConfigurationError('Windows did not report the intended temporary address after Pair.', 'APPLY_VERIFICATION_FAILED');
       this.session.adapter = applied;
@@ -247,6 +302,9 @@ export class PairService {
         this.refreshNetworkMatch(applied);
         this.session.state='PAIRED';this.session.recoveryDisposition='HEALTHY_RETAINED';this.session.message='Temporary PC adapter configuration applied and verified. Choose Scan when ready; Restore remains available.';this.session.updatedAt=new Date().toISOString();
         await this.recovery.save(this.session);this.verificationOptions.changed?.(this.getStatus()!);this.audit('NETWORK_MATCH_VERIFIED',{interfaceIndex:applied.interfaceIndex,temporaryIp:this.session.selectedCandidate.ipAddress});return this.getStatus()!;
+      }
+      if(this.session.matchTargetAnchor&&this.matchTargetUnsafe(this.session,[applied])){
+        this.session.state='PAIRED';this.session.recoveryDisposition='HEALTHY_RETAINED';this.session.cameraReachabilityVerified=false;this.session.message='Adapter applied and verified; target identity changed, so camera verification was not performed. Restore remains available.';await this.recovery.save(this.session);return this.getStatus()!;
       }
       const device = structuredClone(this.database.getDeviceById(this.session.deviceId)!);
       applyNetworkRelationship(device, [applied], this.database.getDevices(), applied.interfaceIndex);
@@ -267,7 +325,8 @@ export class PairService {
           this.audit('Post-Pair neighbor enrichment',{...details,state:neighbor?.state,rawMac:neighbor?.macAddress,normalizedMac:mac,result:accepted?'NEIGHBOR_MATCHED':neighbor?'NEIGHBOR_OBSERVED_NOT_PROMOTED':'NEIGHBOR_NOT_FOUND',mergedDeviceId:accepted?enriched.id:undefined});
         } catch { this.audit('Post-Pair neighbor enrichment',{...details,result:'NEIGHBOR_LOOKUP_UNAVAILABLE'}); }
       }
-      this.database.upsertDevice(enriched);
+      if(this.session.matchTargetAnchor&&this.matchTargetUnsafe(this.session,[applied])){this.session.cameraReachabilityVerified=false;if(this.session.verification)this.session.verification.cameraResponded=false;}
+      else this.database.upsertDevice(enriched);
       this.session.state = 'PAIRED'; this.session.recoveryDisposition='HEALTHY_RETAINED';
       this.session.message = this.session.cameraReachabilityVerified ? 'Adapter Pair succeeded and the camera responded.' : 'Adapter Pair succeeded, but camera communication remains unverified. Restore remains available.';
       this.session.updatedAt = new Date().toISOString();
@@ -311,6 +370,7 @@ export class PairService {
   cancelPreparation(): PairSessionState | null {
     if(this.mutationPending)return this.getStatus();
     this.preparationController?.abort(); this.preparationController = null;
+    if(this.retainedBeforeMatch&&this.session?.state==='READY_FOR_CONFIRMATION'){this.session=this.retainedBeforeMatch;this.retainedBeforeMatch=null;return this.getStatus();}
     if (this.session && ['PREPARING', 'CHECKING_ADDRESS', 'READY_FOR_CONFIRMATION'].includes(this.session.state)) { this.session.state = 'CANCELLED'; this.session.message = 'Pair preparation cancelled; no adapter change was made.'; this.session.updatedAt = new Date().toISOString(); }
     return this.getStatus();
   }

@@ -1,5 +1,5 @@
 import type {Device,WindowsAdapterSnapshot} from '../../types/index.ts';
-import type {MatchCandidatePreview} from '../../shared/match_candidate_preview.ts';
+import type {MatchCandidatePreview,MatchApplyPlan} from '../../shared/match_candidate_preview.ts';
 import {SiteProjectDatabase} from '../storage/project_db.ts';
 import {PowerShellWindowsNetworkAdapterService,WindowsNetworkAdapterService} from './windows_adapter_service.ts';
 import {ConservativeCandidateAddressChecker,subnetMaskToPrefix} from './pair_service.ts';
@@ -34,6 +34,9 @@ export function matchCandidateChecker(adapter:WindowsAdapterSnapshot,localAddres
 
 /** Preview only: owns no Pair session, mutation capability invocation, or recovery store. */
 export class MatchCandidateService {
+  private plans=new Map<string,MatchApplyPlan>();
+  takePreview(id:string):MatchApplyPlan {const plan=this.plans.get(id);this.plans.delete(id);if(!plan||Date.now()-plan.createdAt>120000)throw Error('Candidate preview expired; search again.');return structuredClone(plan);}
+
   constructor(private readonly db:SiteProjectDatabase,private readonly adapters:WindowsNetworkAdapterService=new PowerShellWindowsNetworkAdapterService(),private readonly checkerFactory=matchCandidateChecker,private readonly budgetMs=8000){}
   async preview(deviceId:string,interfaceIndex:number):Promise<MatchCandidatePreview>{
     const controller=new AbortController();let timer:ReturnType<typeof setTimeout>|undefined;
@@ -68,6 +71,7 @@ export class MatchCandidateService {
       if(blocked()||topology(all)!==topology(await this.adapters.inspectAdapters(controller.signal))){result.candidates=[];result.message='Device identity, target network, or adapter topology changed during checking. Preview again.';return result;}
       result.candidates=result.candidates.filter(c=>!exclusions().has(c.ipAddress));
       result.state=result.candidates.length?'READY':'BLOCKED';
+      if(result.state==='READY'){result.previewId=crypto.randomUUID();result.currentAdapter=structuredClone(adapter);for(const [id,p] of this.plans)if(Date.now()-p.createdAt>120000)this.plans.delete(id);if(this.plans.size>=8)this.plans.delete(this.plans.keys().next().value!);this.plans.set(result.previewId,{preview:structuredClone(result),adapter:structuredClone(adapter),anchor:structuredClone(device.anchor),createdAt:Date.now()});}
       result.message=result.candidates.length?'Preferred and optional fallback candidates passed bounded occupancy checks. This is not a guarantee of vacancy. No network change has been made.':'No candidate passed the bounded occupancy checks; occupied or ambiguous addresses were excluded. No network change has been made.';
       return result;
     };

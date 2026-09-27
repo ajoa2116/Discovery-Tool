@@ -382,6 +382,7 @@ export interface PairVerificationEvidence {
 }
 
 export interface PairSessionState {
+  matchTargetAnchor?: DevicePhysicalAnchor;
   recoveryDisposition?: 'HEALTHY_RETAINED' | 'ALREADY_RESTORED' | 'ATTENTION_REQUIRED';
   adapterMutationActive?: boolean;
   purpose?: 'CAMERA_PAIR' | 'NETWORK_MATCH';
