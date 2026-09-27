@@ -19,7 +19,7 @@ assert(app.includes('aria-label="Scan choices"')&&app.includes('Quick Scan'),'Sc
 assert(app.includes('onClick={handleScanNetwork}')&&app.includes('<Play className="w-4 h-4 fill-current"/>Scan'),'primary Scan invokes current workflow');
 assert(app.includes('Quick Scan')&&app.includes('Default')&&app.includes('Fast discovery on local network'),'Quick Scan is the default current workflow');
 assert(app.includes('Customize adapters, ranges, ports, and discovery methods')&&!app.includes('Advanced Scan — Coming Soon')&&!app.includes('Scan Options...'),'Advanced Scan is enabled and obsolete placeholders are removed');
-assert(app.includes('<Filter')&&app.includes('>Filters</button>'),'Filters button exists');
+assert(app.includes('<Filter')&&app.includes('aria-label="Filters"')&&app.includes('aria-controls="device-filters"'),'Filters button exists');
 assert(app.includes('Status:')&&app.includes('Type:'),'Status and Type filters remain');
 assert(!app.includes('Config: Any')&&!app.includes('Configured: Any'),'top Config filter remains absent');
 assert(!app.includes("interfaces[0]?.name || 'Ethernet'")&&!app.includes("'192.168.1.50'"),'fake adapter fallback removed');

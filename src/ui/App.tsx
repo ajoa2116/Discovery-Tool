@@ -153,7 +153,10 @@ export default function App() {
   const [preferences, setPreferences] = useState<ApplicationPreferences>(() => readApplicationPreferences());
   const preferencesRef = useRef(preferences);
   const [openMenu, setOpenMenu] = useState<'PROJECT' | 'TOOLS' | 'SETTINGS' | 'SCAN' | null>(null);
-  const [filtersVisible, setFiltersVisible] = useState(true);
+  const [filtersVisible, setFiltersVisible] = useState(false);
+  const filtersButton=useRef<HTMLButtonElement>(null),filtersPanel=useRef<HTMLDivElement>(null);
+  const activeFilterCount=Number(statusFilter!=='ALL')+Number(deviceTypeFilter!=='ALL');
+  useEffect(()=>{if(filtersVisible)filtersPanel.current?.querySelector('select')?.focus();},[filtersVisible]);
   const [hasCompletedScan, setHasCompletedScan] = useState(false);
   const [preflight, setPreflight] = useState<UiPreflight|null>(null);
   const [addExisting, setAddExisting] = useState<{preview:AddExistingPreview;filename:string}|null>(null);
@@ -603,18 +606,19 @@ export default function App() {
         )}
 
         {/* Workspace Toolbar: Search, Filters & Network Adapter Info (Sections 7, 8, 24) */}
-        <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg p-2 space-y-2">
-          <div className="flex items-center gap-2">
+        <div role="region" aria-label="Device toolbar" className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-lg p-2 space-y-2">
+          <div className="flex flex-wrap items-center gap-2">
           <div className="relative flex shrink-0" onMouseDown={event=>event.stopPropagation()}>
             <button disabled={scanStarting || stopPending} onClick={handleScanNetwork} className={`h-9 flex items-center gap-2 rounded-l-md px-4 font-bold text-xs text-white ${isScanning?'bg-red-600 hover:bg-red-500':'bg-blue-600 hover:bg-blue-500'}`}>{isScanning?<><RefreshCw className="w-4 h-4 animate-spin"/>Stop</>:<><Play className="w-4 h-4 fill-current"/>Scan</>}</button>
             {!isScanning&&<button aria-label="Scan choices" aria-haspopup="menu" aria-expanded={openMenu==='SCAN'} onClick={()=>setOpenMenu(openMenu==='SCAN'?null:'SCAN')} className="h-9 rounded-r-md border-l border-blue-500 bg-blue-600 px-2 text-white hover:bg-blue-500"><ChevronDown className="w-4 h-4"/></button>}
             {openMenu==='SCAN'&&!isScanning&&<div role="menu" aria-label="Scan choices" className="ui-menu left-0 right-auto top-10 min-w-72"><button onClick={()=>{void handleScanNetwork();setOpenMenu(null)}}><span className="block font-semibold">Quick Scan <span className="font-normal text-blue-600">· Default</span></span><span className="block text-[10px] text-slate-500">Fast discovery on local network</span></button><button disabled={rediscoverBusy||scanStarting||stopPending||!(projectSession?.currentListSuppression?.count)} onClick={()=>void rediscoverRemoved()}>Rediscover manually removed cameras<span className="block text-[10px]">Manually removed: {projectSession?.currentListSuppression?.count||0}</span></button><button onClick={()=>{setAdvancedScanOpen(true);setOpenMenu(null)}}><span className="block font-semibold">Advanced Scan</span><span className="block text-[10px] text-slate-500">Customize adapters, ranges, ports, and discovery methods</span></button></div>}
           </div>
           {/* Search Box (Section 7) */}
-          <div className="flex-1 min-w-[220px] relative">
+          <div className="relative w-60 max-w-full shrink-0">
             <Search className="w-4 h-4 text-slate-500 absolute left-3 top-1/2 -translate-y-1/2" />
             <input
               type="text"
+              aria-label="Search devices"
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               placeholder="Search by Name, IP, MAC, Model, Serial, or Notes..."
@@ -622,17 +626,28 @@ export default function App() {
             />
           </div>
 
-          <button type="button" aria-expanded={filtersVisible} onClick={()=>setFiltersVisible(value=>!value)} className="h-9 inline-flex shrink-0 items-center gap-2 rounded-md border border-slate-200 px-3 text-xs font-semibold text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800"><Filter className="w-4 h-4"/>Filters</button>
+            {/* Network Adapter Info (Section 24) */}
+            <div className="flex items-center gap-1.5 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-md px-2.5 py-1 text-slate-600 dark:text-slate-300 font-mono text-[11px]">
+              <span title="First enumerated adapter shown. Quick Scan and monitoring use all eligible adapters; Advanced ONVIF/neighbor discovery uses your selection; targeted checks use Windows routing.">{interfaces[0] ? `${interfaces[0].name} • ${interfaces[0].ipAddress}` : adapterInspected?'Adapter: Unavailable':'Adapter: Detecting…'}</span>
+            </div>
+
+            {/* Continuous Discovery Monitor Indicator (Section 15) */}
+            <div className="flex items-center gap-1.5 text-slate-400 font-mono text-[11px]" title="Lightweight diagnostic refresh; no configuration or full discovery">
+              <Activity className={`w-3.5 h-3.5 ${diagnosticRefresh.enabled ? 'text-emerald-400' : 'text-slate-600'}`} />
+              <span>Diagnostics: {diagnosticRefresh.status==='UNAVAILABLE' ? 'Unavailable' : diagnosticRefresh.enabled ? `Active • ${Math.round(diagnosticRefresh.intervalMs / 1000)}s${diagnosticRefresh.running ? ' • checking' : ''}` : preflight?.overall==='UNAVAILABLE' ? 'Unavailable' : 'Paused'}</span>
+            </div>
+          <button ref={filtersButton} type="button" aria-label="Filters" aria-controls="device-filters" aria-expanded={filtersVisible} aria-describedby={activeFilterCount?'active-filter-count':undefined} onClick={()=>setFiltersVisible(value=>!value)} className="h-9 inline-flex shrink-0 items-center gap-2 rounded-md border border-slate-200 px-3 text-xs font-semibold text-slate-700 hover:bg-slate-50 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-600 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800"><Filter className="w-4 h-4"/>Filters{activeFilterCount>0&&<span id="active-filter-count" className="rounded bg-blue-100 px-1.5 text-[10px] text-blue-900">{activeFilterCount} active</span>}</button>
           </div>
 
           {/* Filter Dropdowns (Section 8) */}
-          {filtersVisible&&<div className="flex flex-wrap items-center gap-2 text-xs border-t border-slate-100 pt-2 dark:border-slate-800">
+          {filtersVisible&&<div ref={filtersPanel} id="device-filters" role="group" aria-label="Device filters" onKeyDown={e=>{if(e.key==='Escape'){e.preventDefault();setFiltersVisible(false);filtersButton.current?.focus();}}} className="flex w-fit max-w-full flex-wrap items-center gap-2 rounded-md border border-slate-200 bg-slate-50 p-2 text-xs dark:border-slate-700 dark:bg-slate-950">
             <div className="flex items-center gap-1.5 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-md px-2.5 py-1">
               <span className="text-slate-500">Status:</span>
               <select
+                aria-label="Status"
                 value={statusFilter}
                 onChange={(e) => setStatusFilter(e.target.value)}
-                className="bg-transparent text-slate-200 font-medium focus:outline-none cursor-pointer"
+                className="rounded bg-transparent text-slate-800 dark:text-slate-200 font-medium focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-600 cursor-pointer"
               >
                 <option value="ALL" className="bg-slate-900">All Statuses</option>
                 <option value="ONLINE" className="bg-slate-900">Online</option>
@@ -645,9 +660,10 @@ export default function App() {
             <div className="flex items-center gap-1.5 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-md px-2.5 py-1">
               <span className="text-slate-500">Type:</span>
               <select
+                aria-label="Type"
                 value={deviceTypeFilter}
                 onChange={(e) => setDeviceTypeFilter(e.target.value)}
-                className="bg-transparent text-slate-200 font-medium focus:outline-none cursor-pointer"
+                className="rounded bg-transparent text-slate-800 dark:text-slate-200 font-medium focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-600 cursor-pointer"
               >
                 <option value="ALL" className="bg-slate-900">All Types</option>
                 <option value="CAMERA" className="bg-slate-900">Cameras</option>
@@ -655,16 +671,6 @@ export default function App() {
               </select>
             </div>
 
-            {/* Network Adapter Info (Section 24) */}
-            <div className="flex items-center gap-1.5 bg-slate-50 dark:bg-slate-950 border border-slate-200 dark:border-slate-800 rounded-md px-2.5 py-1 text-slate-600 dark:text-slate-300 font-mono text-[11px]">
-              <span title="First enumerated adapter shown. Quick Scan and monitoring use all eligible adapters; Advanced ONVIF/neighbor discovery uses your selection; targeted checks use Windows routing.">{interfaces[0] ? `${interfaces[0].name} • ${interfaces[0].ipAddress}` : adapterInspected?'Adapter: Unavailable':'Adapter: Detecting…'}</span>
-            </div>
-
-            {/* Continuous Discovery Monitor Indicator (Section 15) */}
-            <div className="flex items-center gap-1.5 text-slate-400 font-mono text-[11px]" title="Lightweight diagnostic refresh; no configuration or full discovery">
-              <Activity className={`w-3.5 h-3.5 ${diagnosticRefresh.enabled ? 'text-emerald-400' : 'text-slate-600'}`} />
-              <span>Diagnostics: {diagnosticRefresh.status==='UNAVAILABLE' ? 'Unavailable' : diagnosticRefresh.enabled ? `Active • ${Math.round(diagnosticRefresh.intervalMs / 1000)}s${diagnosticRefresh.running ? ' • checking' : ''}` : preflight?.overall==='UNAVAILABLE' ? 'Unavailable' : 'Paused'}</span>
-            </div>
           </div>}
         </div>
 
