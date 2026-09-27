@@ -2,7 +2,7 @@
 const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright'),assert=require('node:assert/strict'),{mock}=require('./advanced_scan.cjs');
 let passed=0;const check=(v,n)=>{assert.ok(v,n);passed++;console.log('PASS: '+n)};
 (async()=>{const {decideCameraAccess}=await import('../../shared/camera_access.ts');const browser=await chromium.launch({channel:'msedge',headless:true});try{
- const page=await browser.newPage({viewport:{width:1100,height:800}}),errors=[];page.on('pageerror',e=>errors.push(e.message));await mock(page);
+ const page=await browser.newPage({viewport:{width:1100,height:800}}),errors=[];page.on('pageerror',e=>errors.push(e.message));await mock(page);await require('./camera_session_mock.cjs')(page);
  await page.route(/^https?:\/\/192\.0\.2\./,r=>r.fulfill({status:200,contentType:'text/html',body:'<p>Camera fixture</p>'}));
  await page.exposeFunction('workspaceDecision',(id,devices,collisions)=>decideCameraAccess(id,devices,collisions));
  await page.addInitScript(()=>{localStorage.setItem('cctv-network-assistant-preferences',JSON.stringify({version:1,browserPreference:'EMBEDDED'}));const t=__test,old=fetch;
@@ -11,6 +11,8 @@ let passed=0;const check=(v,n)=>{assert.ok(v,n);passed++;console.log('PASS: '+n)
  });
  await page.goto('http://127.0.0.1:5179/src/test/browser/advanced_scan.html?app');await page.locator('tbody').getByRole('button',{name:'192.0.2.100',exact:true}).click();const workspace=page.getByRole('region',{name:'Camera Browser'});await workspace.locator('iframe').waitFor();
  check(await workspace.isVisible(),'Embedded preference opens dedicated workspace');check(await page.getByRole('dialog',{name:'Camera Access'}).count()===0,'Credential Assistance is not primary workspace');
+ check(await page.evaluate(()=>__test.browserSessions.some(s=>s.path==='/api/camera-browser/sessions'&&s.body.deviceId==='camera-a')),'iframe requests server-owned stable-ID authorization');
+ check(!(await workspace.locator('iframe').getAttribute('src')).includes('cbi_'),'camera URL contains no control secret');
  check(await workspace.getByText(/MAC Last 6: 63FB0F/).count()===1&&await workspace.getByText(/Observed status: ONLINE/).count()===1,'compact header identifies selected physical camera');
  check(await workspace.getByRole('main',{name:'Camera content'}).evaluate(el=>el.getBoundingClientRect().height>innerHeight*.6),'camera content receives majority of desktop');
  check(await workspace.getByRole('button',{name:'Back',exact:true}).isDisabled()&&await workspace.getByRole('button',{name:'Forward',exact:true}).isDisabled(),'unsupported history truthfully disabled');
@@ -40,6 +42,15 @@ let passed=0;const check=(v,n)=>{assert.ok(v,n);passed++;console.log('PASS: '+n)
  await publish(()=>delete __test.project.devices[1].identityConflicts);await workspace.locator('iframe').waitFor();await page.clock.install();await workspace.getByRole('button',{name:'Refresh',exact:true}).click();await page.clock.fastForward(12500);await workspace.getByRole('alert').waitFor();check(await workspace.locator('iframe').count()===0,'unconfirmed cross-origin load has bounded fallback');
  await workspace.getByRole('button',{name:'More / technician tools',exact:true}).click();await workspace.getByRole('button',{name:'Device Inspector',exact:true}).click();check(await workspace.count()===0,'Inspector navigation leaves webpage workspace');await page.getByRole('button',{name:'Open Camera',exact:true}).click();await workspace.locator('iframe').waitFor();check(true,'reopening obtains fresh access approval');
  await workspace.getByRole('button',{name:'More / technician tools',exact:true}).click();await workspace.getByRole('button',{name:'Device Configuration',exact:true}).click();check(await workspace.count()===0,'Configuration remains a separate tool');
- check(await page.evaluate(()=>__test.access.filter(r=>r.method!=='GET').every(r=>r.path.endsWith('/open')||r.path.endsWith('/recheck'))),'no authentication save or networking mutation from workspace');check(errors.length===0,'no runtime errors');
+ check(await page.evaluate(()=>__test.access.filter(r=>r.method!=='GET').every(r=>r.path.endsWith('/open')||r.path.endsWith('/recheck'))),'no authentication save or networking mutation from workspace');
+ await page.reload();await page.locator('tbody').getByRole('button',{name:'192.0.2.100',exact:true}).click();await workspace.locator('iframe').waitFor();
+ await workspace.getByRole('button',{name:'Page visible — keep open',exact:true}).click();await page.evaluate(()=>__test.browserSessionFailure=true);await page.clock.runFor(2500);await workspace.locator('iframe').waitFor({state:'detached'});
+ check(await workspace.getByRole('button',{name:'Refresh',exact:true}).isDisabled(),'server revocation removes displayed camera and blocks refresh');
+ check(await workspace.getByRole('button',{name:'Open External',exact:true}).isEnabled(),'renderer session failure does not disable separately authorized external access');
+ await workspace.getByRole('button',{name:'Close Camera Browser'}).click();await page.evaluate(()=>__test.browserSessionFailure=false);await page.locator('tbody').getByRole('button',{name:'192.0.2.100',exact:true}).click();await workspace.locator('iframe').waitFor();
+ await workspace.getByRole('button',{name:'Page visible — keep open',exact:true}).click();await page.clock.fastForward(300001);await workspace.locator('iframe').waitFor({state:'detached'});
+ check(await workspace.getByRole('button',{name:'Refresh',exact:true}).isDisabled(),'absolute expiry removes confirmed iframe without automatic renewal');
+ await workspace.getByRole('button',{name:'Close Camera Browser'}).click();check(await page.evaluate(()=>__test.browserSessions.some(s=>s.path.endsWith('/close'))),'workspace cleanup closes its scoped lease');
+ check(errors.length===0,'no runtime errors');
  console.log(`Camera workspace browser: ${passed} passed, 0 failed, 0 skipped`);
  }finally{await browser.close()}})().catch(e=>{console.error(e);process.exitCode=1});

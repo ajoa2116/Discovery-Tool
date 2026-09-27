@@ -1,9 +1,10 @@
 export type TechnicianErrorCode='UNREACHABLE'|'TIMEOUT'|'AUTHENTICATION_REQUIRED'|'AUTHENTICATION_FAILED'|'UNSUPPORTED'|'DIFFERENT_NETWORK'|'DUPLICATE_IP'|'AMBIGUOUS_IDENTITY'|'DISCOVERY_FAILED'|'OPERATION_FAILED'|'WINDOWS_PERMISSION_REQUIRED'|'ADAPTER_OPERATION_FAILED'|'PROJECT_FILE_INVALID'|'REPORT_FAILED'|'CANCELLED'|'UNKNOWN';
 export interface TechnicianErrorPresentation{title:string;message:string;action?:string;technicalDetails?:string;code:TechnicianErrorCode;reference:string;timestamp:string;context?:{operation?:string;deviceId?:string}}
+import { redactBrowserSecrets } from './browser_secret_redaction.ts';
 const secret=/(password|passwd|pwd|credential|authorization|cookie|token|secret|api[_-]?key)/i;
 export function sanitizeTechnicalDetail(value:unknown):string|undefined{
   if(value===undefined||value===null)return undefined;
-  let text=value instanceof Error?value.message:String(value);
+  let text=redactBrowserSecrets(value instanceof Error?value.message:String(value));
   text=text.split(/\r?\n/)[0].replace(/\b(?:Basic|Bearer)\s+[A-Za-z0-9._~+\/-]+=*/gi,'[REDACTED AUTH]').replace(/([?&](?:password|passwd|pwd|token|secret|api[_-]?key)=)[^&\s]+/gi,'$1[REDACTED]').replace(/\b(password|passwd|pwd|token|secret)\s*[:=]\s*[^,;\s]+/gi,'$1=[REDACTED]');
   return secret.test(text)&&!/credential (?:is|required|reference|provider)/i.test(text)?text.replace(/[^ ]+/g,part=>secret.test(part)?'[REDACTED]':part).slice(0,500):text.slice(0,500);
 }

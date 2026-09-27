@@ -1,8 +1,10 @@
 import { AuditLogEntry, Device, ProjectSession } from '../../types/index.ts';
 import { ProjectHistoryService } from '../storage/project_history.ts';
+import { redactBrowserSecrets } from '../../shared/browser_secret_redaction.ts';
 
 const SECRET_KEY=/(password|passwd|pwd|credential|authorization|cookie|token|secret|api[_-]?key|session[_-]?key)/i;
 export function sanitizeSupportEvidence(value:unknown,key=''):unknown{
+  if(typeof value==='string')value=redactBrowserSecrets(value);
   if(SECRET_KEY.test(key))return'[REDACTED]';
   if(Array.isArray(value))return value.map(item=>sanitizeSupportEvidence(item));
   if(value&&typeof value==='object')return Object.fromEntries(Object.entries(value as Record<string,unknown>).map(([childKey,child])=>[childKey,sanitizeSupportEvidence(child,childKey)]));
