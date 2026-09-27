@@ -1,3 +1,4 @@
+import {SelectedDeviceActions} from './components/SelectedDeviceActions.tsx';
 import { isActiveCollision } from '../shared/collision_state.ts';
 import { isAdapterCollection } from '../shared/advanced_scan_contract.ts';
 import { prefixMask } from '../shared/address_validation.ts';
@@ -504,6 +505,18 @@ export default function App() {
     await fetchData();
   };
 
+  const [removingSelected,setRemovingSelected]=useState(false);
+  const removingSelectedRef=useRef(false);
+  const removeSelected=async()=>{
+    if(removingSelectedRef.current)return;
+    const ids=(project?.devices||[]).filter(d=>selectedDeviceIds.has(d.id)).map(d=>d.id);
+    if(!ids.length||!window.confirm(`Remove ${ids.length} selected device(s) from Current List for this session? Project and Report Set membership stay unchanged. No physical camera or network settings are changed. Identified cameras stay hidden until Rediscover manually removed cameras or restart; weak-identity rows may return.`))return;
+    removingSelectedRef.current=true;setRemovingSelected(true);let removed=0;
+    try{for(const id of ids){await handleRemoveDevice(id,'current');removed++;}setCurrentListFeedback(`Removed ${removed} device(s) from Current List. Project and Report Set membership are unchanged. Identified cameras stay hidden for this session; weak-identity rows may return.`);}
+    catch{setCurrentListFeedback(`Removed ${removed} of ${ids.length} selected device(s). Remaining removals were not confirmed. Refresh the list before retrying.`);}
+    finally{removingSelectedRef.current=false;setRemovingSelected(false);}
+  };
+
   // Filtered devices based on search query, status, and device type (Sections 7 & 8)
   const filteredDevices = (project?.devices || []).filter((dev) => {
     const q = searchQuery.toLowerCase();
@@ -656,42 +669,14 @@ export default function App() {
         </div>
 
         {/* Section 5 & 39: Bulk Operation Bar (when items selected) */}
-        {selectedDeviceIds.size > 0 && (
-          <div className="bg-sky-950/70 border border-sky-500/50 rounded-xl p-3 flex items-center justify-between text-xs animate-fade-in shadow-md">
-            <div className="flex items-center gap-2 text-sky-200 font-semibold">
-              <CheckCircle className="w-4 h-4 text-sky-400" />
-              <span>{selectedDeviceIds.size} device(s) selected</span>
-            </div>
-
-            <div className="flex items-center gap-2">
-              {projectSession?.mode==='QUICK_WORK'&&<button onClick={()=>addExistingProjectInput.current?.click()} className="px-3.5 py-1.5 bg-blue-700 hover:bg-blue-600 text-white rounded-lg font-bold transition flex items-center gap-1.5"><FolderOpen className="w-3.5 h-3.5"/>Add to Existing Project</button>}
-              <button
-                onClick={() => handleDiagnose(selectedDevicesList).catch(error => window.alert(error.message))}
-                className="px-3.5 py-1.5 bg-emerald-700 hover:bg-emerald-600 text-white rounded-lg font-bold transition flex items-center gap-1.5"
-              >
-                <Activity className="w-3.5 h-3.5" />Diagnose Selected
-              </button>
-              <button className="rounded border border-slate-300 bg-white px-3 py-1.5 text-blue-800" onClick={()=>void updateReportSet('add',{deviceIds:[...selectedDeviceIds]}).catch(error=>window.alert(error.message))}>Add to Report</button>
-              <button className="rounded border border-slate-300 bg-white px-3 py-1.5 text-blue-800" onClick={()=>void updateReportSet('remove',{deviceIds:[...selectedDeviceIds]}).catch(error=>window.alert(error.message))}>Remove from Report</button>
-              <button className="rounded border border-slate-300 bg-white px-3 py-1.5 text-blue-800" onClick={()=>{setReportScope('SELECTED');setIsSiteSurveyModalOpen(true);}}>Create Report from Selected</button>
-              <button
-                disabled={selectedDeviceIds.size < 2}
-                onClick={() => setIsBulkReIpModalOpen(true)}
-                className="px-3.5 py-1.5 bg-sky-600 hover:bg-sky-500 disabled:bg-slate-400 disabled:cursor-not-allowed text-white rounded-lg font-bold transition flex items-center gap-1.5 shadow-md shadow-sky-950"
-              >
-                <Network className="w-3.5 h-3.5" />
-                Configure Network
-              </button>
-              <button disabled={selectedDeviceIds.size < 2} onClick={() => setIsBulkDeviceConfigOpen(true)} className="px-3.5 py-1.5 bg-slate-700 hover:bg-slate-600 disabled:bg-slate-400 disabled:cursor-not-allowed text-white rounded-lg font-bold transition flex items-center gap-1.5"><Settings className="w-3.5 h-3.5"/>Configure Settings</button>
-              <button
-                onClick={() => setSelectedDeviceIds(new Set())}
-                className="px-2.5 py-1 text-slate-400 hover:text-white rounded-lg"
-              >
-                Deselect All
-              </button>
-            </div>
-          </div>
-        )}
+        {selectedDeviceIds.size > 0 && <SelectedDeviceActions count={selectedDeviceIds.size} removing={removingSelected}
+          onDiagnose={()=>void handleDiagnose(selectedDevicesList).catch(error=>window.alert(error.message))}
+          onNetwork={()=>setIsBulkReIpModalOpen(true)} onDevice={()=>setIsBulkDeviceConfigOpen(true)}
+          onReport={()=>{setReportScope('SELECTED');setIsSiteSurveyModalOpen(true);}} onRemove={()=>void removeSelected()}
+          onAddReport={()=>void updateReportSet('add',{deviceIds:[...selectedDeviceIds]}).catch(error=>window.alert(error.message))}
+          onRemoveReport={()=>void updateReportSet('remove',{deviceIds:[...selectedDeviceIds]}).catch(error=>window.alert(error.message))}
+          onAddProject={projectSession?.mode==='QUICK_WORK'?()=>addExistingProjectInput.current?.click():undefined}
+          onDeselect={()=>setSelectedDeviceIds(new Set())}/>}
 
         {/* Section 5: Master Device Table */}
         <MasterDeviceTable
