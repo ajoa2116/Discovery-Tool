@@ -1,0 +1,13 @@
+import assert from 'node:assert/strict';
+import {SiteProjectDatabase} from '../core/storage/project_db.ts';
+import type {Device} from '../types/index.ts';
+let passed=0;const check=(value:unknown,name:string)=>{assert.ok(value,name);passed++;console.log('PASS: '+name)};
+const device=(id:string):Device=>({id,anchor:{macAddress:null,onvifEndpointUuid:'uuid-'+id,vendor:'Axis'},network:{ipAddress:'192.168.1.100',port:80,protocol:'ONVIF',subnetMask:null},status:'ONLINE',discoveredPhase:3,firstSeenAt:'now',lastSeenAt:'now'});
+const db=new SiteProjectDatabase();db.startQuickWork();db.upsertDevice(device('a'));check(db.getSession().projectMemberDeviceIds?.length===0,'Quick Work has no Project membership');
+db.createNewProject('Fixture');db.upsertDevice(device('a'));db.applyReverification([device('a')],[device('b')],false,false);
+check(db.getSession().projectMemberDeviceIds?.join(',')==='a','live-only same-IP peer excluded from membership');
+check(db.getSession().project.devices.length===2,'both physical identities retained');
+const before=JSON.stringify(db.getSession());db.getSession();check(JSON.stringify(db.getSession())===before,'membership projection read-only');
+check(!db.exportProjectJsonForSave().includes('projectMemberDeviceIds'),'runtime projection not persisted');
+db.upsertDevice(device('b'));check(db.getSession().projectMemberDeviceIds?.length===2,'membership addition reflected immediately');
+console.log(`Filter membership: ${passed} passed, 0 failed, 0 skipped`);

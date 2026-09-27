@@ -410,6 +410,7 @@ export interface PairSessionState {
 export type WorkMode = 'QUICK_WORK' | 'PROJECT';
 
 export interface ProjectSession {
+  projectMemberDeviceIds?: string[]; // Runtime projection only; never persisted in project bundles.
   currentListSuppression?:{count:number;awaitingRediscovery:number;hiddenDeviceIds?:string[]};
   mode: WorkMode;
   project: SiteProject;

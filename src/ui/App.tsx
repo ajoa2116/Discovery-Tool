@@ -106,6 +106,13 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState('ALL');
   const [deviceTypeFilter, setDeviceTypeFilter] = useState('ALL');
+  const [manufacturerFilter,setManufacturerFilter]=useState('');
+  const [configuredFilter,setConfiguredFilter]=useState('ALL');
+  const [reportFilter,setReportFilter]=useState('ALL');
+  const [projectFilter,setProjectFilter]=useState('ALL');
+  const manufacturerOf=(device:Device)=>device.anchor.vendor?.trim()||'Unknown';
+  const manufacturers=Array.from(new Set((project?.devices||[]).map(manufacturerOf))).sort((a,b)=>a.localeCompare(b));
+  const resetFilters=()=>{setStatusFilter('ALL');setDeviceTypeFilter('ALL');setManufacturerFilter('');setConfiguredFilter('ALL');setReportFilter('ALL');setProjectFilter('ALL');};
 
   // Selected devices for bulk operations (Section 39)
   const [selectedDeviceIds, setSelectedDeviceIds] = useState<Set<string>>(new Set());
@@ -155,7 +162,7 @@ export default function App() {
   const [openMenu, setOpenMenu] = useState<'PROJECT' | 'TOOLS' | 'SETTINGS' | 'SCAN' | null>(null);
   const [filtersVisible, setFiltersVisible] = useState(false);
   const filtersButton=useRef<HTMLButtonElement>(null),filtersPanel=useRef<HTMLDivElement>(null);
-  const activeFilterCount=Number(statusFilter!=='ALL')+Number(deviceTypeFilter!=='ALL');
+  const activeFilterCount=Number(statusFilter!=='ALL')+Number(deviceTypeFilter!=='ALL')+Number(manufacturerFilter!=='')+Number(configuredFilter!=='ALL')+Number(reportFilter!=='ALL')+Number(projectFilter!=='ALL');
   useEffect(()=>{if(filtersVisible)filtersPanel.current?.querySelector('select')?.focus();},[filtersVisible]);
   const [hasCompletedScan, setHasCompletedScan] = useState(false);
   const [preflight, setPreflight] = useState<UiPreflight|null>(null);
@@ -547,7 +554,14 @@ export default function App() {
       (deviceTypeFilter === 'CAMERA' && !dev.anchor.vendor.toLowerCase().includes('lenel')) ||
       (deviceTypeFilter === 'ACCESS' && dev.anchor.vendor.toLowerCase().includes('lenel'));
 
-    return matchesSearch && matchesStatus && matchesType;
+    const configured=dev.configuredState?.manualOverride??dev.configuredState?.inferred??null;
+    const inReport=reportSet.members.some(member=>member.currentDeviceId===dev.id);
+    const inProject=projectSession?.mode==='PROJECT'&&(projectSession.projectMemberDeviceIds||[]).includes(dev.id);
+    return matchesSearch && matchesStatus && matchesType
+      && (!manufacturerFilter||manufacturerOf(dev)===manufacturerFilter)
+      && (configuredFilter==='ALL'||(configuredFilter==='YES'?configured===true:configuredFilter==='NO'?configured===false:configured===null))
+      && (reportFilter==='ALL'||(reportFilter==='IN'?inReport:!inReport))
+      && (projectFilter==='ALL'||(projectFilter==='IN'?inProject:!inProject));
   });
 
   const selectedDevicesList = (project?.devices || []).filter((d) => selectedDeviceIds.has(d.id));
@@ -670,6 +684,24 @@ export default function App() {
                 <option value="ACCESS" className="bg-slate-900">Access Control</option>
               </select>
             </div>
+
+            <label className="flex items-center gap-1.5">Manufacturer:
+              <select aria-label="Manufacturer" value={manufacturerFilter} onChange={e=>setManufacturerFilter(e.target.value)} className="max-w-48 rounded border border-slate-200 bg-white p-1 text-slate-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-600">
+                <option value="">All Manufacturers</option>
+                {manufacturerFilter&&!manufacturers.includes(manufacturerFilter)&&<option value={manufacturerFilter}>{manufacturerFilter} (no current devices)</option>}
+                {manufacturers.map(vendor=><option key={vendor} value={vendor}>{vendor}</option>)}
+              </select>
+            </label>
+            {[
+              {label:'Configured State',value:configuredFilter,set:setConfiguredFilter,options:[['ALL','All'],['YES','Configured'],['NO','Not Configured'],['UNKNOWN','Unknown']]},
+              {label:'Report Set',value:reportFilter,set:setReportFilter,options:[['ALL','All'],['IN','In Report Set'],['OUT','Not in Report Set']]},
+              {label:'Project Membership',value:projectFilter,set:setProjectFilter,options:[['ALL','All'],['IN','In Project'],['OUT','Not in Project']]},
+            ].map(control=><label key={control.label} className="flex items-center gap-1.5">{control.label}:
+              <select aria-label={control.label} value={control.value} onChange={e=>control.set(e.target.value)} className="rounded border border-slate-200 bg-white p-1 text-slate-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-600">
+                {control.options.map(([value,label])=><option key={value} value={value}>{label}</option>)}
+              </select>
+            </label>)}
+            <button type="button" onClick={resetFilters} className="rounded border border-slate-200 bg-white px-2 py-1 text-slate-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-600">Clear filters</button>
 
           </div>}
         </div>

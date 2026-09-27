@@ -87,7 +87,7 @@ export class SiteProjectDatabase {
   private currentOnlyDeviceIds = new Set<string>();
   private removedProjectIdentities: Array<{ id: string; mac?: string; uuid?: string; serial?: string }> = [];
 
-  public getSession(): ProjectSession { const project=this.getProject(),visible=new Set(project.devices.map(d=>d.id));return { ...clone(this.session), project, currentListSuppression:{count:this.suppression.count,awaitingRediscovery:this.awaitingRediscovery.count,hiddenDeviceIds:this.getDevices().filter(d=>!visible.has(d.id)).map(d=>d.id)} }; }
+  public getSession(): ProjectSession { const project=this.getProject(),visible=new Set(project.devices.map(d=>d.id));return { ...clone(this.session), project, projectMemberDeviceIds:this.session.mode==='PROJECT'?this.getProjectMemberDevices().map(device=>device.id):[], currentListSuppression:{count:this.suppression.count,awaitingRediscovery:this.awaitingRediscovery.count,hiddenDeviceIds:this.getDevices().filter(d=>!visible.has(d.id)).map(d=>d.id)} }; }
   public getProject(): SiteProject {
     const project = clone(this.session.project);
     project.devices = project.devices.filter(device => !this.hiddenCurrentDeviceIds.has(device.id)&&!this.suppression.hides(device,this.getDevices())&&!this.awaitingRediscovery.hides(device,this.getDevices()));
