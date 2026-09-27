@@ -30,7 +30,7 @@ import { DuplicateDrawer } from './components/DuplicateDrawer.tsx';
 import { RogueDhcpBanner } from './components/RogueDhcpBanner.tsx';
 import { LegacyOnboardModal } from './components/LegacyOnboardModal.tsx';
 import { NetworkConfigModal } from './components/NetworkConfigModal.tsx';
-import { BrowserModal } from './components/BrowserModal.tsx';
+import { CameraBrowserWorkspace } from './components/CameraBrowserWorkspace.tsx';
 import { NewDeviceNotification } from './components/NewDeviceNotification.tsx';
 import { DeviceInspectorDrawer } from './components/DeviceInspectorDrawer.tsx';
 import { BulkReIpModal } from './components/BulkReIpModal.tsx';
@@ -830,16 +830,15 @@ export default function App() {
         />
       )}
 
-      {/* Section 28: Embedded Browser Modal */}
-      <BrowserModal
-        isOpen={selectedDeviceForBrowser !== null}
-        onClose={() => setSelectedDeviceForBrowser(null)}
-        device={project?.devices.find(device=>device.id===selectedDeviceForBrowser?.id)||selectedDeviceForBrowser}
-        devices={project?.devices||[]}
-        collisions={project?.collisions||[]}
-        onOpenDuplicateAssistant={handleOpenDuplicateAssistant}
-      />
-
+      {selectedDeviceForBrowser && <CameraBrowserWorkspace
+        key={selectedDeviceForBrowser.id}
+        onClose={()=>setSelectedDeviceForBrowser(null)}
+        device={project?.devices.find(device=>device.id===selectedDeviceForBrowser.id)||selectedDeviceForBrowser}
+        devices={project?.devices||[]} collisions={project?.collisions||[]}
+        onDuplicate={handleOpenDuplicateAssistant}
+        onInspect={device=>{setSelectedDeviceForBrowser(null);setSelectedDeviceForInspector(device);}}
+        onConfigure={device=>{setSelectedDeviceForBrowser(null);setSelectedDeviceForInspector(null);setSelectedDeviceForConfig(device);}}
+      />}
       {/* Section 13.1: Legacy Hardware Manual Onboarding */}
       <LegacyOnboardModal
         isOpen={isLegacyModalOpen}
