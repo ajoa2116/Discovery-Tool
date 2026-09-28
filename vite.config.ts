@@ -5,6 +5,8 @@ export default defineConfig({
   plugins: [react()],
   server: {
     port: 5173,
+    // Native compiler/capture outputs can be exclusively locked on Windows.
+    watch: { ignored: ['**/native/**/bin/**', '**/native/**/obj/**', '**/.native-test-artifacts/**'] },
     proxy: {
       '/api': {
         target: 'http://localhost:3001',

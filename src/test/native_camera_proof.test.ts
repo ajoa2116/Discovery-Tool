@@ -1,0 +1,45 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { CameraBrowserSessions, HANDOFF_MS, BROWSER_SESSION_MS } from '../core/connect/camera_browser_sessions.ts';
+import { NativeProofProtocol, NativeFrameDecoder } from '../core/connect/native_camera_proof.ts';
+import { Device } from '../types/index.ts';
+import { sanitizeSupportEvidence } from '../core/readiness/support_bundle.ts';
+
+function setup() {
+  let time = 1000;
+  const device: Device = { id: 'native-fixture', anchor: { macAddress: null, onvifEndpointUuid: 'uuid-native-fixture', vendor: 'Fixture' }, network: { ipAddress: '192.0.2.1', subnetMask: '255.255.255.0', port: 80, protocol: 'ONVIF' }, status: 'ONLINE', sessionVerification: 'VERIFIED', discoveredPhase: 3, firstSeenAt: 'now', lastSeenAt: 'now' };
+  const sessions = new CameraBrowserSessions(() => ({ key: 'fixture', devices: [device], collisions: [] }), () => 'http://192.0.2.1', () => time);
+  const events: unknown[] = [], protocol = new NativeProofProtocol(sessions, device.id, e => events.push(e));
+  const offer = () => protocol.receive({ v: 1, type: 'BROKER_READY', elevated: false }) as any;
+  const redeem = (h: any) => protocol.receive({ ...h, type: 'REDEEM' }) as any;
+  const active = () => redeem(offer());
+  return { device, sessions, protocol, events, offer, redeem, active, advance: (ms: number) => { time += ms; } };
+}
+const message = (grant: any, type = 'STATUS', event = 'NONE') => ({ v: 1, type: 'MESSAGE', message: { type, sessionId: grant.session.sessionId, deviceId: grant.session.deviceId, token: grant.token }, event, runtime: '' });
+
+test('intended private bootstrap redeems via Phase 17C and rotates secret', () => { const s = setup(), h = s.offer(), g = s.redeem(h); assert.equal(g.session.deviceId, s.device.id); assert.notEqual(h.token, g.token); assert.equal(g.session.origin, 'http://192.0.2.1'); });
+test('native launch cannot be authorized by an IP selector', () => { const s = setup(); assert.throws(() => new NativeProofProtocol(s.sessions, '192.0.2.1')); });
+test('malformed bootstrap fails closed', () => { const s = setup(); assert.throws(() => s.protocol.receive({ v: 1, type: 'BROKER_READY', elevated: false, url: 'http://evil.invalid' })); assert.ok(s.protocol.closed); });
+test('wrong protocol version rejected', () => { const s = setup(); assert.throws(() => s.protocol.receive({ v: 2, type: 'BROKER_READY', elevated: false })); });
+test('elevated broker readiness rejected by Node too', () => { const s = setup(); assert.throws(() => s.protocol.receive({ v: 1, type: 'BROKER_READY', elevated: true })); });
+test('expired handoff is rejected in real redemption service', () => { const s = setup(), h = s.offer(); s.advance(HANDOFF_MS); assert.throws(() => s.redeem(h)); });
+test('revoked handoff is rejected', () => { const s = setup(), h = s.offer(); s.sessions.revoke(h.sessionId); assert.throws(() => s.redeem(h)); });
+test('redeemed bootstrap cannot be replayed', () => { const s = setup(), h = s.offer(); s.redeem(h); assert.throws(() => s.redeem(h)); assert.ok(s.protocol.closed); });
+test('a second connection cannot redeem another protocol instance handoff', () => { const s = setup(), h = s.offer(), other = new NativeProofProtocol(s.sessions, s.device.id); other.receive({ v: 1, type: 'BROKER_READY', elevated: false }); assert.throws(() => other.receive({ ...h, type: 'REDEEM' })); assert.ok(s.redeem(h).session); });
+test('abandoned authorization closes permanently', () => { const s = setup(), h = s.offer(); s.protocol.close(); assert.throws(() => s.redeem(h)); });
+test('rotated token cannot control a different native session', () => { const s = setup(), g = s.active(), other = new NativeProofProtocol(s.sessions, s.device.id); const h = other.receive({ v: 1, type: 'BROKER_READY', elevated: false }) as any; const b = other.receive({ ...h, type: 'REDEEM' }) as any; assert.throws(() => other.receive({ ...message(b), message: { ...message(b).message, token: g.token } })); assert.equal((s.protocol.receive(message(g)) as any).state, 'ACTIVE'); });
+test('metadata is allowlisted and no credentials/project/recovery reach renderer', () => { const s = setup(); Object.assign(s.device, { password: 'do-not-send', recovery: { original: 'private' } }); const g = s.active(); assert.deepEqual(Object.keys(g.session).sort(), ['version', 'sessionId', 'deviceId', 'address', 'origin', 'display', 'createdAt', 'expiresAt', 'renderer'].sort()); assert.ok(!JSON.stringify(g).includes('do-not-send')); assert.ok(!JSON.stringify(g).includes('recovery')); });
+test('only approved target appears in session, never a token URL', () => { const s = setup(), g = s.active(); assert.equal(g.session.origin, 'http://192.0.2.1'); assert.ok(!g.session.origin.includes(g.token)); });
+for (const operation of ['PAIR', 'MATCH_NETWORK', 'CREDENTIALS', 'PROJECT_WRITE', 'REPORT_WRITE']) test(`${operation} is absent from native authority`, () => { const s = setup(), g = s.active(); assert.throws(() => s.protocol.receive(message(g, operation))); });
+test('active expiry invalidates renderer status', () => { const s = setup(), g = s.active(); s.advance(BROWSER_SESSION_MS); assert.throws(() => s.protocol.receive(message(g))); });
+test('changed address immediately blocks next native heartbeat', () => { const s = setup(), g = s.active(); s.device.network.ipAddress = '192.0.2.2'; assert.throws(() => s.protocol.receive(message(g))); });
+test('native close leaves independent session active', () => { const s = setup(), g = s.active(), other = new NativeProofProtocol(s.sessions, s.device.id), h = other.receive({ v: 1, type: 'BROKER_READY', elevated: false }) as any, b = other.receive({ ...h, type: 'REDEEM' }) as any; assert.equal((s.protocol.receive(message(g, 'CLOSE')) as any).state, 'CLOSED'); assert.equal((other.receive(message(b)) as any).state, 'ACTIVE'); other.close(); });
+test('session shutdown invalidates all corresponding native authorization', () => { const s = setup(), g = s.active(); s.sessions.clear(); assert.throws(() => s.protocol.receive(message(g))); });
+test('safe diagnostics expose only category and validated runtime version', () => { const s = setup(), g = s.active(); s.protocol.receive({ ...message(g, 'READY', 'INITIALIZED'), runtime: '153.0.4234.48' }); assert.deepEqual(s.events, [{ code: 'INITIALIZED', runtime: '153.0.4234.48' }]); assert.ok(!JSON.stringify(s.events).includes(g.token)); assert.ok(!JSON.stringify(s.protocol).includes(g.token)); });
+test('native error text cannot smuggle secret payloads into logs', () => { const s = setup(), g = s.active(); assert.throws(() => s.protocol.receive({ ...message(g), event: g.token }), error => error instanceof Error && !error.message.includes(g.token)); assert.equal(s.events.length, 0); assert.ok(!JSON.stringify(sanitizeSupportEvidence({ message: g.token })).includes(g.token)); });
+test('stream decoder supports split frames and rejects malformed/oversize/UTF-8', () => { const d = new NativeFrameDecoder(); assert.deepEqual(d.push(Buffer.from('{"v":')), []); assert.deepEqual(d.push(Buffer.from('1}\n')), [{ v: 1 }]); for (const data of [Buffer.from('not json\n'), Buffer.alloc(16385, 97), Buffer.from([255, 10])]) assert.throws(() => new NativeFrameDecoder().push(data)); });
+test('manifest and startup fail closed without requesting UAC', () => { const manifest = readFileSync('native/CameraBrowserHost/app.manifest', 'utf8'), boundary = readFileSync('native/CameraBrowserHost/WindowsBoundary.cs', 'utf8'); assert.match(manifest, /level="asInvoker" uiAccess="false"/); assert.match(boundary, /TokenElevation/); assert.match(boundary, /elevated != 0/); });
+test('native host launch has non-secret rendezvous only and no network mutation API', () => { const source = readFileSync('native/CameraBrowserHost/Program.cs', 'utf8'); assert.match(source, /ArgumentList.Add\(bootstrapName\)/); assert.ok(!/ArgumentList.Add\([^\n]*(token|secret|origin)/i.test(source)); for (const file of ['Program.cs', 'WindowsBoundary.cs', 'CameraWindow.cs']) assert.ok(!/Set-NetIP|New-NetIPAddress|netsh|PairService|MatchCandidate|PasswordVault/.test(readFileSync('native/CameraBrowserHost/' + file, 'utf8'))); });
+test('TLS error cancellation and navigation guards contain no bypass', () => { const source = readFileSync('native/CameraBrowserHost/CameraWindow.cs', 'utf8'); assert.match(source, /CoreWebView2ServerCertificateErrorAction.Cancel/); assert.match(source, /CERTIFICATE_REJECTED/); assert.ok(!/AlwaysAllow|ignore-certificate-errors|disable-web-security/.test(source)); assert.match(source, /TRANSITION_BLOCKED/); });
+test('normal production renderer and external paths do not import native proof', () => { for (const file of ['src/server/index.ts', 'src/ui/components/CameraBrowserWorkspace.tsx', 'src/core/connect/connect_service.ts']) assert.ok(!readFileSync(file, 'utf8').includes('native_camera_proof')); assert.match(readFileSync('src/ui/use_camera_renderer.ts', 'utf8'), /new IframeCameraRenderer/); });

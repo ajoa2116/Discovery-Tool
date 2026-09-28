@@ -5,3 +5,6 @@ dist/
 Thumbs.db
 .env
 .env.local
+native/**/bin/
+native/**/obj/
+.native-test-artifacts/
