@@ -27,6 +27,7 @@ export interface CameraHostChannel {
   dispatch(message: unknown): { session: CameraBrowserSession; state: 'ACTIVE' | 'CLOSED'; canGoBack?: boolean; canGoForward?: boolean };
   disconnect(): void;
 }
+const displayText = (value: string | undefined) => (value || '').replace(/[\x00-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]/g, '').slice(0, 120);
 const digest = (value: string) => createHash('sha256').update(value).digest();
 const anchor = (device: Device) => { const a = canonicalAnchor(device.anchor); return JSON.stringify([a.macAddress, a.onvifEndpointUuid, a.serialNumber]); };
 
@@ -56,7 +57,7 @@ export class CameraBrowserSessions {
       if (this.#entries.size >= 128) throw new BrowserSessionError();
       const { context, device, origin } = this.#approved(deviceId), now = this.#now();
       const session: CameraBrowserSession = { version: 1, sessionId: randomUUID(), deviceId, address: device.network.ipAddress, origin,
-        display: { name: device.technician?.name || device.anchor.vendor, manufacturer: device.anchor.vendor, model: device.anchor.model },
+        display: { name: displayText(device.technician?.name || device.anchor.vendor), manufacturer: displayText(device.anchor.vendor), model: displayText(device.anchor.model), identity: canonicalAnchor(device.anchor).macAddress ? 'MAC Last 6: ' + canonicalAnchor(device.anchor).macAddress!.replace(/:/g, '').slice(-6).toUpperCase() : 'Device: ' + displayText(device.id) },
         createdAt: now, expiresAt: now + (channel ? HANDOFF_MS : BROWSER_SESSION_MS), renderer };
       const secret = new BrowserSecret(channel ? 'h' : 'i');
       this.#entries.set(session.sessionId, { session, context: context.key, anchor: anchor(device), digest: digest(secret.expose()), phase: channel ? 'HANDOFF' : 'ACTIVE', channel });
@@ -64,7 +65,7 @@ export class CameraBrowserSessions {
     } catch { throw new BrowserSessionError(); }
   }
   createIframe(deviceId: string) { return this.#create(deviceId, 'IFRAME'); }
-  /** Trusted application only. No HTTP route exposes native issuance or channel creation. */
+  /** Trusted application only. Native issuance requires a registered private channel; no HTTP redemption endpoint. */
   createNative(deviceId: string, channel: CameraHostChannel) {
     if (!this.#channels.has(channel)) throw new BrowserSessionError();
     return this.#create(deviceId, 'WINDOWS_WEBVIEW2', channel);

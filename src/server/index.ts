@@ -39,6 +39,7 @@ import { MatchCandidateService } from '../core/network/match_candidate_service.t
 import { PairService } from '../core/network/pair_service.ts';
 import { ConnectService, ConnectError } from '../core/connect/connect_service.ts';
 import { CameraBrowserSessions } from '../core/connect/camera_browser_sessions.ts';
+import { CameraRendererService } from '../core/connect/camera_renderer_service.ts';
 import { cameraBrowserRoutes } from './camera_browser_routes.ts';
 import { CameraNetworkConfigurationService } from '../core/network/camera_network_service.ts';
 import { CameraConfigurationService } from '../core/network/camera_configuration_service.ts';
@@ -74,7 +75,9 @@ const cameraBrowserSessions = new CameraBrowserSessions(() => {
   const session = projectDb.getSession();
   return { key: session.mode + ':' + session.project.id, devices: session.project.devices, collisions: session.project.collisions };
 }, id => connectService.resolve(id).endpoint.url);
-const browserSessionTimer = setInterval(() => cameraBrowserSessions.reconcile(), 1000);
+// Production supplies no fixture authority: native real-camera launch stays gated.
+const cameraRenderers = new CameraRendererService(cameraBrowserSessions);
+const browserSessionTimer = setInterval(() => { cameraBrowserSessions.reconcile(); cameraRenderers.reconcile(); }, 1000);
 browserSessionTimer.unref();
 const connectRecheckControllers = new Map<string, AbortController>();
 const cameraNetworkService = new CameraNetworkConfigurationService();
@@ -107,14 +110,14 @@ let preflightCache: { stateKey:string; expiresAt: number; value: Awaited<ReturnT
 const getPreflight = async (refresh=false) => { const stateKey=JSON.stringify([recoveryInspected,pairService.getStatus()?.state,tasks.snapshot().active,supportTrace.isActive(),receiveMatrix?.isActive()]);if (!refresh && preflightCache?.stateKey===stateKey && preflightCache.expiresAt > Date.now()) return preflightCache.value; const value = await preflightService.run(); preflightCache = { stateKey,expiresAt: Date.now() + 60_000, value }; return value; };
 
 app.use(cors({ exposedHeaders: ['X-CCTV-Report-Renderer', 'Content-Disposition'] }));
-app.use('/api/camera-browser', cameraBrowserRoutes(cameraBrowserSessions, process.env.NODE_ENV !== 'production'));
+app.use('/api/camera-browser', cameraBrowserRoutes(cameraBrowserSessions, process.env.NODE_ENV !== 'production', cameraRenderers));
 app.use(express.json());
 // Preserve the latest snapshot before any current-list/project transition.
 app.use(['/api/devices','/api/project'],(_req,_res,next)=>{reportSet.snapshot();next();});
 
 // Broadcast WebSocket message to all connected clients
 const broadcast = (data: any) => {
-  cameraBrowserSessions.reconcile();
+  cameraBrowserSessions.reconcile(); cameraRenderers.reconcile();
   if(data.data?.project||data.data?.session){reportSet.snapshot();data.data.currentListSuppression=projectDb.getSession().currentListSuppression;}
   if(data.type==='FOREGROUND_SCAN_STATE'){const snapshot=data.data.foreground;operationTasks.foreground(snapshot,()=>foregroundDiscovery.stop(snapshot.session?.sessionId),snapshot.session?.sessionId===advancedTaskSessionId?advancedScanService.getStatus():undefined);}
   if(data.type==='PAIR_STATE_CHANGED')operationTasks.pair(data.data.pair);
@@ -619,6 +622,6 @@ const shutdown = new ShutdownCoordinator(
   () => new Promise(resolve => server.close(() => resolve())),
 );
 let terminating = false;
-const terminate = (signal: string) => { if (terminating) return; terminating = true; clearInterval(browserSessionTimer); cameraBrowserSessions.clear(); console.info(`[Shutdown] ${signal}: stopping discovery, diagnostics, sockets, and HTTP service.`); void shutdown.shutdown().finally(() => { console.info('[Shutdown] Complete. Pair recovery state was preserved.'); process.exitCode = 0; }); };
+const terminate = (signal: string) => { if (terminating) return; terminating = true; clearInterval(browserSessionTimer); cameraRenderers.dispose(); cameraBrowserSessions.clear(); console.info(`[Shutdown] ${signal}: stopping discovery, diagnostics, sockets, and HTTP service.`); void shutdown.shutdown().finally(() => { console.info('[Shutdown] Complete. Pair recovery state was preserved.'); process.exitCode = 0; }); };
 process.once('SIGINT', () => terminate('SIGINT'));
 process.once('SIGTERM', () => terminate('SIGTERM'));

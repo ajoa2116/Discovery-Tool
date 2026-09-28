@@ -1,14 +1,15 @@
 import { Router, json, ErrorRequestHandler } from 'express';
 import { CameraBrowserSessions } from '../core/connect/camera_browser_sessions.ts';
+import { CameraRendererService } from '../core/connect/camera_renderer_service.ts';
 
-/** Browser-origin protection for iframe leases only, NOT native process authentication. */
+/** Browser-origin protection for workspace controls, NOT local-process authentication. Native production launch stays gated. */
 export function cameraBrowserOriginAllowed(host: string | undefined, origin: string | undefined, marker: string | undefined, development = false) {
   const hosts = ['localhost:3001', '127.0.0.1:3001'];
   const origins = hosts.map(h => `http://${h}`);
   if (development) origins.push('http://localhost:5173', 'http://127.0.0.1:5173');
   return Boolean(host && hosts.includes(host) && origin && origins.includes(origin) && marker === '1');
 }
-export function cameraBrowserRoutes(sessions: CameraBrowserSessions, development = false) {
+export function cameraBrowserRoutes(sessions: CameraBrowserSessions, development = false, renderers = new CameraRendererService(sessions)) {
   const router = Router();
   router.use((req, res, next) => {
     res.setHeader('Cache-Control', 'no-store');
@@ -18,6 +19,21 @@ export function cameraBrowserRoutes(sessions: CameraBrowserSessions, development
     next();
   });
   router.use(json({ limit: '2kb' }));
+  router.post('/open', async (req, res) => {
+    try {
+      if (!req.is('application/json') || Object.keys(req.body || {}).join(',') !== 'deviceId' || typeof req.body.deviceId !== 'string') throw Error();
+      res.json(await renderers.open(req.body.deviceId));
+    } catch { res.status(409).json({ error: 'Camera browser authorization unavailable. Reopen using current evidence.' }); }
+  });
+  for (const action of ['status', 'close', 'command'] as const) router.post(`/controls/:sessionId/${action}`, (req, res) => {
+    try {
+      if (!req.is('application/json') || typeof req.body?.deviceId !== 'string' || Object.keys(req.body).some(k => k !== 'deviceId' && !(action === 'command' && k === 'command'))) throw Error();
+      const args = [req.params.sessionId, req.body.deviceId, req.get('X-CCTV-Browser-Token') || ''] as const;
+      if (action === 'status') res.json(renderers.status(...args));
+      else if (action === 'close') { renderers.close(...args); res.json({ closed: true }); }
+      else { renderers.command(...args, req.body.command); res.json({ accepted: true }); }
+    } catch { res.status(409).json({ error: 'Camera browser operation unavailable. Reopen using current evidence.' }); }
+  });
   router.post('/sessions', (req, res) => {
     try {
       if (!req.is('application/json') || Object.keys(req.body || {}).some(k => k !== 'deviceId') || typeof req.body?.deviceId !== 'string') throw Error();

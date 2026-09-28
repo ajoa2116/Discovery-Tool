@@ -13,9 +13,17 @@ internal static class Program
         {
             Console.SetOut(new StreamWriter(Console.OpenStandardOutput()) { AutoFlush = true });
             WindowsBoundary.RequireUnelevated();
+            if (args.SequenceEqual(new[] { "--capability" }))
+            {
+                string runtime;
+                try { runtime = Microsoft.Web.WebView2.Core.CoreWebView2Environment.GetAvailableBrowserVersionString(); }
+                catch { runtime = ""; }
+                Console.WriteLine(JsonSerializer.Serialize(new { v = 1, type = "CAPABILITY", elevated = false, runtime }));
+                return 0;
+            }
             if (args.SequenceEqual(new[] { "--self-test" })) return NativeTests.Run().GetAwaiter().GetResult();
-            if (args.Length is 1 or 2 && args[0] == "--broker" && (args.Length == 1 || args[1] is "--smoke" or "--runtime-missing")) { Broker(args.Length == 2 ? args[1] : "").GetAwaiter().GetResult(); return 0; }
-            if (args.Length is 3 or 4 && args[0] == "--host" && WindowsBoundary.ValidPipeName(args[1]) && int.TryParse(args[2], out int parent) && (args.Length == 3 || args[3] is "--smoke" or "--runtime-missing"))
+            if (args.Length is 1 or 2 && args[0] == "--broker" && (args.Length == 1 || args[1] is "--smoke" or "--integration-smoke" or "--runtime-missing")) { Broker(args.Length == 2 ? args[1] : "").GetAwaiter().GetResult(); return 0; }
+            if (args.Length is 3 or 4 && args[0] == "--host" && WindowsBoundary.ValidPipeName(args[1]) && int.TryParse(args[2], out int parent) && (args.Length == 3 || args[3] is "--smoke" or "--integration-smoke" or "--runtime-missing"))
             {
                 ApplicationConfiguration.Initialize();
                 Application.Run(new CameraWindow(args[1], parent, args.Length == 4 ? args[3] : "")); return 0;
@@ -64,7 +72,7 @@ internal static class Program
             {
                 var message = await channel.Read(10_000); Wire.Shape(message, "MESSAGE", "message", "event", "runtime");
                 await app.Send(message);
-                var ack = await app.Read(); Wire.Shape(ack, "ACK", "session", "state");
+                var ack = await app.Read(); Wire.Shape(ack, "ACK", "session", "state", "command");
                 await channel.Send(ack);
                 if (Wire.Text(ack, "state") == "CLOSED") break;
             }

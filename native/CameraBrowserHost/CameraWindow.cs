@@ -28,13 +28,14 @@ internal sealed class CameraWindow : Form
     private Uri? origin;
     private bool terminal, closing, ticking, failing;
     private readonly bool smoke;
+    private readonly bool integrationSmoke;
     private readonly bool missingRuntime;
     private string? profile;
 
     internal CameraWindow(string bootstrap, int serverPid, string mode)
     {
-        smoke = mode == "--smoke"; missingRuntime = mode == "--runtime-missing";
-        Text = "CCTV Camera Browser — native proof"; Width = 960; Height = 720;
+        smoke = mode is "--smoke" or "--integration-smoke"; integrationSmoke = mode == "--integration-smoke"; missingRuntime = mode == "--runtime-missing";
+        Text = "CCTV Camera Browser"; Width = 960; Height = 720;
         Controls.Add(view); Controls.Add(status);
         Shown += async (_, _) => await Start(bootstrap, serverPid);
         heartbeat.Tick += async (_, _) => {
@@ -87,9 +88,11 @@ internal sealed class CameraWindow : Form
             core.PermissionRequested += (_, e) => { e.State = CoreWebView2PermissionState.Deny; };
             core.ServerCertificateErrorDetected += async (_, e) => { e.Action = CoreWebView2ServerCertificateErrorAction.Cancel; await Fail("CERTIFICATE_REJECTED"); };
             core.ProcessFailed += async (_, _) => await Fail("RENDERER_FAILED");
-            core.NavigationStarting += (_, e) => {
+            core.HistoryChanged += async (_, _) => { try { await Report("NAVIGATION"); } catch { await Fail("AUTHORIZATION_ENDED"); } };
+            core.NavigationStarting += async (_, e) => {
                 var decision = NavigationPolicy.Decide(origin!, e.Uri);
-                if (terminal || DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() >= expiresAt || decision != "ALLOW") { e.Cancel = true; status.Text = "Navigation blocked. Return to the application for Open External."; }
+                if (terminal || DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() >= expiresAt || decision != "ALLOW") { e.Cancel = true; status.Text = "Navigation blocked. Return to the application for Open External."; try { await Report("READY", "NAVIGATION_BLOCKED"); } catch { await Fail("AUTHORIZATION_ENDED"); } return; }
+                try { await Report("READY", "LOADING"); } catch { e.Cancel = true; await Fail("AUTHORIZATION_ENDED"); }
             };
             core.AddWebResourceRequestedFilter("*", CoreWebView2WebResourceContext.All);
             core.WebResourceRequested += (_, e) => {
@@ -100,6 +103,8 @@ internal sealed class CameraWindow : Form
                 if (terminal) return;
                 if (!e.IsSuccess) { await Fail("NAVIGATION_FAILED"); return; }
                 status.Text = "Authorized camera page loaded. Identity ownership and login are not verified.";
+                try { await Report("READY", "NAVIGATED"); await Report("NAVIGATION"); }
+                catch { await Fail("AUTHORIZATION_ENDED"); return; }
                 if (smoke)
                 {
                     try
@@ -109,7 +114,7 @@ internal sealed class CameraWindow : Form
                         if (marker != "true") throw new InvalidDataException();
                         using (var png = File.Create(Path.Combine(AppContext.BaseDirectory, $"smoke-{Environment.ProcessId}.png")))
                             await core.CapturePreviewAsync(CoreWebView2CapturePreviewImageFormat.Png, png);
-                        await Report("READY", "PAGE_RENDERED"); Close();
+                        await Report("READY", "PAGE_RENDERED"); if (!integrationSmoke) Close();
                     }
                     catch { await Fail("SMOKE_FAILED"); }
                 }
@@ -128,7 +133,10 @@ internal sealed class CameraWindow : Form
         expiresAt = session.GetProperty("expiresAt").GetInt64();
         if (expiresAt <= DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()) throw new InvalidDataException();
         origin = approved;
-        Text = $"Camera Browser — {Wire.Text(session.GetProperty("display"), "name")} — {approved.Host}";
+        var display = session.GetProperty("display");
+        var identity = display.TryGetProperty("identity", out var identityValue) ? identityValue.GetString() : deviceId;
+        var model = display.TryGetProperty("model", out var modelValue) ? modelValue.GetString() : "";
+        Text = $"Camera Browser — {Wire.Text(display, "name")} {model} — {approved.Host} — {identity}";
     }
     private async Task Report(string type, string eventCode = "NONE")
     {
@@ -136,12 +144,25 @@ internal sealed class CameraWindow : Form
         try
         {
             if (channel is null || terminal) throw new IOException();
-            await channel.Send(new { v = 1, type = "MESSAGE", message = new { type, sessionId, deviceId, token }, @event = eventCode, runtime });
-            var ack = await channel.Read(); Wire.Shape(ack, "ACK", "session", "state");
+            object message = type == "NAVIGATION" ? new { type, sessionId, deviceId, token, canGoBack = view.CoreWebView2?.CanGoBack == true, canGoForward = view.CoreWebView2?.CanGoForward == true } : new { type, sessionId, deviceId, token };
+            await channel.Send(new { v = 1, type = "MESSAGE", message, @event = eventCode, runtime });
+            var ack = await channel.Read(); Wire.Shape(ack, "ACK", "session", "state", "command");
             if (type is not ("CLOSE" or "FAILED")) Accept(ack.GetProperty("session"));
             if (Wire.Text(ack, "state") != (type is "CLOSE" or "FAILED" ? "CLOSED" : "ACTIVE")) throw new IOException();
+            var command = Wire.Text(ack, "command");
+            if (command is not ("NONE" or "FOCUS" or "REFRESH" or "BACK" or "FORWARD")) throw new IOException();
+            if (command != "NONE" && type is not ("CLOSE" or "FAILED")) BeginInvoke(() => Execute(command));
         }
         finally { serial.Release(); }
+    }
+    private void Execute(string command)
+    {
+        if (terminal || closing || failing || DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() >= expiresAt) return;
+        if (command == "FOCUS") { if (WindowState == FormWindowState.Minimized) WindowState = FormWindowState.Normal; Activate(); return; }
+        var core = view.CoreWebView2; if (core is null) return;
+        if (command == "REFRESH") core.Reload();
+        if (command == "BACK" && core.CanGoBack) core.GoBack();
+        if (command == "FORWARD" && core.CanGoForward) core.GoForward();
     }
     private async Task Fail(string code)
     {

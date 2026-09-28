@@ -11,7 +11,7 @@ let passed=0;const check=(v,n)=>{assert.ok(v,n);passed++;console.log('PASS: '+n)
  });
  await page.goto('http://127.0.0.1:5179/src/test/browser/advanced_scan.html?app');await page.locator('tbody').getByRole('button',{name:'192.0.2.100',exact:true}).click();const workspace=page.getByRole('region',{name:'Camera Browser'});await workspace.locator('iframe').waitFor();
  check(await workspace.isVisible(),'Embedded preference opens dedicated workspace');check(await page.getByRole('dialog',{name:'Camera Access'}).count()===0,'Credential Assistance is not primary workspace');
- check(await page.evaluate(()=>__test.browserSessions.some(s=>s.path==='/api/camera-browser/sessions'&&s.body.deviceId==='camera-a')),'iframe requests server-owned stable-ID authorization');
+ check(await page.evaluate(()=>__test.browserSessions.some(s=>s.path==='/api/camera-browser/open'&&s.body.deviceId==='camera-a')),'iframe requests server-owned stable-ID authorization');
  check(!(await workspace.locator('iframe').getAttribute('src')).includes('cbi_'),'camera URL contains no control secret');
  check(await workspace.getByText(/MAC Last 6: 63FB0F/).count()===1&&await workspace.getByText(/Observed status: ONLINE/).count()===1,'compact header identifies selected physical camera');
  check(await workspace.getByRole('main',{name:'Camera content'}).evaluate(el=>el.getBoundingClientRect().height>innerHeight*.6),'camera content receives majority of desktop');
