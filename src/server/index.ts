@@ -19,6 +19,7 @@ import { wsDiscoveryEvidence } from '../core/drivers/ws_discovery_evidence.ts';
 import { ForegroundDiscovery } from '../core/engine/foreground_discovery.ts';
 import { createForegroundDiscoveryRouter } from './foreground_discovery_routes.ts';
 import express from 'express';
+import { validateHttpHost } from './http_host_validation.ts';
 import cors from 'cors';
 import { createServer } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
@@ -61,6 +62,7 @@ const tasks = new TaskManager(100,undefined,task=>appStateDb.logAudit({id:crypto
 const operationTasks = new OperationTasks(tasks);
 let advancedTaskSessionId='';
 const app = express();
+app.use(validateHttpHost);
 const server = createServer(app);
 const wss = new WebSocketServer({ server, path: '/ws' });
 const startupFailure=(error:NodeJS.ErrnoException)=>{console.error(startupFailureMessage(error.code));process.exit(1);};
