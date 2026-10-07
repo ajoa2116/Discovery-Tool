@@ -20,7 +20,7 @@ export class ApplicationSecret {
 export interface AuthorityReceipt { readonly id: string; readonly expiresAt: number }
 export interface TrustedBootstrapDelivery {
   /** Must privately deliver to the intended client; never log or publicly publish it. */
-  deliver(capability: ApplicationSecret, receipt: AuthorityReceipt): void;
+  deliver(capability: ApplicationSecret, receipt: AuthorityReceipt, signal?: AbortSignal): void | Promise<void>;
 }
 type Bootstrap = { receipt: AuthorityReceipt; delivered: boolean };
 const denied = () => new Error('Application authority unavailable.');
@@ -35,6 +35,7 @@ export class ApplicationSessionAuthority {
   #sessions = new Map<string, AuthorityReceipt>();
   #lastNow = -Infinity;
   #disposed = false;
+  #pending = new Set<() => void>();
   constructor(private readonly delivery: TrustedBootstrapDelivery, private readonly clock: () => number = Date.now) {}
   toJSON() { return {}; }
   [inspect.custom]() { return 'ApplicationSessionAuthority { private state omitted }'; }
@@ -47,22 +48,41 @@ export class ApplicationSessionAuthority {
     for (const [digest, receipt] of this.#sessions) if (receipt.expiresAt <= this.#lastNow) this.#sessions.delete(digest);
     return this.#lastNow;
   }
-  issueBootstrap(): AuthorityReceipt {
+  async issueBootstrap(signal?: AbortSignal): Promise<AuthorityReceipt> {
     const now = this.#now();
-    if (this.#bootstraps.size >= CAPACITY) throw denied();
+    if (signal?.aborted || this.#bootstraps.size >= CAPACITY || this.#pending.size >= CAPACITY) throw denied();
     const secret = new ApplicationSecret('bootstrap'), digest = key(secret.expose(), 'bootstrap');
     const receipt = Object.freeze({ id: randomUUID(), expiresAt: now + APPLICATION_BOOTSTRAP_MS });
     const entry = { receipt, delivered: false };
     this.#bootstraps.set(digest, entry);
+    const deliveryController = new AbortController();
+    let rejectCancellation!: (error: Error) => void;
+    const cancelled = new Promise<never>((_resolve, reject) => { rejectCancellation = reject; });
+    const cancel = () => {
+      this.#bootstraps.delete(digest);
+      rejectCancellation(denied());
+      deliveryController.abort();
+    };
+    this.#pending.add(cancel);
+    signal?.addEventListener('abort', cancel, { once: true });
     try {
-      this.delivery.deliver(secret, receipt);
-      // Delivery is synchronous; redemption during delivery is refused.
-      if (this.#disposed || this.#bootstraps.get(digest) !== entry) throw denied();
+      const confirmed = Promise.resolve().then(() => {
+        if (deliveryController.signal.aborted) throw denied();
+        return this.delivery.deliver(secret, receipt, deliveryController.signal);
+      });
+      // Observe late rejection even if cancellation/disposal wins the race.
+      await Promise.race([confirmed, cancelled]);
+      this.#now(); // Recheck expiry with the same injected clock after acknowledgment.
+      if (signal?.aborted || deliveryController.signal.aborted || this.#bootstraps.get(digest) !== entry) throw denied();
       entry.delivered = true;
       return receipt;
     } catch {
       this.#bootstraps.delete(digest);
+      deliveryController.abort();
       throw denied(); // Never disclose a delivery exception or capability.
+    } finally {
+      signal?.removeEventListener('abort', cancel);
+      this.#pending.delete(cancel);
     }
   }
   redeemBootstrap(token: unknown): { receipt: AuthorityReceipt; secret: ApplicationSecret } {
@@ -87,5 +107,9 @@ export class ApplicationSessionAuthority {
     for (const [digest, receipt] of this.#sessions) if (receipt.id === id) return this.#sessions.delete(digest);
     return false;
   }
-  dispose() { this.#disposed = true; this.#bootstraps.clear(); this.#sessions.clear(); }
+  dispose() {
+    this.#disposed = true;
+    for (const cancel of this.#pending) cancel();
+    this.#bootstraps.clear(); this.#sessions.clear();
+  }
 }
