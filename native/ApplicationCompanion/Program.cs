@@ -4,13 +4,19 @@ namespace ApplicationCompanion;
 
 internal static class Program
 {
-    internal static readonly string[] Modes = ["normal", "exit", "disconnect", "timeout", "wrong-peer", "assignment-failure"];
+    internal static readonly string[] Modes = ["normal", "exit", "disconnect", "timeout", "wrong-peer", "assignment-failure",
+        "bad-nonce", "bad-generation", "bad-navigation-id", "extra-field", "malformed-message", "oversized-message", "replay",
+        "challenge-timeout", "late-response", "early-message", "unapproved-navigation", "redirect", "same-url-redirect",
+        "popup", "frame", "post-ready-navigation", "reload", "fragment", "renderer-loss"];
+    internal static readonly string[] FailureCodes = ["READINESS_TIMEOUT", "CHANNEL_LOST", "POPUP_REJECTED", "FRAME_REJECTED",
+        "RESOURCE_REJECTED", "RENDERER_LOST", "NAVIGATION_REJECTED", "MESSAGE_REJECTED", "RUNTIME_UNAVAILABLE"];
     [STAThread]
     static int Main(string[] args)
     {
         try
         {
             WindowsBoundary.RequireUnelevated();
+            if (args.SequenceEqual(new[] { "--document-self-test" })) return DocumentTests.Run();
             if (args.SequenceEqual(new[] { "--self-test" }))
             {
                 var name = WindowsBoundary.NewPipeName(); using var pipe = WindowsBoundary.CreatePipe(name);
@@ -44,9 +50,11 @@ internal static class Program
         await connected; child.Verify(pipe);
         if (mode == "wrong-peer") WindowsBoundary.VerifyPeer(pipe, Environment.ProcessId, true);
         var channel = new Wire(pipe, pipe);
-        var ready = channel.Read(5000);
+        var ready = channel.Read(mode == "timeout" ? 5000 : 15000);
         if (await Task.WhenAny(ready, stop) == stop) { pipe.Dispose(); try { await ready; } catch { } await stop; return; }
-        Wire.Shape(await ready, "READY"); child.Verify(pipe);
+        var readiness = await ready; child.Verify(pipe);
+        await RejectFailure(parent, channel, readiness);
+        Wire.Shape(readiness, "READY");
         await parent.Send(new { v = 1, type = "READY", pid = child.Process.Id });
         try
         {
@@ -54,7 +62,9 @@ internal static class Program
             {
                 var pulse = channel.Read(3000);
                 if (await Task.WhenAny(pulse, stop) == stop) { pipe.Dispose(); try { await pulse; } catch { } await stop; return; }
-                Wire.Shape(await pulse, "PULSE"); child.Verify(pipe);
+                var message = await pulse; child.Verify(pipe);
+                await RejectFailure(parent, channel, message);
+                Wire.Shape(message, "PULSE");
                 await channel.Send(new { v = 1, type = "ACK" });
                 await parent.Send(new { v = 1, type = "ALIVE" });
             }
@@ -62,4 +72,12 @@ internal static class Program
         finally { pipe.Dispose(); }
     }
     static async Task ReadStop(Wire parent) { var stop = await parent.Read(int.MaxValue); Wire.Shape(stop, "STOP"); }
+    static async Task RejectFailure(Wire parent, Wire channel, System.Text.Json.JsonElement message)
+    {
+        if (Wire.Text(message, "type") != "FAILED") return;
+        Wire.Shape(message, "FAILED", "code"); string code = Wire.Text(message, "code");
+        if (!FailureCodes.Contains(code)) throw new IOException();
+        await parent.Send(new { v = 1, type = "FAILED", code });
+        await channel.Send(new { v = 1, type = "FAILURE_ACK" }); throw new IOException();
+    }
 }

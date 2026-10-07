@@ -2,7 +2,10 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 export const APPLICATION_COMPANION_PATH = fileURLToPath(new URL('../../native/ApplicationCompanion/bin/Release/net10.0-windows/ApplicationCompanion.exe', import.meta.url));
-export type CompanionFixtureMode = 'normal' | 'exit' | 'disconnect' | 'timeout' | 'wrong-peer' | 'assignment-failure';
+export type CompanionFixtureMode = 'normal' | 'exit' | 'disconnect' | 'timeout' | 'wrong-peer' | 'assignment-failure' |
+  'bad-nonce' | 'bad-generation' | 'bad-navigation-id' | 'extra-field' | 'malformed-message' | 'oversized-message' | 'replay' |
+  'challenge-timeout' | 'late-response' | 'early-message' | 'unapproved-navigation' | 'redirect' | 'same-url-redirect' |
+  'popup' | 'frame' | 'post-ready-navigation' | 'reload' | 'fragment' | 'renderer-loss';
 export type CompanionLoss = 'closed' | 'cancelled' | 'failed';
 export interface CompanionLifetime {
   readonly pid: number;
@@ -11,10 +14,17 @@ export interface CompanionLifetime {
   readonly lost: Promise<CompanionLoss>;
   /** True only when broker close was actually observed. */
   readonly closed: Promise<boolean>;
+  /** Allowlisted nonsecret fixture diagnostic; undefined for unclassified loss. */
+  readonly failureCode: Promise<string | undefined>;
   shutdown(): Promise<void>;
 }
-const failure = () => new Error('Application companion unavailable.');
-const modes: readonly string[] = ['normal', 'exit', 'disconnect', 'timeout', 'wrong-peer', 'assignment-failure'];
+const failure = (code?: string) => Object.assign(new Error('Application companion unavailable.'), { code });
+const modes: readonly string[] = ['normal', 'exit', 'disconnect', 'timeout', 'wrong-peer', 'assignment-failure',
+  'bad-nonce', 'bad-generation', 'bad-navigation-id', 'extra-field', 'malformed-message', 'oversized-message', 'replay',
+  'challenge-timeout', 'late-response', 'early-message', 'unapproved-navigation', 'redirect', 'same-url-redirect',
+  'popup', 'frame', 'post-ready-navigation', 'reload', 'fragment', 'renderer-loss'];
+const failureCodes = new Set(['READINESS_TIMEOUT', 'CHANNEL_LOST', 'POPUP_REJECTED', 'FRAME_REJECTED', 'RESOURCE_REJECTED',
+  'RENDERER_LOST', 'NAVIGATION_REJECTED', 'MESSAGE_REJECTED', 'RUNTIME_UNAVAILABLE']);
 
 /** Isolated native fixture, with no authority, HTTP, UI composition or camera integration. */
 export function startApplicationCompanion(options: { signal?: AbortSignal; mode?: CompanionFixtureMode } = {}): Promise<CompanionLifetime> {
@@ -25,22 +35,24 @@ export function startApplicationCompanion(options: { signal?: AbortSignal; mode?
     const child = spawn(APPLICATION_COMPANION_PATH, ['--broker', mode], { shell: false, windowsHide: true, env: environment, stdio: ['pipe', 'pipe', 'pipe'] });
     let terminal = false, ready = false, observedClose = false, closedSettled = false, pending = '', lastPulse = Date.now();
     let cleanupTimer: ReturnType<typeof setTimeout> | undefined;
-    let finishLoss!: (reason: CompanionLoss) => void, finishClosed!: (confirmed: boolean) => void;
+    let finishLoss!: (reason: CompanionLoss) => void, finishClosed!: (confirmed: boolean) => void, finishCode!: (code?: string) => void;
     const lost = new Promise<CompanionLoss>(done => { finishLoss = done; });
     const closed = new Promise<boolean>(done => { finishClosed = done; });
+    const failureCode = new Promise<string | undefined>(done => { finishCode = done; });
     const decoder = new TextDecoder('utf-8', { fatal: true });
-    const startup = setTimeout(() => end('failed'), 7000);
+    const startup = setTimeout(() => end('failed'), 16000);
     const heartbeat = setInterval(() => { if (ready && Date.now() - lastPulse > 4500) end('failed'); }, 500);
     const settleClosed = (confirmed: boolean) => {
       if (closedSettled) return; closedSettled = true;
       clearTimeout(cleanupTimer); finishClosed(confirmed);
     };
-    const end = (reason: CompanionLoss) => {
+    const end = (reason: CompanionLoss, code?: string) => {
       if (terminal) return; terminal = true;
       clearTimeout(startup); clearInterval(heartbeat);
       options.signal?.removeEventListener('abort', abort);
       finishLoss(reason);
-      if (!ready) reject(failure());
+      finishCode(code);
+      if (!ready) reject(failure(code));
       if (observedClose) { settleClosed(true); return; }
       if (reason === 'closed') {
         try { child.stdin.end('{"v":1,"type":"STOP"}\n'); } catch { /* Escalate below. */ }
@@ -57,12 +69,14 @@ export function startApplicationCompanion(options: { signal?: AbortSignal; mode?
     const abort = () => end('cancelled');
     const line = (frame: string) => {
       if (terminal) return;
+      const failed = /^\{"v":1,"type":"FAILED","code":"([A-Z_]+)"\}$/.exec(frame);
+      if (failed) { if (!failureCodes.has(failed[1])) throw failure(); end('failed', failed[1]); return; }
       if (!ready) {
         // Exact fixture grammar also rejects duplicate keys and extra properties.
         const match = /^\{"v":1,"type":"READY","pid":([1-9][0-9]{0,9})\}$/.exec(frame);
         if (!match || !Number.isSafeInteger(Number(match[1])) || !child.pid) throw failure();
         ready = true; lastPulse = Date.now(); clearTimeout(startup);
-        resolve(Object.freeze({ pid: Number(match[1]), brokerPid: child.pid, lost, closed,
+        resolve(Object.freeze({ pid: Number(match[1]), brokerPid: child.pid, lost, closed, failureCode,
           async shutdown() { end('closed'); if (!await closed) throw failure(); } }));
       } else {
         if (frame !== '{"v":1,"type":"ALIVE"}') throw failure();

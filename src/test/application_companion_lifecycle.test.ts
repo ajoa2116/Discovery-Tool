@@ -10,11 +10,20 @@ const fixturePids = () => {
   return result.stdout.trim().split(/\s+/).filter(Boolean).map(Number);
 };
 const baseline = new Set(fixturePids());
+const browserPids = () => {
+  const result = spawnSync('powershell.exe', ['-NoProfile', '-Command', "Get-CimInstance Win32_Process -Filter \"Name = 'msedgewebview2.exe'\" | Where-Object { $_.CommandLine -like '*CCTVApplicationCompanion*' } | Select-Object -ExpandProperty ProcessId"], { encoding: 'utf8', timeout: 10000, windowsHide: true });
+  assert.equal(result.status, 0); assert.equal(result.error, undefined);
+  return result.stdout.trim().split(/\s+/).filter(Boolean).map(Number);
+};
+const browserBaseline = new Set(browserPids());
 after(async () => {
   // Startup rejection may precede bounded asynchronous cleanup.
   const deadline = Date.now() + 6000;
   while (fixturePids().some(pid => !baseline.has(pid)) && Date.now() < deadline) await new Promise(done => setTimeout(done, 100));
   assert.deepEqual(fixturePids().filter(pid => !baseline.has(pid)), [], 'no owned broker/fixture survives any failure');
+  const browserDeadline = Date.now() + 6000;
+  while (browserPids().some(pid => !browserBaseline.has(pid)) && Date.now() < browserDeadline) await new Promise(done => setTimeout(done, 100));
+  assert.deepEqual(browserPids().filter(pid => !browserBaseline.has(pid)), [], 'no owned fixture WebView2 process remains');
 });
 test('Windows private application pipe ACL and first-instance rejection', () => {
   assert.equal(process.platform, 'win32');
@@ -80,9 +89,33 @@ test('parent input EOF revokes an already-ready native companion', async () => {
     broker.once('error', reject); broker.once('close', () => reject(new Error('early close')));
     broker.stdout.on('data', chunk => { output += String(chunk); const frame = output.split('\n')[0]; if (output.includes('\n')) { try { resolve(JSON.parse(frame).pid); } catch (error) { reject(error); } } });
   });
-  const deadline = setTimeout(() => broker.kill(), 8000);
+  const deadline = setTimeout(() => broker.kill(), 16000);
   try {
     broker.stdin.write('{"v":1,"type":"START"}\n'); const pid = await ready; assert.ok(alive(pid));
     broker.stdin.end(); await exited; assert.equal(alive(pid), false);
   } finally { clearTimeout(deadline); broker.kill(); await exited; }
 });
+test('native document policy rejects foreign sources, stale generations, duplicate keys and exact-deadline responses', () => {
+  const result = spawnSync(APPLICATION_COMPANION_PATH, ['--document-self-test'], { encoding: 'utf8', timeout: 8000 });
+  assert.equal(result.status, 0); const proof = JSON.parse(result.stdout);
+  assert.equal(proof.type, 'DOCUMENT_TEST_OK'); assert.ok(proof.count >= 70);
+});
+const rejectionCases: [CompanionFixtureMode, string][] = [
+  ...(['bad-nonce', 'bad-generation', 'bad-navigation-id', 'extra-field', 'malformed-message', 'oversized-message', 'early-message'] as CompanionFixtureMode[]).map(mode => [mode, 'MESSAGE_REJECTED'] as [CompanionFixtureMode, string]),
+  ['challenge-timeout', 'READINESS_TIMEOUT'], ['late-response', 'READINESS_TIMEOUT'],
+  ['unapproved-navigation', 'NAVIGATION_REJECTED'], ['redirect', 'NAVIGATION_REJECTED'], ['same-url-redirect', 'NAVIGATION_REJECTED'],
+  ['popup', 'POPUP_REJECTED'], ['frame', 'FRAME_REJECTED'],
+];
+for (const [mode, code] of rejectionCases) test(`actual WebView2 ${mode} is rejected by ${code}`, async () => {
+  await assert.rejects(startApplicationCompanion({ mode }), error => error instanceof Error && (error as Error & { code: string }).code === code);
+});
+for (const [mode, code] of [['replay', 'MESSAGE_REJECTED'], ['post-ready-navigation', 'NAVIGATION_REJECTED'], ['reload', 'NAVIGATION_REJECTED'], ['fragment', 'NAVIGATION_REJECTED'], ['renderer-loss', 'RENDERER_LOST']] as [CompanionFixtureMode, string][])
+  test(`actual WebView2 ${mode} irreversibly invalidates document lifetime`, async () => {
+    let instance: Awaited<ReturnType<typeof startApplicationCompanion>>;
+    try { instance = await startApplicationCompanion({ mode }); }
+    catch (error) { assert.equal((error as { code: string }).code, code); return; }
+    try {
+      assert.equal(await instance.lost, 'failed'); assert.equal(await instance.failureCode, code);
+      assert.equal(await instance.closed, true); assert.equal(alive(instance.pid), false);
+    } finally { await instance.shutdown(); }
+  });
