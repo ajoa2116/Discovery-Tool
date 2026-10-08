@@ -1,3 +1,5 @@
+import { performance } from 'node:perf_hooks';
+import { CompanionDeadline } from './companion_deadline.ts';
 import { createHash, randomBytes } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -9,7 +11,7 @@ export type CompanionFixtureMode = 'normal' | 'exit' | 'disconnect' | 'timeout' 
   'challenge-timeout' | 'late-response' | 'early-message' | 'unapproved-navigation' | 'redirect' | 'same-url-redirect' |
   'popup' | 'frame' | 'post-ready-navigation' | 'reload' | 'fragment' | 'renderer-loss' |
   'delivery-wrong-ack' | 'delivery-duplicate-ack' | 'delivery-timeout' | 'delivery-navigation' |
-  'delivery-stale-generation' | 'delivery-exit' | 'delivery-partial-done' | 'delivery-replay' | 'activation-navigation' | 'redeemed-navigation' | 'session-wrong-ack' | 'session-late-ack' | 'session-wrong-expiry' | 'session-lost-activation' | 'session-duplicate-ack' | 'session-timeout' | 'session-navigation' | 'session-stale-generation' | 'session-exit' | 'session-partial-done' | 'session-lost-done' | 'session-replay' | 'session-activation-loss' | 'session-active-navigation' | 'session-renderer-loss' | 'session-channel-loss';
+  'delivery-stale-generation' | 'delivery-exit' | 'delivery-partial-done' | 'delivery-replay' | 'activation-navigation' | 'redeemed-navigation' | 'session-wrong-ack' | 'session-late-ack' | 'session-wrong-expiry' | 'session-lost-activation' | 'session-duplicate-ack' | 'session-timeout' | 'session-navigation' | 'session-stale-generation' | 'session-exit' | 'session-partial-done' | 'session-lost-done' | 'session-replay' | 'session-activation-loss' | 'session-active-navigation' | 'session-renderer-loss' | 'session-channel-loss' | 'session-heartbeat-stall';
 export type CompanionLoss = 'closed' | 'cancelled' | 'failed';
 export interface CompanionLifetime {
   readonly pid: number;
@@ -36,24 +38,32 @@ const modes: readonly string[] = ['normal', 'exit', 'disconnect', 'timeout', 'wr
   'challenge-timeout', 'late-response', 'early-message', 'unapproved-navigation', 'redirect', 'same-url-redirect',
   'popup', 'frame', 'post-ready-navigation', 'reload', 'fragment', 'renderer-loss',
   'delivery-wrong-ack', 'delivery-duplicate-ack', 'delivery-timeout', 'delivery-navigation',
-  'delivery-stale-generation', 'delivery-exit', 'delivery-partial-done', 'delivery-replay', 'activation-navigation', 'redeemed-navigation', 'session-wrong-ack', 'session-late-ack', 'session-wrong-expiry', 'session-lost-activation', 'session-duplicate-ack', 'session-timeout', 'session-navigation', 'session-stale-generation', 'session-exit', 'session-partial-done', 'session-lost-done', 'session-replay', 'session-activation-loss', 'session-active-navigation', 'session-renderer-loss', 'session-channel-loss'];
+  'delivery-stale-generation', 'delivery-exit', 'delivery-partial-done', 'delivery-replay', 'activation-navigation', 'redeemed-navigation', 'session-wrong-ack', 'session-late-ack', 'session-wrong-expiry', 'session-lost-activation', 'session-duplicate-ack', 'session-timeout', 'session-navigation', 'session-stale-generation', 'session-exit', 'session-partial-done', 'session-lost-done', 'session-replay', 'session-activation-loss', 'session-active-navigation', 'session-renderer-loss', 'session-channel-loss', 'session-heartbeat-stall'];
 const failureCodes = new Set(['READINESS_TIMEOUT', 'CHANNEL_LOST', 'POPUP_REJECTED', 'FRAME_REJECTED', 'RESOURCE_REJECTED',
   'RENDERER_LOST', 'NAVIGATION_REJECTED', 'MESSAGE_REJECTED', 'RUNTIME_UNAVAILABLE', 'BOOTSTRAP_REJECTED', 'SESSION_REJECTED', 'SESSION_EXPIRED',
   'JOB_PROCESS_EXITED', 'JOB_QUERY_FAILED', 'JOB_ATTACH_DENIED', 'JOB_ATTACH_FAILED', 'JOB_BROWSER_MISSING']);
 
 /** Isolated native fixture, with no authority, HTTP, UI composition or camera integration. */
-export function startApplicationCompanion(options: { signal?: AbortSignal; mode?: CompanionFixtureMode } = {}): Promise<CompanionLifetime> {
+export function startApplicationCompanion(options: { signal?: AbortSignal; mode?: CompanionFixtureMode; elapsedClock?: () => number } = {}): Promise<CompanionLifetime> {
   const mode = options.mode ?? 'normal';
   if (process.platform !== 'win32' || options.signal?.aborted || !modes.includes(mode)) return Promise.reject(failure());
+  let lastElapsed = -Infinity;
+  const elapsedNow = () => {
+    const now = (options.elapsedClock ?? (() => performance.now()))();
+    if (!Number.isFinite(now) || now < lastElapsed) throw failure(); lastElapsed = now; return now;
+  };
+  let pulseDeadline: CompanionDeadline, startupDeadline: CompanionDeadline;
+  try { pulseDeadline = new CompanionDeadline(4500, elapsedNow); startupDeadline = new CompanionDeadline(16000, elapsedNow); }
+  catch { return Promise.reject(failure()); }
   return new Promise((resolve, reject) => {
     const environment = Object.fromEntries(['SystemRoot', 'WINDIR', 'LOCALAPPDATA', 'USERPROFILE', 'TEMP', 'TMP', 'ProgramFiles'].flatMap(k => process.env[k] ? [[k, process.env[k]!]] : []));
     const child = spawn(APPLICATION_COMPANION_PATH, ['--broker', mode], { shell: false, windowsHide: true, env: environment, stdio: ['pipe', 'pipe', 'pipe'] });
-    let terminal = false, ready = false, observedClose = false, closedSettled = false, pending = '', lastPulse = Date.now();
+    let terminal = false, ready = false, observedClose = false, closedSettled = false, pending = '';
     let generation = 0, offered = false, delivered = false, activationRequested = false, activated = false, redemptionRequested = false;
     let deliveryId = '';
     let session: { id: string; nonce: string; digest: string; expiresAt: number; generation: number } | undefined;
     let sessionOffered = false, sessionDelivered = false, sessionActivationRequested = false, sessionActivated = false, sessionLogoutRequested = false;
-    let operation: { kind: 'delivery' | 'activate' | 'redeem' | 'session-delivery' | 'session-activate' | 'session-logout'; id: string; ack?: BootstrapAckDecoder; resolve: (token?: string) => void; reject: () => void; cleanup: () => void } | undefined;
+    let operation: { kind: 'delivery' | 'activate' | 'redeem' | 'session-delivery' | 'session-activate' | 'session-logout'; id: string; ack?: BootstrapAckDecoder; resolve: (token?: string) => void; reject: () => void; cleanup: () => void; deadline: CompanionDeadline } | undefined;
     let cleanupTimer: ReturnType<typeof setTimeout> | undefined;
     let finishLoss!: (reason: CompanionLoss) => void, finishClosed!: (confirmed: boolean) => void, finishCode!: (code?: string) => void;
     const lost = new Promise<CompanionLoss>(done => { finishLoss = done; });
@@ -61,14 +71,17 @@ export function startApplicationCompanion(options: { signal?: AbortSignal; mode?
     const failureCode = new Promise<string | undefined>(done => { finishCode = done; });
     const decoder = new TextDecoder('utf-8', { fatal: true });
     const startup = setTimeout(() => end('failed'), 16000);
-    const heartbeat = setInterval(() => { if (ready && !operation && Date.now() - lastPulse > 4500) end('failed'); }, 500);
+    const checkHeartbeat = () => { try { if (ready && !operation && pulseDeadline.remaining() <= 0) end('failed'); } catch { end('failed'); } };
+    const heartbeat = setInterval(checkHeartbeat, 500);
     const request = (kind: 'delivery' | 'activate' | 'redeem' | 'session-delivery' | 'session-activate' | 'session-logout', id: string, input: object, ack?: BootstrapAckDecoder, signal?: AbortSignal): Promise<string | undefined> => {
       if (!ready || terminal || operation || signal?.aborted) { end('failed'); return Promise.reject(failure()); }
       return new Promise((done, denied) => {
+        let deadline: CompanionDeadline;
+        try { deadline = new CompanionDeadline(8000, elapsedNow); } catch { end('failed'); denied(failure()); return; }
         const cancelled = () => end('cancelled');
         const timeout = setTimeout(() => end('failed'), 8000);
         const cleanup = () => { clearTimeout(timeout); signal?.removeEventListener('abort', cancelled); };
-        operation = { kind, id, ack, resolve: done, reject: () => denied(failure()), cleanup };
+        operation = { kind, id, ack, resolve: done, reject: () => denied(failure()), cleanup, deadline };
         signal?.addEventListener('abort', cancelled, { once: true });
         if (signal?.aborted) { cancelled(); return; }
         child.stdin.write(JSON.stringify(input) + '\n');
@@ -108,8 +121,10 @@ export function startApplicationCompanion(options: { signal?: AbortSignal; mode?
         // Exact fixture grammar also rejects duplicate keys and extra properties.
         const match = /^\{"v":1,"type":"READY","pid":([1-9][0-9]{0,9}),"generation":([1-9][0-9]{0,8})\}$/.exec(frame);
         if (!match || !Number.isSafeInteger(Number(match[1])) || !child.pid) throw failure();
-        generation = Number(match[2]); ready = true; lastPulse = Date.now(); clearTimeout(startup);
-        resolve(Object.freeze({ pid: Number(match[1]), brokerPid: child.pid, generation, get alive() { return !terminal; }, lost, closed, failureCode,
+        if (startupDeadline.remaining() <= 0) throw failure();
+        const nextPulseDeadline = new CompanionDeadline(4500, elapsedNow);
+        generation = Number(match[2]); ready = true; pulseDeadline = nextPulseDeadline; clearTimeout(startup);
+        resolve(Object.freeze({ pid: Number(match[1]), brokerPid: child.pid, generation, get alive() { checkHeartbeat(); return !terminal; }, lost, closed, failureCode,
           async deliverBootstrap(input: string, expected: ExpectedBootstrapAcknowledgment, signal?: AbortSignal) {
             if (offered) { end('failed'); throw failure(); } offered = true;
             deliveryId = expected.id;
@@ -146,12 +161,12 @@ export function startApplicationCompanion(options: { signal?: AbortSignal; mode?
             if (!session || !sessionActivated || sessionLogoutRequested) { end('failed'); throw failure(); } sessionLogoutRequested = true;
             const { digest: _digest, ...command } = session;
             await request('session-logout', session.id, { v: 1, type: 'SESSION_LOGOUT', ...command }, undefined, signal);
-            if (terminal || signal?.aborted) throw failure(); sessionActivated = false;
+            if (terminal || signal?.aborted) throw failure(); sessionActivated = false; end('closed');
           },
           async shutdown() { end('closed'); if (!await closed) throw failure(); } }));
       } else {
-        if (frame === '{"v":1,"type":"ALIVE"}') { lastPulse = Date.now(); return; }
-        const active = operation; if (!active) throw failure();
+        if (frame === '{"v":1,"type":"ALIVE"}') { if (!operation && pulseDeadline.remaining() <= 0) throw failure(); pulseDeadline = new CompanionDeadline(4500, elapsedNow); return; }
+        const active = operation; if (!active || active.deadline.remaining() <= 0) throw failure();
         let token: string | undefined;
         if (active.kind.startsWith('session-')) {
           const match = /^\{"v":1,"type":"(SESSION_DELIVERED|SESSION_ACTIVATED|SESSION_LOGGED_OUT)","id":"([a-f0-9-]{36})","nonce":"([a-f0-9]{64})","digest":"([a-f0-9]{64})","expiresAt":([0-9]{1,16}),"generation":([1-9][0-9]{0,8})\}$/.exec(frame);
@@ -166,7 +181,8 @@ export function startApplicationCompanion(options: { signal?: AbortSignal; mode?
           const result = /^\{"v":1,"type":"REDEEMED","id":"([a-f0-9-]{36})","generation":([1-9][0-9]{0,8}),"token":"(bootstrap_[A-Za-z0-9_-]{43})"\}$/.exec(frame);
           if (!result || result[1] !== active.id || Number(result[2]) !== generation) throw failure(); token = result[3];
         }
-        operation = undefined; active.cleanup(); lastPulse = Date.now(); active.resolve(token);
+        const nextPulseDeadline = new CompanionDeadline(4500, elapsedNow);
+        operation = undefined; active.cleanup(); pulseDeadline = nextPulseDeadline; active.resolve(token);
       }
     };
     child.stdout.on('data', (chunk: Buffer) => {

@@ -11,7 +11,7 @@ internal static class Program
         "bad-nonce", "bad-generation", "bad-navigation-id", "extra-field", "malformed-message", "oversized-message", "replay",
         "challenge-timeout", "late-response", "early-message", "unapproved-navigation", "redirect", "same-url-redirect",
         "popup", "frame", "post-ready-navigation", "reload", "fragment", "renderer-loss", "delivery-wrong-ack",
-        "delivery-duplicate-ack", "delivery-timeout", "delivery-navigation", "delivery-stale-generation", "delivery-exit", "delivery-partial-done", "delivery-replay", "activation-navigation", "redeemed-navigation", "session-wrong-ack", "session-late-ack", "session-wrong-expiry", "session-lost-activation", "session-duplicate-ack", "session-timeout", "session-navigation", "session-stale-generation", "session-exit", "session-partial-done", "session-lost-done", "session-replay", "session-activation-loss", "session-active-navigation", "session-renderer-loss", "session-channel-loss"];
+        "delivery-duplicate-ack", "delivery-timeout", "delivery-navigation", "delivery-stale-generation", "delivery-exit", "delivery-partial-done", "delivery-replay", "activation-navigation", "redeemed-navigation", "session-wrong-ack", "session-late-ack", "session-wrong-expiry", "session-lost-activation", "session-duplicate-ack", "session-timeout", "session-navigation", "session-stale-generation", "session-exit", "session-partial-done", "session-lost-done", "session-replay", "session-activation-loss", "session-active-navigation", "session-renderer-loss", "session-channel-loss", "session-heartbeat-stall"];
     internal static readonly string[] FailureCodes = ["READINESS_TIMEOUT", "CHANNEL_LOST", "POPUP_REJECTED", "FRAME_REJECTED",
         "RESOURCE_REJECTED", "RENDERER_LOST", "NAVIGATION_REJECTED", "MESSAGE_REJECTED", "RUNTIME_UNAVAILABLE", "BOOTSTRAP_REJECTED", "SESSION_REJECTED", "SESSION_EXPIRED", "JOB_PROCESS_EXITED", "JOB_QUERY_FAILED", "JOB_ATTACH_DENIED", "JOB_ATTACH_FAILED", "JOB_BROWSER_MISSING"];
     [STAThread]
@@ -88,6 +88,7 @@ internal static class Program
                 if (!redeemed) throw new IOException();
                 var next = await Await(pulse, command, pipe); child.Verify(pipe); await RejectFailure(parent, channel, next); Pulse(next, generation);
                 await session.Handle(request, channel, parent, () => ReadChild(channel, command, child, parent, pipe, 2000));
+                if (mode == "session-heartbeat-stall" && type == "SESSION_ACTIVATE") await Task.Delay(10000);
                 continue;
             }
             if (type == "OFFER")

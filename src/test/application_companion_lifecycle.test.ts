@@ -14,7 +14,9 @@ const fixturePids = () => {
 };
 const baseline = new Set(fixturePids());
 const browserPids = () => {
-  const result = spawnSync('powershell.exe', ['-NoProfile', '-Command', "Get-CimInstance Win32_Process -Filter \"Name = 'msedgewebview2.exe'\" | Where-Object { $_.CommandLine -like '*CCTVApplicationCompanion*' } | Select-Object -ExpandProperty ProcessId"], { encoding: 'utf8', timeout: 10000, windowsHide: true });
+  // CIM can retain exited runtime records while this test runner is alive.
+  // Require an actual live process as well as the isolated fixture profile.
+  const result = spawnSync('powershell.exe', ['-NoProfile', '-Command', "$ErrorActionPreference = 'Stop'; $live = @([System.Diagnostics.Process]::GetProcessesByName('msedgewebview2') | ForEach-Object { try { if (-not $_.HasExited) { $_.Id } } finally { $_.Dispose() } }); Get-CimInstance Win32_Process -Filter \"Name = 'msedgewebview2.exe'\" | Where-Object { $_.CommandLine -like '*CCTVApplicationCompanion*' -and $live -contains [int]$_.ProcessId } | Select-Object -ExpandProperty ProcessId"], { encoding: 'utf8', timeout: 10000, windowsHide: true });
   assert.equal(result.status, 0); assert.equal(result.error, undefined);
   return result.stdout.trim().split(/\s+/).filter(Boolean).map(Number);
 };
@@ -222,15 +224,27 @@ test('persistent target refuses activation while delivery is still pending', asy
     await assert.rejects(companion.activateBootstrap(id)); await denied; assert.equal(companion.alive, false);
   } finally { controller.abort(); await companion.shutdown(); }
 });
-test('persistent target itself rejects a repeated native redemption and revokes its owner', async () => {
-  const owner = await CompanionBootstrapAuthority.start();
+async function rawSessionFixture(expiresIn = 900000, activate = true) {
+  const companion = await startApplicationCompanion();
+  const authority = new ApplicationSessionAuthority(new PrivateBootstrapTransport('normal', companion));
+  void companion.lost.then(() => authority.dispose());
   try {
-    const receipt = await owner.issueBootstrap(); const session = await owner.redeemBootstrap();
-    await assert.rejects(owner.companion.requestBootstrapRedemption(receipt.id));
-    assert.throws(() => owner.validateSession(session.secret.expose()));
-  } finally { await owner.dispose(); }
+    const bootstrap = await authority.issueBootstrap(); await companion.activateBootstrap(bootstrap.id);
+    const token = await companion.requestBootstrapRedemption(bootstrap.id);
+    const session = authority.redeemBootstrapProvisional(token);
+    const receipt = { ...session.receipt, expiresAt: Math.min(session.receipt.expiresAt, Date.now() + expiresIn) };
+    await companion.deliverSession(session.secret.expose(), receipt);
+    if (activate) { await companion.activateSession(); authority.activateSession(session.receipt.id); }
+    return { companion, authority, session, bootstrap, async dispose() { authority.dispose(); await companion.shutdown(); } };
+  } catch (error) { authority.dispose(); await companion.shutdown(); throw error; }
+}
+test('persistent target itself rejects repeated native redemption and revokes its authority', async () => {
+  const fixture = await rawSessionFixture();
+  try {
+    await assert.rejects(fixture.companion.requestBootstrapRedemption(fixture.bootstrap.id));
+    assert.throws(() => fixture.authority.validateSession(fixture.session.secret.expose()));
+  } finally { await fixture.dispose(); }
 });
-
 
 test('native session state policy proof', () => {
   const result = spawnSync(APPLICATION_COMPANION_PATH, ['--session-self-test'], { encoding: 'utf8', timeout: 8000 });
@@ -266,13 +280,12 @@ test('cancel session grant during delivery and deny late success', async () => {
 });
 
 test('short native session expires, clears authority and terminates owned processes', async () => {
-  const owner = await CompanionBootstrapAuthority.start();
+  const fixture = await rawSessionFixture(2500);
   try {
-    const receipt = await owner.issueBootstrap(); await owner.companion.requestBootstrapRedemption(receipt.id);
-    await owner.companion.deliverSession(new ApplicationSecret('session').expose(), { id: '11111111-1111-1111-1111-111111111111', expiresAt: Date.now() + 2500 });
-    await owner.companion.activateSession(); await owner.companion.lost;
-    assert.equal(await owner.companion.failureCode, 'SESSION_EXPIRED'); assert.equal(owner.companion.alive, false);
-  } finally { await owner.dispose(); }
+    await fixture.companion.lost;
+    assert.equal(await fixture.companion.failureCode, 'SESSION_EXPIRED');
+    assert.throws(() => fixture.authority.validateSession(fixture.session.secret.expose()));
+  } finally { await fixture.dispose(); }
 });
 test('server session validation occurs only after native activation; process loss revokes it', async () => {
   const owner = await CompanionBootstrapAuthority.start();
@@ -284,12 +297,11 @@ test('server session validation occurs only after native activation; process los
 });
 
 test('cancellation after final session delivery prevents activation', async () => {
-  const owner = await CompanionBootstrapAuthority.start(); const controller = new AbortController();
+  const fixture = await rawSessionFixture(10000, false); const controller = new AbortController();
   try {
-    const bootstrap = await owner.issueBootstrap(); await owner.companion.requestBootstrapRedemption(bootstrap.id);
-    await owner.companion.deliverSession(new ApplicationSecret('session').expose(), { id: '11111111-1111-1111-1111-111111111111', expiresAt: Date.now() + 10000 });
-    controller.abort(); await assert.rejects(owner.companion.activateSession(controller.signal)); assert.equal(owner.companion.alive, false);
-  } finally { await owner.dispose(); }
+    controller.abort(); await assert.rejects(fixture.companion.activateSession(controller.signal));
+    assert.equal(fixture.companion.alive, false); assert.throws(() => fixture.authority.validateSession(fixture.session.secret.expose()));
+  } finally { await fixture.dispose(); }
 });
 test('pre-cancelled session issuance revokes the existing bootstrap owner', async () => {
   const owner = await CompanionBootstrapAuthority.start(); const controller = new AbortController();
@@ -298,12 +310,58 @@ test('pre-cancelled session issuance revokes the existing bootstrap owner', asyn
 });
 test('native session grant and activation cannot be replayed', async () => {
   for (const stage of ['offer','activation']) {
-    const owner = await CompanionBootstrapAuthority.start();
+    const fixture = await rawSessionFixture();
     try {
-      await owner.issueBootstrap(); const proof = await owner.redeemBootstrap();
-      if (stage === 'offer') await assert.rejects(owner.companion.deliverSession(proof.secret.expose(), proof.receipt));
-      else await assert.rejects(owner.companion.activateSession());
-      assert.throws(() => owner.validateSession(proof.secret.expose()));
-    } finally { await owner.dispose(); }
+      if (stage === 'offer') await assert.rejects(fixture.companion.deliverSession(fixture.session.secret.expose(), fixture.session.receipt));
+      else await assert.rejects(fixture.companion.activateSession());
+      assert.throws(() => fixture.authority.validateSession(fixture.session.secret.expose()));
+    } finally { await fixture.dispose(); }
   }
+});
+test('direct companion logout revokes server authority before awaiting native acknowledgment', async () => {
+  const owner = await CompanionBootstrapAuthority.start();
+  try {
+    await owner.issueBootstrap(); const session = await owner.redeemBootstrap();
+    const loggingOut = owner.companion.logoutSession();
+    assert.throws(() => owner.validateSession(session.secret.expose()));
+    await loggingOut; assert.equal(owner.companion.alive, false);
+    await assert.rejects(owner.companion.logoutSession());
+    assert.equal('activateSession' in owner.companion, false); assert.equal('deliverSession' in owner.companion, false);
+  } finally { await owner.dispose(); }
+});
+test('raw companion logout is terminal and cannot replay', async () => {
+  const fixture = await rawSessionFixture();
+  try {
+    await fixture.companion.logoutSession(); assert.equal(fixture.companion.alive, false);
+    assert.throws(() => fixture.authority.validateSession(fixture.session.secret.expose()));
+    await assert.rejects(fixture.companion.logoutSession());
+  } finally { await fixture.dispose(); }
+});
+test('stalled native IPC revokes an active owner despite wall-clock rollback', async () => {
+  let wall = Date.now(); let elapsed = 0;
+  const owner = await CompanionBootstrapAuthority.start({ mode: 'session-heartbeat-stall', clock: () => wall, elapsedClock: () => elapsed });
+  try {
+    await owner.issueBootstrap(); const session = await owner.redeemBootstrap();
+    wall -= 3600000; elapsed = 4500;
+    assert.throws(() => owner.validateSession(session.secret.expose()));
+    assert.equal(owner.companion.alive, false); await owner.companion.closed;
+  } finally { await owner.dispose(); }
+});
+test('real elapsed heartbeat deadline ends stalled IPC without further client operations', async () => {
+  const owner = await CompanionBootstrapAuthority.start({ mode: 'session-heartbeat-stall' });
+  try {
+    await owner.issueBootstrap(); const session = await owner.redeemBootstrap();
+    await Promise.race([owner.companion.lost, new Promise((_, reject) => { const timer = setTimeout(() => reject(new Error('heartbeat loss exceeded bound')), 6500); timer.unref(); })]);
+    assert.throws(() => owner.validateSession(session.secret.expose()));
+  } finally { await owner.dispose(); }
+});
+test('elapsed server expiry clears a real native session despite wall rollback', async () => {
+  let wall = Date.now(), elapsed = 0;
+  const owner = await CompanionBootstrapAuthority.start({ clock: () => wall, elapsedClock: () => elapsed });
+  try {
+    await owner.issueBootstrap(); const proof = await owner.redeemBootstrap();
+    wall -= 3600000; elapsed = 900000;
+    assert.throws(() => owner.validateSession(proof.secret.expose()));
+    assert.equal(await owner.companion.lost, 'closed'); assert.equal(await owner.companion.closed, true);
+  } finally { await owner.dispose(); }
 });
