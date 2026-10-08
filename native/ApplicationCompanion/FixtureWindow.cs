@@ -10,6 +10,7 @@ internal sealed class FixtureWindow : Form
     private readonly System.Windows.Forms.Timer timer = new() { Interval = 100 };
     private readonly DocumentReadiness document = new();
     private readonly CompanionBootstrap bootstrap;
+    private readonly CompanionSession session;
     private readonly SemaphoreSlim ipc = new(1);
     private readonly Microsoft.Win32.SafeHandles.SafeFileHandle browserJob = WindowsBoundary.CreateOwnedJob();
     private readonly Dictionary<int, (Microsoft.Win32.SafeHandles.SafeFileHandle Job, System.Diagnostics.Process Process)> runtimeJobs = new();
@@ -21,13 +22,14 @@ internal sealed class FixtureWindow : Form
     internal FixtureWindow(string name, int parent, string mode)
     {
         this.mode = mode;
-        bootstrap = new CompanionBootstrap(document);
+        bootstrap = new CompanionBootstrap(document); session = new CompanionSession(document);
         Text = "CCTV Application Companion — trusted fixture"; Width = 640; Height = 360;
         Controls.Add(view);
         Shown += async (_, _) => await Start(name, parent);
         timer.Tick += async (_, _) =>
         {
             if (terminal) return;
+            if (session.Expired) { await Fail("SESSION_EXPIRED"); return; }
             if ((!announced && Environment.TickCount64 - started >= 12000) || document.Expired) { await Fail("READINESS_TIMEOUT"); return; }
             if (!document.IsReady || busy || Environment.TickCount64 - lastPulse < 500) return;
             busy = true;
@@ -45,7 +47,7 @@ internal sealed class FixtureWindow : Form
             catch { await Fail("BOOTSTRAP_REJECTED"); }
             finally { busy = false; }
         };
-        FormClosing += (_, _) => { terminal = true; document.Invalidate(); bootstrap.Invalidate(); timer.Stop(); CloseRuntimeJobs(); view.Dispose(); pipe?.Dispose(); };
+        FormClosing += (_, _) => { terminal = true; document.Invalidate(); bootstrap.Invalidate(); session.Invalidate(); timer.Stop(); CloseRuntimeJobs(); view.Dispose(); pipe?.Dispose(); };
         FormClosed += (_, _) => { timer.Dispose(); };
     }
     private async Task Start(string name, int parent)
@@ -128,7 +130,7 @@ internal sealed class FixtureWindow : Form
     private async Task Fail(string code)
     {
         if (terminal) return;
-        terminal = true; document.Invalidate(); bootstrap.Invalidate(); timer.Stop();
+        terminal = true; document.Invalidate(); bootstrap.Invalidate(); session.Invalidate(); timer.Stop();
         try
         {
             await ipc.WaitAsync();
@@ -151,6 +153,7 @@ internal sealed class FixtureWindow : Form
         string type = Wire.Text(command, "type");
         if (type == "CLOSE") { Wire.Shape(command, "CLOSE"); Close(); return; }
         if (type == "ACK") { Wire.Shape(command, "ACK"); return; }
+        if (type.StartsWith("SESSION_", StringComparison.Ordinal)) { await HandleSession(command); return; }
         if (type == "ACTIVATE")
         {
             if (mode == "activation-navigation") { view.CoreWebView2.Navigate("https://rejected.invalid/"); await Task.Delay(100); }
@@ -159,10 +162,6 @@ internal sealed class FixtureWindow : Form
         if (type == "REDEEM")
         {
             await wire!.Send(bootstrap.Redeem(command));
-            if (mode == "redeemed-navigation")
-            {
-                _ = Task.Delay(700).ContinueWith(_ => { if (!terminal && !IsDisposed) BeginInvoke(() => view.CoreWebView2.Navigate("https://rejected.invalid/")); });
-            }
             return;
         }
         if (type != "OFFER") throw new IOException();
@@ -188,6 +187,48 @@ internal sealed class FixtureWindow : Form
         if (mode == "delivery-partial-done") { await wire.Send(new { v = 1, type = "DONE" }); throw new IOException(); }
         await wire.Send(done); bootstrap.Delivered();
         if (mode == "delivery-replay") await wire.Send(done);
+    }
+    private void SessionStatus(string state)
+    {
+        if (terminal || !document.IsReady || view.CoreWebView2.Source != DocumentReadiness.ApprovedUrl) throw new IOException();
+        view.CoreWebView2.PostWebMessageAsJson(System.Text.Json.JsonSerializer.Serialize(new { v = 1, type = "SESSION_STATUS", state, generation = document.Generation }));
+    }
+    private async Task HandleSession(System.Text.Json.JsonElement command)
+    {
+        string type = Wire.Text(command, "type");
+        if (type == "SESSION_ACTIVATE")
+        {
+            if (mode == "session-activation-loss") { Close(); return; }
+            var activated = session.Activate(command);
+            if (mode == "session-lost-activation") { await Task.Delay(10000); throw new IOException(); }
+            await wire!.Send(activated); SessionStatus("active");
+            if (mode is "session-active-navigation" or "redeemed-navigation") _ = Task.Delay(700).ContinueWith(_ => { if (!terminal && !IsDisposed) BeginInvoke(() => view.CoreWebView2.Navigate("https://rejected.invalid/")); });
+            if (mode == "session-renderer-loss") _ = Task.Delay(700).ContinueWith(_ => { if (!terminal && !IsDisposed) BeginInvoke(async () => { try { await view.CoreWebView2.CallDevToolsProtocolMethodAsync("Page.crash", "{}"); } catch { } }); });
+            if (mode == "session-channel-loss") _ = Task.Delay(700).ContinueWith(_ => pipe?.Dispose());
+            return;
+        }
+        if (type == "SESSION_LOGOUT") { await wire!.Send(session.Logout(command)); SessionStatus("logged-out"); return; }
+        if (type != "SESSION_OFFER") throw new IOException();
+        if (mode == "session-stale-generation")
+        {
+            var changed = System.Text.Json.Nodes.JsonNode.Parse(command.GetRawText())!; changed["generation"] = document.Generation + 1;
+            command = System.Text.Json.JsonSerializer.SerializeToElement(changed);
+        }
+        var ack = session.Offer(command);
+        if (mode == "session-timeout") { await Task.Delay(10000); throw new IOException(); }
+        if (mode == "session-exit") { Close(); return; }
+        if (mode == "session-navigation") { view.CoreWebView2.Navigate("https://rejected.invalid/"); await Task.Delay(100); throw new IOException(); }
+        if (mode == "session-wrong-ack") { var changed = System.Text.Json.Nodes.JsonNode.Parse(System.Text.Json.JsonSerializer.Serialize(ack))!; changed["digest"] = new string('0', 64); ack = changed; }
+        if (mode == "session-wrong-expiry") { var changed = System.Text.Json.Nodes.JsonNode.Parse(System.Text.Json.JsonSerializer.Serialize(ack))!; changed["expiresAt"] = command.GetProperty("expiresAt").GetInt64() + 1; ack = changed; }
+        if (mode == "session-late-ack") await Task.Delay(2500);
+        await wire!.Send(ack);
+        if (mode == "session-duplicate-ack") await wire.Send(ack);
+        var done = session.Commit(await wire.Read(2000));
+        if (terminal || !document.IsReady) throw new IOException();
+        if (mode == "session-lost-done") { await Task.Delay(10000); throw new IOException(); }
+        if (mode == "session-partial-done") { await wire.Send(new { v = 1, type = "SESSION_DONE" }); throw new IOException(); }
+        await wire.Send(done); session.Delivered();
+        if (mode == "session-replay") await wire.Send(done);
     }
     private void OwnBrowserProcesses(CoreWebView2Environment environment)
     {

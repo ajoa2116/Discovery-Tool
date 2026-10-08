@@ -204,3 +204,22 @@ test('cancelling a completed issuance does not revoke unrelated or redeemed auth
   await f.authority.issueBootstrap();
   assert.ok(f.authority.redeemBootstrap(f.tokens[1]));
 });
+
+
+test('provisional session cannot validate before activation and cannot activate twice', async () => {
+  const f = fixture(); await f.authority.issueBootstrap();
+  const session = f.authority.redeemBootstrapProvisional(f.tokens[0]);
+  assert.throws(() => f.authority.validateSession(session.secret.expose()));
+  f.authority.activateSession(session.receipt.id);
+  assert.deepEqual(f.authority.validateSession(session.secret.expose()), session.receipt);
+  assert.throws(() => f.authority.activateSession(session.receipt.id));
+  f.authority.revokeSession(session.receipt.id); assert.throws(() => f.authority.validateSession(session.secret.expose()));
+});
+test('expired or revoked provisional sessions cannot be activated or revived', async () => {
+  for (const expired of [false, true]) {
+    const f = fixture(); await f.authority.issueBootstrap(); const session = f.authority.redeemBootstrapProvisional(f.tokens[0]);
+    if (expired) f.setNow(session.receipt.expiresAt); else f.authority.revokeSession(session.receipt.id);
+    assert.throws(() => f.authority.activateSession(session.receipt.id));
+    f.setNow(1000); assert.throws(() => f.authority.validateSession(session.secret.expose()));
+  }
+});

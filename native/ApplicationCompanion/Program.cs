@@ -11,9 +11,9 @@ internal static class Program
         "bad-nonce", "bad-generation", "bad-navigation-id", "extra-field", "malformed-message", "oversized-message", "replay",
         "challenge-timeout", "late-response", "early-message", "unapproved-navigation", "redirect", "same-url-redirect",
         "popup", "frame", "post-ready-navigation", "reload", "fragment", "renderer-loss", "delivery-wrong-ack",
-        "delivery-duplicate-ack", "delivery-timeout", "delivery-navigation", "delivery-stale-generation", "delivery-exit", "delivery-partial-done", "delivery-replay", "activation-navigation", "redeemed-navigation"];
+        "delivery-duplicate-ack", "delivery-timeout", "delivery-navigation", "delivery-stale-generation", "delivery-exit", "delivery-partial-done", "delivery-replay", "activation-navigation", "redeemed-navigation", "session-wrong-ack", "session-late-ack", "session-wrong-expiry", "session-lost-activation", "session-duplicate-ack", "session-timeout", "session-navigation", "session-stale-generation", "session-exit", "session-partial-done", "session-lost-done", "session-replay", "session-activation-loss", "session-active-navigation", "session-renderer-loss", "session-channel-loss"];
     internal static readonly string[] FailureCodes = ["READINESS_TIMEOUT", "CHANNEL_LOST", "POPUP_REJECTED", "FRAME_REJECTED",
-        "RESOURCE_REJECTED", "RENDERER_LOST", "NAVIGATION_REJECTED", "MESSAGE_REJECTED", "RUNTIME_UNAVAILABLE", "BOOTSTRAP_REJECTED", "JOB_PROCESS_EXITED", "JOB_QUERY_FAILED", "JOB_ATTACH_DENIED", "JOB_ATTACH_FAILED", "JOB_BROWSER_MISSING"];
+        "RESOURCE_REJECTED", "RENDERER_LOST", "NAVIGATION_REJECTED", "MESSAGE_REJECTED", "RUNTIME_UNAVAILABLE", "BOOTSTRAP_REJECTED", "SESSION_REJECTED", "SESSION_EXPIRED", "JOB_PROCESS_EXITED", "JOB_QUERY_FAILED", "JOB_ATTACH_DENIED", "JOB_ATTACH_FAILED", "JOB_BROWSER_MISSING"];
     [STAThread]
     static int Main(string[] args)
     {
@@ -21,6 +21,7 @@ internal static class Program
         {
             WindowsBoundary.RequireUnelevated();
             if (args.SequenceEqual(new[] { "--document-self-test" })) return DocumentTests.Run();
+            if (args.SequenceEqual(new[] { "--session-self-test" })) return SessionTests.Run();
             if (args.SequenceEqual(new[] { "--bootstrap-self-test" })) return BootstrapTests.Run();
             if (args.SequenceEqual(new[] { "--self-test" }))
             {
@@ -57,6 +58,7 @@ internal static class Program
         if (generation < 1) throw new IOException();
         await parent.Send(new { v = 1, type = "READY", pid = child.Process.Id, generation });
         bool offered = false, delivered = false, activated = false, redeemed = false;
+        var session = new SessionRelay(generation);
         string id = "", nonce = "", digest = ""; long expiresAt = 0;
         while (true)
         {
@@ -81,6 +83,13 @@ internal static class Program
                 return;
             }
             command = parent.Read(int.MaxValue); // Exactly one reader on each channel.
+            if (type.StartsWith("SESSION_", StringComparison.Ordinal))
+            {
+                if (!redeemed) throw new IOException();
+                var next = await Await(pulse, command, pipe); child.Verify(pipe); await RejectFailure(parent, channel, next); Pulse(next, generation);
+                await session.Handle(request, channel, parent, () => ReadChild(channel, command, child, parent, pipe, 2000));
+                continue;
+            }
             if (type == "OFFER")
             {
                 Wire.Shape(request, "OFFER", "token", "id", "nonce", "expiresAt", "generation");
@@ -99,6 +108,13 @@ internal static class Program
             var nextPulse = await Await(pulse, command, pipe); child.Verify(pipe); await RejectFailure(parent, channel, nextPulse); Pulse(nextPulse, generation);
             await channel.Send(request);
             var response = await ReadChild(channel, command, child, parent, pipe, 2000);
+            if (type.StartsWith("SESSION_", StringComparison.Ordinal))
+            {
+                if (!redeemed) throw new IOException();
+                var next = await Await(pulse, command, pipe); child.Verify(pipe); await RejectFailure(parent, channel, next); Pulse(next, generation);
+                await session.Handle(request, channel, parent, () => ReadChild(channel, command, child, parent, pipe, 2000));
+                continue;
+            }
             if (type == "OFFER")
             {
                 Wire.Shape(response, "ACK", "id", "nonce", "digest", "generation");

@@ -31,6 +31,11 @@ internal static class FixtureDocument
             const send = value => window.chrome.webview.postMessage(value);
             window.chrome.webview.addEventListener('message', event => {
               const c = event.data;
+              if (window === window.top && location.href === 'https://companion-fixture.invalid/ready.html' &&
+                  c.v === 1 && c.type === 'SESSION_STATUS' && c.generation === 1 &&
+                  Object.keys(c).sort().join(',') === 'generation,state,type,v' && ['active','logged-out'].includes(c.state)) {
+                document.getElementById('fixture-proof').textContent = 'CCTV trusted companion fixture: ' + c.state; return;
+              }
               if (window !== window.top || location.href !== 'https://companion-fixture.invalid/ready.html' ||
                   c.v !== 1 || c.type !== 'CHALLENGE' || typeof c.nonce !== 'string' ||
                   typeof c.generation !== 'number' || typeof c.navigationId !== 'string') return;

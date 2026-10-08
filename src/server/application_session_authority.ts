@@ -32,7 +32,7 @@ const key = (token: unknown, kind: 'bootstrap' | 'session') => {
 /** In-memory capability authority; no HTTP, IPC, persistence or logging. */
 export class ApplicationSessionAuthority {
   #bootstraps = new Map<string, Bootstrap>();
-  #sessions = new Map<string, AuthorityReceipt>();
+  #sessions = new Map<string, { receipt: AuthorityReceipt; active: boolean }>();
   #lastNow = -Infinity;
   #disposed = false;
   #pending = new Set<() => void>();
@@ -45,7 +45,7 @@ export class ApplicationSessionAuthority {
     if (!Number.isFinite(now)) throw denied();
     this.#lastNow = Math.max(this.#lastNow, now);
     for (const [digest, entry] of this.#bootstraps) if (entry.receipt.expiresAt <= this.#lastNow) this.#bootstraps.delete(digest);
-    for (const [digest, receipt] of this.#sessions) if (receipt.expiresAt <= this.#lastNow) this.#sessions.delete(digest);
+    for (const [digest, entry] of this.#sessions) if (entry.receipt.expiresAt <= this.#lastNow) this.#sessions.delete(digest);
     return this.#lastNow;
   }
   async issueBootstrap(signal?: AbortSignal): Promise<AuthorityReceipt> {
@@ -86,25 +86,36 @@ export class ApplicationSessionAuthority {
     }
   }
   redeemBootstrap(token: unknown): { receipt: AuthorityReceipt; secret: ApplicationSecret } {
+    return this.#redeem(token, true);
+  }
+  /** Private companion delivery requires explicit activation after final delivery. */
+  redeemBootstrapProvisional(token: unknown) { return this.#redeem(token, false); }
+  #redeem(token: unknown, active: boolean): { receipt: AuthorityReceipt; secret: ApplicationSecret } {
     const now = this.#now(), digest = key(token, 'bootstrap'), entry = this.#bootstraps.get(digest);
     if (!entry?.delivered) throw denied();
     this.#bootstraps.delete(digest); // Consume before issuing; capacity failure cannot enable replay.
     if (this.#sessions.size >= CAPACITY) throw denied();
     const secret = new ApplicationSecret('session');
     const receipt = Object.freeze({ id: randomUUID(), expiresAt: now + APPLICATION_SESSION_MS });
-    this.#sessions.set(key(secret.expose(), 'session'), receipt);
+    this.#sessions.set(key(secret.expose(), 'session'), { receipt, active });
     return { receipt, secret };
   }
   validateSession(token: unknown): AuthorityReceipt {
     this.#now();
-    const receipt = this.#sessions.get(key(token, 'session'));
-    if (!receipt) throw denied();
-    return receipt;
+    const entry = this.#sessions.get(key(token, 'session'));
+    if (!entry?.active) throw denied();
+    return entry.receipt;
+  }
+  activateSession(id: string) {
+    this.#now();
+    const entry = [...this.#sessions.values()].find(entry => entry.receipt.id === id);
+    if (!entry || entry.active) throw denied();
+    entry.active = true;
   }
   /** Trusted server-side revocation, not a public endpoint. */
   revokeSession(id: string): boolean {
     this.#now();
-    for (const [digest, receipt] of this.#sessions) if (receipt.id === id) return this.#sessions.delete(digest);
+    for (const [digest, entry] of this.#sessions) if (entry.receipt.id === id) return this.#sessions.delete(digest);
     return false;
   }
   dispose() {

@@ -9,6 +9,8 @@ export class CompanionBootstrapAuthority {
   #receipt?: AuthorityReceipt;
   #issued = false;
   #disposed = false;
+  #session?: AuthorityReceipt;
+  #expiry?: ReturnType<typeof setTimeout>;
   private constructor(readonly companion: CompanionLifetime, clock?: () => number) {
     this.#authority = new ApplicationSessionAuthority(new PrivateBootstrapTransport('normal', companion), clock);
     void companion.lost.then(() => this.#invalidate());
@@ -18,7 +20,7 @@ export class CompanionBootstrapAuthority {
     if (!companion.alive || options.signal?.aborted) { await companion.shutdown(); throw denied(); }
     return new CompanionBootstrapAuthority(companion, options.clock);
   }
-  #invalidate() { if (this.#disposed) return; this.#disposed = true; this.#receipt = undefined; this.#authority.dispose(); }
+  #invalidate() { if (this.#disposed) return; this.#disposed = true; this.#receipt = undefined; this.#session = undefined; clearTimeout(this.#expiry); this.#authority.dispose(); }
   #live() { if (this.#disposed || !this.companion.alive) { this.#invalidate(); throw denied(); } }
   async issueBootstrap(signal?: AbortSignal): Promise<AuthorityReceipt> {
     this.#live();
@@ -34,15 +36,41 @@ export class CompanionBootstrapAuthority {
     } catch { this.#invalidate(); void this.companion.shutdown().catch(() => {}); throw denied(); }
     finally { signal?.removeEventListener('abort', cancel); }
   }
-  /** A verified native request proves possession; session secrets stay on the server. */
-  async redeemBootstrap(): Promise<{ receipt: AuthorityReceipt; secret: ApplicationSecret }> {
+  /** Trusted server proof API retained; session still requires verified native activation. */
+  async redeemBootstrap(signal?: AbortSignal): Promise<{ receipt: AuthorityReceipt; secret: ApplicationSecret }> {
+    return this.#deliverSession(signal);
+  }
+  /** Session secret crosses only the verified private native channel; caller gets metadata. */
+  async deliverSession(signal?: AbortSignal): Promise<AuthorityReceipt> { return (await this.#deliverSession(signal)).receipt; }
+  async #deliverSession(signal?: AbortSignal): Promise<{ receipt: AuthorityReceipt; secret: ApplicationSecret }> {
     this.#live(); const receipt = this.#receipt;
-    if (!receipt) throw denied();
+    if (signal?.aborted) { this.#invalidate(); void this.companion.shutdown().catch(() => {}); throw denied(); }
+    if (!receipt || this.#session) throw denied();
     this.#receipt = undefined;
+    const cancel = () => { this.#invalidate(); void this.companion.shutdown().catch(() => {}); };
+    signal?.addEventListener('abort', cancel, { once: true });
     try {
       const token = await this.companion.requestBootstrapRedemption(receipt.id); this.#live();
-      return this.#authority.redeemBootstrap(token);
-    } catch { this.#invalidate(); void this.companion.shutdown().catch(() => {}); throw denied(); }
+      const session = this.#authority.redeemBootstrapProvisional(token);
+      await this.companion.deliverSession(session.secret.expose(), session.receipt, signal); this.#live();
+      await this.companion.activateSession(signal); this.#live();
+      if (signal?.aborted) throw denied();
+      this.#authority.activateSession(session.receipt.id);
+      this.#session = session.receipt;
+      this.#expiry = setTimeout(cancel, Math.max(0, session.receipt.expiresAt - Date.now()));
+      this.#expiry.unref(); return session;
+    } catch { cancel(); throw denied(); }
+    finally { signal?.removeEventListener('abort', cancel); }
+  }
+  async logout(signal?: AbortSignal) {
+    this.#live(); if (!this.#session) throw denied();
+    // Revoke server authority before awaiting native acknowledgment. Logout is terminal.
+    try {
+      this.#authority.revokeSession(this.#session.id); clearTimeout(this.#expiry); this.#session = undefined;
+      await this.companion.logoutSession(signal);
+    }
+    catch { this.#invalidate(); await this.companion.shutdown(); throw denied(); }
+    this.#invalidate(); await this.companion.shutdown();
   }
   validateSession(token: unknown) { this.#live(); return this.#authority.validateSession(token); }
   async dispose() { this.#invalidate(); await this.companion.shutdown(); }

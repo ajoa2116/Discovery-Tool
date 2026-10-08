@@ -230,3 +230,80 @@ test('persistent target itself rejects a repeated native redemption and revokes 
     assert.throws(() => owner.validateSession(session.secret.expose()));
   } finally { await owner.dispose(); }
 });
+
+
+test('native session state policy proof', () => {
+  const result = spawnSync(APPLICATION_COMPANION_PATH, ['--session-self-test'], { encoding: 'utf8', timeout: 8000 });
+  assert.equal(result.status, 0); const proof = JSON.parse(result.stdout); assert.equal(proof.type, 'SESSION_TEST_OK'); assert.ok(proof.count >= 60);
+});
+test('session delivery returns metadata only and logout revokes and closes the owner', async () => {
+  const owner = await CompanionBootstrapAuthority.start();
+  try {
+    await owner.issueBootstrap(); const session = await owner.deliverSession();
+    assert.deepEqual(Object.keys(session).sort(), ['expiresAt','id']); assert.ok(owner.companion.alive);
+    assert.throws(() => owner.validateSession('session_' + 'a'.repeat(43)));
+    await owner.logout(); assert.equal(owner.companion.alive, false); await assert.rejects(owner.deliverSession());
+  } finally { await owner.dispose(); }
+});
+for (const mode of ['session-wrong-ack','session-late-ack','session-wrong-expiry','session-lost-activation','session-duplicate-ack','session-timeout','session-navigation','session-stale-generation','session-exit','session-partial-done','session-lost-done','session-replay','session-activation-loss'] as CompanionFixtureMode[]) {
+  test('native session fails closed: ' + mode, async () => {
+    const owner = await CompanionBootstrapAuthority.start({ mode });
+    try { await owner.issueBootstrap(); await assert.rejects(owner.deliverSession()); assert.equal(owner.companion.alive, false); }
+    finally { await owner.dispose(); }
+  });
+}
+for (const mode of ['session-active-navigation','session-renderer-loss','session-channel-loss'] as CompanionFixtureMode[]) {
+  test('active native session is revoked on ' + mode, async () => {
+    const owner = await CompanionBootstrapAuthority.start({ mode });
+    try { await owner.issueBootstrap(); await owner.deliverSession(); await owner.companion.lost; assert.equal(owner.companion.alive, false); await assert.rejects(owner.logout()); }
+    finally { await owner.dispose(); }
+  });
+}
+test('cancel session grant during delivery and deny late success', async () => {
+  const owner = await CompanionBootstrapAuthority.start({ mode: 'session-timeout' }); const controller = new AbortController();
+  try { await owner.issueBootstrap(); const result = owner.deliverSession(controller.signal); setTimeout(() => controller.abort(), 200); await assert.rejects(result); assert.equal(owner.companion.alive, false); }
+  finally { controller.abort(); await owner.dispose(); }
+});
+
+test('short native session expires, clears authority and terminates owned processes', async () => {
+  const owner = await CompanionBootstrapAuthority.start();
+  try {
+    const receipt = await owner.issueBootstrap(); await owner.companion.requestBootstrapRedemption(receipt.id);
+    await owner.companion.deliverSession(new ApplicationSecret('session').expose(), { id: '11111111-1111-1111-1111-111111111111', expiresAt: Date.now() + 2500 });
+    await owner.companion.activateSession(); await owner.companion.lost;
+    assert.equal(await owner.companion.failureCode, 'SESSION_EXPIRED'); assert.equal(owner.companion.alive, false);
+  } finally { await owner.dispose(); }
+});
+test('server session validation occurs only after native activation; process loss revokes it', async () => {
+  const owner = await CompanionBootstrapAuthority.start();
+  try {
+    await owner.issueBootstrap(); const session = await owner.redeemBootstrap();
+    assert.deepEqual(owner.validateSession(session.secret.expose()), session.receipt);
+    process.kill(owner.companion.pid); await owner.companion.lost; assert.throws(() => owner.validateSession(session.secret.expose()));
+  } finally { await owner.dispose(); }
+});
+
+test('cancellation after final session delivery prevents activation', async () => {
+  const owner = await CompanionBootstrapAuthority.start(); const controller = new AbortController();
+  try {
+    const bootstrap = await owner.issueBootstrap(); await owner.companion.requestBootstrapRedemption(bootstrap.id);
+    await owner.companion.deliverSession(new ApplicationSecret('session').expose(), { id: '11111111-1111-1111-1111-111111111111', expiresAt: Date.now() + 10000 });
+    controller.abort(); await assert.rejects(owner.companion.activateSession(controller.signal)); assert.equal(owner.companion.alive, false);
+  } finally { await owner.dispose(); }
+});
+test('pre-cancelled session issuance revokes the existing bootstrap owner', async () => {
+  const owner = await CompanionBootstrapAuthority.start(); const controller = new AbortController();
+  try { await owner.issueBootstrap(); controller.abort(); await assert.rejects(owner.deliverSession(controller.signal)); assert.equal(owner.companion.alive, false); }
+  finally { await owner.dispose(); }
+});
+test('native session grant and activation cannot be replayed', async () => {
+  for (const stage of ['offer','activation']) {
+    const owner = await CompanionBootstrapAuthority.start();
+    try {
+      await owner.issueBootstrap(); const proof = await owner.redeemBootstrap();
+      if (stage === 'offer') await assert.rejects(owner.companion.deliverSession(proof.secret.expose(), proof.receipt));
+      else await assert.rejects(owner.companion.activateSession());
+      assert.throws(() => owner.validateSession(proof.secret.expose()));
+    } finally { await owner.dispose(); }
+  }
+});
