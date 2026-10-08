@@ -26,7 +26,7 @@ internal static class FixtureDocument
         string early = mode == "early-message" ? "send({v:1,type:'READY',generation:1,navigationId:'1',nonce:'early'});" : "";
         return """
             <!doctype html><html><head><meta charset="utf-8"><title>Trusted companion fixture</title></head>
-            <body><h1 id="fixture-proof">CCTV trusted companion fixture</h1><p>No bootstrap authority or camera connection.</p>
+            <body><h1 id="fixture-proof">CCTV trusted companion fixture</h1><p>Isolated trusted document. No camera connection.</p>
             <script>
             const send = value => window.chrome.webview.postMessage(value);
             window.chrome.webview.addEventListener('message', event => {

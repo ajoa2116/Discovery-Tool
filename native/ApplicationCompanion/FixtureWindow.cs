@@ -9,7 +9,10 @@ internal sealed class FixtureWindow : Form
     private readonly WebView2 view = new() { Dock = DockStyle.Fill };
     private readonly System.Windows.Forms.Timer timer = new() { Interval = 100 };
     private readonly DocumentReadiness document = new();
+    private readonly CompanionBootstrap bootstrap;
     private readonly SemaphoreSlim ipc = new(1);
+    private readonly Microsoft.Win32.SafeHandles.SafeFileHandle browserJob = WindowsBoundary.CreateOwnedJob();
+    private readonly Dictionary<int, (Microsoft.Win32.SafeHandles.SafeFileHandle Job, System.Diagnostics.Process Process)> runtimeJobs = new();
     private System.IO.Pipes.NamedPipeClientStream? pipe;
     private Wire? wire;
     private bool busy, terminal, announced;
@@ -18,6 +21,7 @@ internal sealed class FixtureWindow : Form
     internal FixtureWindow(string name, int parent, string mode)
     {
         this.mode = mode;
+        bootstrap = new CompanionBootstrap(document);
         Text = "CCTV Application Companion — trusted fixture"; Width = 640; Height = 360;
         Controls.Add(view);
         Shown += async (_, _) => await Start(name, parent);
@@ -30,13 +34,18 @@ internal sealed class FixtureWindow : Form
             try
             {
                 await ipc.WaitAsync();
-                try { if (terminal) return; await wire!.Send(new { v = 1, type = "PULSE" }); Wire.Shape(await wire.Read(3000), "ACK"); lastPulse = Environment.TickCount64; }
+                try
+                {
+                    if (terminal) return;
+                    await wire!.Send(new { v = 1, type = "PULSE", generation = document.Generation });
+                    await HandleCommand(await wire.Read(3000)); lastPulse = Environment.TickCount64;
+                }
                 finally { ipc.Release(); }
             }
-            catch { await Fail("CHANNEL_LOST"); }
+            catch { await Fail("BOOTSTRAP_REJECTED"); }
             finally { busy = false; }
         };
-        FormClosing += (_, _) => { terminal = true; document.Invalidate(); timer.Stop(); view.Dispose(); pipe?.Dispose(); };
+        FormClosing += (_, _) => { terminal = true; document.Invalidate(); bootstrap.Invalidate(); timer.Stop(); CloseRuntimeJobs(); view.Dispose(); pipe?.Dispose(); };
         FormClosed += (_, _) => { timer.Dispose(); };
     }
     private async Task Start(string name, int parent)
@@ -51,6 +60,13 @@ internal sealed class FixtureWindow : Form
             var options = environment.CreateCoreWebView2ControllerOptions(); options.IsInPrivateModeEnabled = true;
             await view.EnsureCoreWebView2Async(environment, options);
             if (terminal) return;
+            OwnBrowserProcesses(environment);
+            environment.ProcessInfosChanged += async (_, _) =>
+            {
+                if (terminal) return;
+                try { OwnBrowserProcesses(environment); }
+                catch { await Fail("RUNTIME_UNAVAILABLE"); }
+            };
             var core = view.CoreWebView2;
             core.Settings.IsWebMessageEnabled = true; core.Settings.AreHostObjectsAllowed = false;
             core.Settings.AreDevToolsEnabled = false; core.Settings.AreDefaultContextMenusEnabled = false;
@@ -97,7 +113,7 @@ internal sealed class FixtureWindow : Form
                 {
                     document.Accept(e.Source, core.Source, e.WebMessageAsJson);
                     await ipc.WaitAsync();
-                    try { if (terminal || !document.IsReady) return; await wire.Send(new { v = 1, type = "READY" }); announced = true; lastPulse = Environment.TickCount64; }
+                    try { if (terminal || !document.IsReady) return; await wire.Send(new { v = 1, type = "READY", generation = document.Generation }); announced = true; lastPulse = Environment.TickCount64; }
                     finally { ipc.Release(); }
                     if (mode == "disconnect") { pipe.Dispose(); return; }
                     if (mode == "exit") { Close(); return; }
@@ -107,12 +123,12 @@ internal sealed class FixtureWindow : Form
             };
             core.Navigate(DocumentReadiness.ApprovedUrl);
         }
-        catch { await Fail("RUNTIME_UNAVAILABLE"); }
+        catch (Exception error) { await Fail(Program.FailureCodes.Contains(error.Message) ? error.Message : "RUNTIME_UNAVAILABLE"); }
     }
     private async Task Fail(string code)
     {
         if (terminal) return;
-        terminal = true; document.Invalidate(); timer.Stop();
+        terminal = true; document.Invalidate(); bootstrap.Invalidate(); timer.Stop();
         try
         {
             await ipc.WaitAsync();
@@ -127,6 +143,77 @@ internal sealed class FixtureWindow : Form
             finally { ipc.Release(); }
         }
         catch { /* Terminal loss still closes the private boundary. */ }
-        finally { pipe?.Dispose(); view.Dispose(); if (!IsDisposed) Close(); }
+        finally { pipe?.Dispose(); CloseRuntimeJobs(); view.Dispose(); if (!IsDisposed) Close(); }
     }
+    private async Task HandleCommand(System.Text.Json.JsonElement command)
+    {
+        if (terminal || !document.IsReady) throw new IOException();
+        string type = Wire.Text(command, "type");
+        if (type == "CLOSE") { Wire.Shape(command, "CLOSE"); Close(); return; }
+        if (type == "ACK") { Wire.Shape(command, "ACK"); return; }
+        if (type == "ACTIVATE")
+        {
+            if (mode == "activation-navigation") { view.CoreWebView2.Navigate("https://rejected.invalid/"); await Task.Delay(100); }
+            await wire!.Send(bootstrap.Activate(command)); return;
+        }
+        if (type == "REDEEM")
+        {
+            await wire!.Send(bootstrap.Redeem(command));
+            if (mode == "redeemed-navigation")
+            {
+                _ = Task.Delay(700).ContinueWith(_ => { if (!terminal && !IsDisposed) BeginInvoke(() => view.CoreWebView2.Navigate("https://rejected.invalid/")); });
+            }
+            return;
+        }
+        if (type != "OFFER") throw new IOException();
+        if (mode == "delivery-stale-generation")
+        {
+            var changed = System.Text.Json.Nodes.JsonNode.Parse(command.GetRawText())!;
+            changed["generation"] = document.Generation + 1;
+            command = System.Text.Json.JsonSerializer.SerializeToElement(changed);
+        }
+        var ack = bootstrap.Offer(command);
+        if (mode == "delivery-timeout") { await Task.Delay(10000); throw new IOException(); }
+        if (mode == "delivery-exit") { Close(); return; }
+        if (mode == "delivery-navigation") { view.CoreWebView2.Navigate("https://rejected.invalid/"); await Task.Delay(100); throw new IOException(); }
+        if (mode == "delivery-wrong-ack")
+        {
+            var changed = System.Text.Json.Nodes.JsonNode.Parse(System.Text.Json.JsonSerializer.Serialize(ack))!;
+            changed["nonce"] = "wrong"; ack = changed;
+        }
+        await wire!.Send(ack);
+        if (mode == "delivery-duplicate-ack") await wire.Send(ack);
+        var done = bootstrap.Commit(await wire.Read(2000));
+        if (terminal || !document.IsReady) throw new IOException();
+        if (mode == "delivery-partial-done") { await wire.Send(new { v = 1, type = "DONE" }); throw new IOException(); }
+        await wire.Send(done); bootstrap.Delivered();
+        if (mode == "delivery-replay") await wire.Send(done);
+    }
+    private void OwnBrowserProcesses(CoreWebView2Environment environment)
+    {
+        // WebView2 may launch runtime processes outside the UI's inherited Job.
+        // Adopt the fresh environment's process set before navigation/credential
+        // delivery, then retain kill-on-close ownership for the whole lifetime.
+        var processes = environment.GetProcessInfos();
+        if (processes.Count == 0) throw new IOException();
+        bool browserOwned = false;
+        foreach (var info in processes)
+        {
+            int pid = (int)info.ProcessId;
+            if (runtimeJobs.TryGetValue(pid, out var retained))
+            {
+                if (!retained.Process.HasExited) { if (info.Kind == CoreWebView2ProcessKind.Browser) browserOwned = true; continue; }
+                retained.Job.Dispose(); retained.Process.Dispose(); runtimeJobs.Remove(pid);
+            }
+            if (runtimeJobs.Count >= 128) throw new IOException("RUNTIME_UNAVAILABLE");
+            var process = System.Diagnostics.Process.GetProcessById(pid);
+            if (process.HasExited) { process.Dispose(); continue; }
+            var job = info.Kind == CoreWebView2ProcessKind.Browser ? browserJob : WindowsBoundary.CreateOwnedJob();
+            try { WindowsBoundary.AttachOwnedProcess(job, process); runtimeJobs.Add(pid, (job, process)); }
+            catch { job.Dispose(); process.Dispose(); throw; }
+            if (info.Kind == CoreWebView2ProcessKind.Browser) browserOwned = true;
+        }
+        if (!browserOwned) throw new IOException("JOB_BROWSER_MISSING");
+    }
+    private void CloseRuntimeJobs() { foreach (var retained in runtimeJobs.Values) { retained.Job.Dispose(); retained.Process.Dispose(); } runtimeJobs.Clear(); browserJob.Dispose(); }
 }

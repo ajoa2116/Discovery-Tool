@@ -1,0 +1,49 @@
+# Phase 18C.7C — Companion bootstrap authority integration
+
+Starting branch: `codex/post-field-corrections-1`. Starting HEAD: `cfcc4ef7dc04732963192716b77258988ebd37d1`.
+
+## Isolated composition
+
+`CompanionBootstrapAuthority.start()` first waits for the existing verified ApplicationCompanion document readiness and live owned lifetime. Only then does it create a dedicated `ApplicationSessionAuthority`, using the existing `PrivateBootstrapTransport` with a persistent-companion target. The transport's default isolated helper/stub path is retained; the persistent path uses the existing strict `BootstrapAckDecoder` against the owned broker's delivery receipt rather than requiring a persistent process to exit. There are no production imports of this composition and no React, launcher, HTTP/WS authentication or camera IPC integration. Existing camera production safety gates remain unchanged.
+
+The bootstrap credential stays in Node/native memory and private stdin/stdout/named-pipe channels. It is never included in the fixture HTML, document challenge, web message, URL, process arguments, environment, file, diagnostic or log. The fixture receives only the existing nonsecret readiness challenge. The owner returns bootstrap receipt metadata and server-side redacted session proof wrappers; session credentials are not delivered to native/browser code in this phase.
+
+## Delivery, activation and redemption
+
+1. Native document READY establishes the generation used by every subsequent private authority command. The broker verifies the owned child on each response and binds the channel's readiness generation, receipt ID, nonce, capability digest and expiry.
+2. The existing authority issues a random 256-bit, single-use bootstrap with its 30-second absolute lifetime. The persistent transport privately sends OFFER with token, receipt ID, fresh nonce, expiry and the verified generation.
+3. The companion's native bootstrap state requires current trusted document readiness and matching generation before accepting OFFER. It checks the bounded credential/receipt/nonce format and expiry, then replies ACK with receipt, nonce, digest and generation. The broker checks all of them before COMMIT. The companion verifies COMMIT and its still-live readiness/expiry, sends DONE, and marks its local delivery state complete. No ACK alone, malformed/incomplete DONE, duplicate frame or stale generation authorizes redemption.
+4. Only the broker's verified DELIVERED receipt completes the persistent transport. The existing authority then rechecks cancellation and its monotonic-observed clock before marking the bootstrap delivered. A separate ACTIVATE exchange follows; both broker and native companion recheck receipt, generation, state and expiry. The owner's issuance call returns only after that verified activation and a live-lifetime check.
+5. A later explicit owner redemption requests the credential from the same verified, active native companion. Native and broker consume their redemption state once; the broker verifies the returned credential digest before relaying it privately. The existing server authority consumes the bootstrap before issuing its separate 15-minute session proof. No public redemption endpoint exists. A second redemption is denied, and a second issuance cannot reuse the same companion.
+
+The native state is Empty → Offered → Committed → Delivered → Active → Consumed, with irreversible Terminal on rejection or invalidation. It clamps observed clock progression and clears retained credential/nonce/digest references on loss. Native generation/readiness and expiry are checked at every delivery/activation/redemption boundary. The Node target independently permits each delivery/activation/redemption stage once, binds its receipt ID, accepts one outstanding operation, checks strict bounded frames, and enforces an eight-second operation deadline. Late or duplicate frames cannot complete a different operation. Failure cancels the operation and ends the owned lifetime. Existing secret redaction and server digest-only storage remain intact.
+
+## Revocation and ownership
+
+Navigation, frame/popup rejection, renderer loss, private IPC loss or failure invalidates native readiness and native bootstrap state immediately. Observed companion loss disposes its dedicated server authority, cancelling pending issuance and clearing delivered bootstraps/sessions. The owner also checks the supervisor's synchronous live flag before issuing, redeeming or validating a session, closing the Promise-notification race. Caller cancellation covers delivery and the later activation check; disposal/timeout/delivery failure cannot become late success. Revocation is scoped to one companion, so closing a different owned window cannot revoke its sessions. As with earlier phases, IPC/event notification is bounded rather than instantaneous across processes; native state is invalidated at the local event, and no production authentication endpoint is exposed during that interval.
+
+Atomic suspended Job-list creation, original UI process handle, unelevated token policy, private logon-SID pipe ACL, first-instance/remote rejection and reciprocal PID/session/image verification are retained. Normal shutdown now uses a private CLOSE before the bounded Job fallback. Testing exposed WebView2 runtime processes outside the UI's inherited Job. Before navigation or authority delivery, the companion adopts the fresh environment's reported processes into separately retained kill-on-close Jobs, preserving Chromium's existing sandbox Job hierarchies. It retains process handles to prevent PID-reuse confusion, adopts later reported processes, bounds the set to 128, and fails closed if ownership verification/assignment fails. UI termination also closes those runtime Job handles. Assigning all sandbox processes to one shared Job was rejected by Windows; no sandbox Job restrictions were removed to make ownership work.
+
+## Validation and limits
+
+The focused suite extends all Phase 18C.7B Windows tests with actual private bootstrap delivery, post-delivery activation, one-time native redemption, pending-redemption denial, wrong/duplicate acknowledgment, timeout, navigation during delivery/activation, stale generation, companion exit, incomplete/duplicate DONE, caller cancellation, expiry, independent authority instances and revocation of redeemed session proofs on navigation or broker/companion death. Native bootstrap policy proof contains **53 assertions**; existing document policy proof contains **76 assertions**. Existing application authority, strict decoder/async supervisor and real Windows isolated helper/stub transport regressions also run unchanged. Both application and fixture WebView2 process cleanup are checked.
+
+Validation history: initial successful integration checks exposed leftover fixture runtime processes. Graceful close alone and browser-root-only adoption were insufficient. Separate retained runtime Jobs resolved the cleanup checks while preserving sandbox Job nesting; bootstrap delivery/redemption then passed with no new fixture processes remaining. A full 105-test regression run passed. Final review added independent single-use stage enforcement to the low-level persistent target and two direct checks, producing the final 107-test suite. No cleanup/security assertion was removed. Final test/build results are recorded below after the complete run.
+
+This remains an isolated fixed fixture and trusted server module. Session credential transport, production authentication, Vite/React client integration, production launcher, elevated-parent launch validation, deployment integrity and camera exposure remain deferred. Same-user injection/debugging, replaced development binaries and administrator compromise remain outside the private IPC proof. Actual elevated-parent execution was not attempted; rejection is enforced in both native modes. InPrivate temporary profile directories/crash metadata may remain; this phase verifies process cleanup, not secure profile deletion or complete browser network isolation. Managed immutable credential strings are not claimed to be securely erased from process memory. No running application was restarted and no camera or network discovery operation was performed.
+
+## Files and stop
+
+Final validation: **107/107 focused tests passed**, zero failed/cancelled/skipped: 59 companion lifecycle/readiness/bootstrap checks plus 48 unchanged authority/decoder/async supervisor/Windows helper regressions. The native policy checks contain 53 bootstrap and 76 document assertions. Final cleanup found no newly owned ApplicationCompanion or fixture WebView2 processes. TypeScript `--noEmit` passed; the final production TypeScript/Vite/build-identity build passed. ApplicationCompanion, BootstrapTransport and CameraBrowserHost Release builds passed with zero warnings/errors. Working/staged diff checks passed before commit.
+
+- `src/server/companion_bootstrap_authority.ts`: new per-companion authority owner.
+- `src/server/private_bootstrap_transport.ts`: optional persistent target; existing default path preserved.
+- `src/server/application_companion_supervisor.ts`: bound readiness generation, private delivery/activation/redemption operations and terminal lifetime checks.
+- `native/ApplicationCompanion/CompanionBootstrap.cs`, `BootstrapTests.cs`: native bootstrap state and policy proof.
+- `native/ApplicationCompanion/Program.cs`, `FixtureWindow.cs`, `WindowsBoundary.cs`, `FixtureDocument.cs`: private protocol, retained runtime Jobs, graceful close and fixed adversarial fixture cases.
+- `src/test/application_companion_lifecycle.test.ts`: integration/security and ownership cleanup coverage.
+- This report.
+
+Commit message: **Integrate companion bootstrap authority**.
+
+Stop after Phase 18C.7C. Do not begin Phase 18C.7D.

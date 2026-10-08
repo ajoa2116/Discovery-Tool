@@ -25,7 +25,14 @@ internal static class WindowsBoundary
     [StructLayout(LayoutKind.Sequential)] private struct JobLimits { public BasicLimits Basic; public IoCounters Io; public nuint ProcessMemory, JobMemory, PeakProcess, PeakJob; }
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode)] private static extern SafeFileHandle CreateJobObject(IntPtr attributes, string? name);
     [DllImport("kernel32.dll")] private static extern bool SetInformationJobObject(SafeFileHandle job, int information, ref JobLimits limits, uint length);
-    [DllImport("kernel32.dll")] private static extern bool AssignProcessToJobObject(SafeFileHandle job, IntPtr process);
+    [DllImport("kernel32.dll", SetLastError = true)] private static extern bool AssignProcessToJobObject(SafeFileHandle job, IntPtr process);
+    [DllImport("kernel32.dll", SetLastError = true)] private static extern bool IsProcessInJob(IntPtr process, SafeFileHandle job, out bool member);
+    public static void AttachOwnedProcess(SafeFileHandle job, Process process)
+    {
+        if (process.HasExited) throw new IOException("JOB_PROCESS_EXITED");
+        if (!IsProcessInJob(process.Handle, job, out bool member)) throw new IOException("JOB_QUERY_FAILED");
+        if (!member && !AssignProcessToJobObject(job, process.Handle)) throw new IOException(Marshal.GetLastWin32Error() == 5 ? "JOB_ATTACH_DENIED" : "JOB_ATTACH_FAILED");
+    }
     public static SafeFileHandle CreateOwnedJob()
     {
         var job = CreateJobObject(IntPtr.Zero, null);

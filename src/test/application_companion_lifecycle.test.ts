@@ -2,6 +2,9 @@ import assert from 'node:assert/strict';
 import { test, after } from 'node:test';
 import { spawn, spawnSync } from 'node:child_process';
 import { APPLICATION_COMPANION_PATH, startApplicationCompanion, type CompanionFixtureMode } from '../server/application_companion_supervisor.ts';
+import { CompanionBootstrapAuthority } from '../server/companion_bootstrap_authority.ts';
+import { ApplicationSecret, ApplicationSessionAuthority } from '../server/application_session_authority.ts';
+import { PrivateBootstrapTransport } from '../server/private_bootstrap_transport.ts';
 
 const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
 const fixturePids = () => {
@@ -119,3 +122,111 @@ for (const [mode, code] of [['replay', 'MESSAGE_REJECTED'], ['post-ready-navigat
       assert.equal(await instance.closed, true); assert.equal(alive(instance.pid), false);
     } finally { await instance.shutdown(); }
   });
+test('native bootstrap state denies partial delivery, stale generation, expiry and replay', () => {
+  const result = spawnSync(APPLICATION_COMPANION_PATH, ['--bootstrap-self-test'], { encoding: 'utf8', timeout: 8000 });
+  assert.equal(result.status, 0); const proof = JSON.parse(result.stdout); assert.equal(proof.type, 'BOOTSTRAP_TEST_OK'); assert.ok(proof.count >= 50);
+});
+test('real READY companion receives, activates and redeems bootstrap exactly once', async () => {
+  const owner = await CompanionBootstrapAuthority.start();
+  try {
+    const receipt = await owner.issueBootstrap(); assert.ok(receipt.expiresAt > Date.now());
+    const session = await owner.redeemBootstrap(); assert.equal(owner.validateSession(session.secret.expose()).id, session.receipt.id);
+    await assert.rejects(owner.redeemBootstrap()); assert.ok(owner.companion.alive);
+    await owner.dispose(); assert.throws(() => owner.validateSession(session.secret.expose()));
+  } finally { await owner.dispose(); }
+});
+test('transport completion precedes activation; redemption is refused while authority is pending', async () => {
+  const companion = await startApplicationCompanion(); let token = '';
+  let authority!: ApplicationSessionAuthority;
+  const transport = new PrivateBootstrapTransport('normal', companion);
+  authority = new ApplicationSessionAuthority({ async deliver(secret, receipt, signal) {
+    token = secret.expose(); assert.throws(() => authority.redeemBootstrap(token));
+    await transport.deliver(secret, receipt, signal); assert.throws(() => authority.redeemBootstrap(token));
+  } });
+  try {
+    const receipt = await authority.issueBootstrap(); await companion.activateBootstrap(receipt.id);
+    const native = await companion.requestBootstrapRedemption(receipt.id); assert.equal(native, token);
+    const session = authority.redeemBootstrap(native); assert.throws(() => authority.redeemBootstrap(native)); assert.ok(authority.validateSession(session.secret.expose()));
+  } finally { authority.dispose(); await companion.shutdown(); }
+});
+for (const mode of ['delivery-wrong-ack', 'delivery-duplicate-ack', 'delivery-timeout', 'delivery-navigation', 'delivery-stale-generation', 'delivery-exit', 'delivery-partial-done', 'delivery-replay', 'activation-navigation'] as CompanionFixtureMode[])
+  test(`actual ${mode} cannot authorize a partially delivered bootstrap`, async () => {
+    const owner = await CompanionBootstrapAuthority.start({ mode });
+    try { await assert.rejects(owner.issueBootstrap()); await assert.rejects(owner.redeemBootstrap()); await owner.companion.closed; assert.equal(owner.companion.alive, false); }
+    finally { await owner.dispose(); }
+  });
+for (const target of ['companion', 'broker'] as const) test(`verified ${target} loss revokes a redeemed session proof`, async () => {
+  const owner = await CompanionBootstrapAuthority.start();
+  try {
+    await owner.issueBootstrap(); const session = await owner.redeemBootstrap();
+    process.kill(target === 'companion' ? owner.companion.pid : owner.companion.brokerPid);
+    await owner.companion.lost; assert.throws(() => owner.validateSession(session.secret.expose())); await owner.companion.closed;
+  } finally { await owner.dispose(); }
+});
+test('cancellation during private delivery revokes pending authority and collects ownership', async () => {
+  const owner = await CompanionBootstrapAuthority.start({ mode: 'delivery-timeout' }); const controller = new AbortController();
+  try {
+    const issued = owner.issueBootstrap(controller.signal); const rejected = assert.rejects(issued);
+    await new Promise(done => setTimeout(done, 800)); controller.abort(); await rejected;
+    await assert.rejects(owner.redeemBootstrap()); await owner.companion.closed; assert.equal(owner.companion.alive, false);
+  } finally { await owner.dispose(); }
+});
+test('authority is never exposed for a document which fails READY', async () => {
+  await assert.rejects(CompanionBootstrapAuthority.start({ mode: 'bad-nonce' }));
+});
+test('expired authority receipt never starts native delivery', async () => {
+  const owner = await CompanionBootstrapAuthority.start({ clock: () => Date.now() - 31000 });
+  try { await assert.rejects(owner.issueBootstrap()); await assert.rejects(owner.redeemBootstrap()); }
+  finally { await owner.dispose(); }
+});
+test('authority expiry after delivery still rejects redemption', async () => {
+  let now = Date.now(); const owner = await CompanionBootstrapAuthority.start({ clock: () => now });
+  try { await owner.issueBootstrap(); now += 30000; await assert.rejects(owner.redeemBootstrap()); }
+  finally { await owner.dispose(); }
+});
+test('concurrent owned authorities cannot redeem each other and independent close revokes only its owner', async () => {
+  const first = await CompanionBootstrapAuthority.start(); const second = await CompanionBootstrapAuthority.start();
+  try {
+    await first.issueBootstrap(); await second.issueBootstrap(); const one = await first.redeemBootstrap(), two = await second.redeemBootstrap();
+    assert.throws(() => first.validateSession(two.secret.expose())); await first.dispose(); assert.ok(second.validateSession(two.secret.expose())); assert.throws(() => first.validateSession(one.secret.expose()));
+  } finally { await first.dispose(); await second.dispose(); }
+});
+test('second issuance fails closed instead of reusing the same native bootstrap target', async () => {
+  const owner = await CompanionBootstrapAuthority.start();
+  try { await owner.issueBootstrap(); await assert.rejects(owner.issueBootstrap()); await assert.rejects(owner.redeemBootstrap()); }
+  finally { await owner.dispose(); }
+});
+test('low-level activation without delivery is refused for the verified companion', async () => {
+  const companion = await startApplicationCompanion();
+  try { await assert.rejects(companion.activateBootstrap('11111111-1111-1111-1111-111111111111')); assert.equal(companion.alive, false); }
+  finally { await companion.shutdown(); }
+});
+test('expired direct transport input is refused before offering a credential', async () => {
+  const companion = await startApplicationCompanion();
+  try { await assert.rejects(new PrivateBootstrapTransport('normal', companion).deliver(new ApplicationSecret('bootstrap'), { id: '11111111-1111-1111-1111-111111111111', expiresAt: Date.now() - 1 })); }
+  finally { await companion.shutdown(); }
+});
+test('navigation after verified redemption revokes the live session proof', async () => {
+  const owner = await CompanionBootstrapAuthority.start({ mode: 'redeemed-navigation' });
+  try {
+    await owner.issueBootstrap(); const session = await owner.redeemBootstrap(); await owner.companion.lost;
+    assert.throws(() => owner.validateSession(session.secret.expose())); await owner.companion.closed;
+  } finally { await owner.dispose(); }
+});
+test('persistent target refuses activation while delivery is still pending', async () => {
+  const companion = await startApplicationCompanion({ mode: 'delivery-timeout' }); const controller = new AbortController();
+  const id = '11111111-1111-1111-1111-111111111111';
+  try {
+    const delivering = new PrivateBootstrapTransport('normal', companion).deliver(new ApplicationSecret('bootstrap'), { id, expiresAt: Date.now() + 30000 }, controller.signal);
+    const denied = assert.rejects(delivering);
+    await assert.rejects(companion.activateBootstrap(id)); await denied; assert.equal(companion.alive, false);
+  } finally { controller.abort(); await companion.shutdown(); }
+});
+test('persistent target itself rejects a repeated native redemption and revokes its owner', async () => {
+  const owner = await CompanionBootstrapAuthority.start();
+  try {
+    const receipt = await owner.issueBootstrap(); const session = await owner.redeemBootstrap();
+    await assert.rejects(owner.companion.requestBootstrapRedemption(receipt.id));
+    assert.throws(() => owner.validateSession(session.secret.expose()));
+  } finally { await owner.dispose(); }
+});

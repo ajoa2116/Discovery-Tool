@@ -1,30 +1,41 @@
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { BootstrapAckDecoder, type ExpectedBootstrapAcknowledgment } from './bootstrap_ack_decoder.ts';
 
 export const APPLICATION_COMPANION_PATH = fileURLToPath(new URL('../../native/ApplicationCompanion/bin/Release/net10.0-windows/ApplicationCompanion.exe', import.meta.url));
 export type CompanionFixtureMode = 'normal' | 'exit' | 'disconnect' | 'timeout' | 'wrong-peer' | 'assignment-failure' |
   'bad-nonce' | 'bad-generation' | 'bad-navigation-id' | 'extra-field' | 'malformed-message' | 'oversized-message' | 'replay' |
   'challenge-timeout' | 'late-response' | 'early-message' | 'unapproved-navigation' | 'redirect' | 'same-url-redirect' |
-  'popup' | 'frame' | 'post-ready-navigation' | 'reload' | 'fragment' | 'renderer-loss';
+  'popup' | 'frame' | 'post-ready-navigation' | 'reload' | 'fragment' | 'renderer-loss' |
+  'delivery-wrong-ack' | 'delivery-duplicate-ack' | 'delivery-timeout' | 'delivery-navigation' |
+  'delivery-stale-generation' | 'delivery-exit' | 'delivery-partial-done' | 'delivery-replay' | 'activation-navigation' | 'redeemed-navigation';
 export type CompanionLoss = 'closed' | 'cancelled' | 'failed';
 export interface CompanionLifetime {
   readonly pid: number;
   readonly brokerPid: number;
+  readonly generation: number;
+  readonly alive: boolean;
   /** Resolves immediately on terminal loss; callers need not wait for cleanup. */
   readonly lost: Promise<CompanionLoss>;
   /** True only when broker close was actually observed. */
   readonly closed: Promise<boolean>;
   /** Allowlisted nonsecret fixture diagnostic; undefined for unclassified loss. */
   readonly failureCode: Promise<string | undefined>;
+  deliverBootstrap(input: string, expected: ExpectedBootstrapAcknowledgment, signal?: AbortSignal): Promise<void>;
+  activateBootstrap(id: string): Promise<void>;
+  requestBootstrapRedemption(id: string): Promise<string>;
   shutdown(): Promise<void>;
 }
 const failure = (code?: string) => Object.assign(new Error('Application companion unavailable.'), { code });
 const modes: readonly string[] = ['normal', 'exit', 'disconnect', 'timeout', 'wrong-peer', 'assignment-failure',
   'bad-nonce', 'bad-generation', 'bad-navigation-id', 'extra-field', 'malformed-message', 'oversized-message', 'replay',
   'challenge-timeout', 'late-response', 'early-message', 'unapproved-navigation', 'redirect', 'same-url-redirect',
-  'popup', 'frame', 'post-ready-navigation', 'reload', 'fragment', 'renderer-loss'];
+  'popup', 'frame', 'post-ready-navigation', 'reload', 'fragment', 'renderer-loss',
+  'delivery-wrong-ack', 'delivery-duplicate-ack', 'delivery-timeout', 'delivery-navigation',
+  'delivery-stale-generation', 'delivery-exit', 'delivery-partial-done', 'delivery-replay', 'activation-navigation', 'redeemed-navigation'];
 const failureCodes = new Set(['READINESS_TIMEOUT', 'CHANNEL_LOST', 'POPUP_REJECTED', 'FRAME_REJECTED', 'RESOURCE_REJECTED',
-  'RENDERER_LOST', 'NAVIGATION_REJECTED', 'MESSAGE_REJECTED', 'RUNTIME_UNAVAILABLE']);
+  'RENDERER_LOST', 'NAVIGATION_REJECTED', 'MESSAGE_REJECTED', 'RUNTIME_UNAVAILABLE', 'BOOTSTRAP_REJECTED',
+  'JOB_PROCESS_EXITED', 'JOB_QUERY_FAILED', 'JOB_ATTACH_DENIED', 'JOB_ATTACH_FAILED', 'JOB_BROWSER_MISSING']);
 
 /** Isolated native fixture, with no authority, HTTP, UI composition or camera integration. */
 export function startApplicationCompanion(options: { signal?: AbortSignal; mode?: CompanionFixtureMode } = {}): Promise<CompanionLifetime> {
@@ -34,6 +45,9 @@ export function startApplicationCompanion(options: { signal?: AbortSignal; mode?
     const environment = Object.fromEntries(['SystemRoot', 'WINDIR', 'LOCALAPPDATA', 'USERPROFILE', 'TEMP', 'TMP', 'ProgramFiles'].flatMap(k => process.env[k] ? [[k, process.env[k]!]] : []));
     const child = spawn(APPLICATION_COMPANION_PATH, ['--broker', mode], { shell: false, windowsHide: true, env: environment, stdio: ['pipe', 'pipe', 'pipe'] });
     let terminal = false, ready = false, observedClose = false, closedSettled = false, pending = '', lastPulse = Date.now();
+    let generation = 0, offered = false, delivered = false, activationRequested = false, activated = false, redemptionRequested = false;
+    let deliveryId = '';
+    let operation: { kind: 'delivery' | 'activate' | 'redeem'; id: string; ack?: BootstrapAckDecoder; resolve: (token?: string) => void; reject: () => void; cleanup: () => void } | undefined;
     let cleanupTimer: ReturnType<typeof setTimeout> | undefined;
     let finishLoss!: (reason: CompanionLoss) => void, finishClosed!: (confirmed: boolean) => void, finishCode!: (code?: string) => void;
     const lost = new Promise<CompanionLoss>(done => { finishLoss = done; });
@@ -41,7 +55,19 @@ export function startApplicationCompanion(options: { signal?: AbortSignal; mode?
     const failureCode = new Promise<string | undefined>(done => { finishCode = done; });
     const decoder = new TextDecoder('utf-8', { fatal: true });
     const startup = setTimeout(() => end('failed'), 16000);
-    const heartbeat = setInterval(() => { if (ready && Date.now() - lastPulse > 4500) end('failed'); }, 500);
+    const heartbeat = setInterval(() => { if (ready && !operation && Date.now() - lastPulse > 4500) end('failed'); }, 500);
+    const request = (kind: 'delivery' | 'activate' | 'redeem', id: string, input: object, ack?: BootstrapAckDecoder, signal?: AbortSignal): Promise<string | undefined> => {
+      if (!ready || terminal || operation || signal?.aborted) { end('failed'); return Promise.reject(failure()); }
+      return new Promise((done, denied) => {
+        const cancelled = () => end('cancelled');
+        const timeout = setTimeout(() => end('failed'), 8000);
+        const cleanup = () => { clearTimeout(timeout); signal?.removeEventListener('abort', cancelled); };
+        operation = { kind, id, ack, resolve: done, reject: () => denied(failure()), cleanup };
+        signal?.addEventListener('abort', cancelled, { once: true });
+        if (signal?.aborted) { cancelled(); return; }
+        child.stdin.write(JSON.stringify(input) + '\n');
+      });
+    };
     const settleClosed = (confirmed: boolean) => {
       if (closedSettled) return; closedSettled = true;
       clearTimeout(cleanupTimer); finishClosed(confirmed);
@@ -52,6 +78,7 @@ export function startApplicationCompanion(options: { signal?: AbortSignal; mode?
       options.signal?.removeEventListener('abort', abort);
       finishLoss(reason);
       finishCode(code);
+      if (operation) { const active = operation; operation = undefined; active.cleanup(); active.reject(); }
       if (!ready) reject(failure(code));
       if (observedClose) { settleClosed(true); return; }
       if (reason === 'closed') {
@@ -73,14 +100,41 @@ export function startApplicationCompanion(options: { signal?: AbortSignal; mode?
       if (failed) { if (!failureCodes.has(failed[1])) throw failure(); end('failed', failed[1]); return; }
       if (!ready) {
         // Exact fixture grammar also rejects duplicate keys and extra properties.
-        const match = /^\{"v":1,"type":"READY","pid":([1-9][0-9]{0,9})\}$/.exec(frame);
+        const match = /^\{"v":1,"type":"READY","pid":([1-9][0-9]{0,9}),"generation":([1-9][0-9]{0,8})\}$/.exec(frame);
         if (!match || !Number.isSafeInteger(Number(match[1])) || !child.pid) throw failure();
-        ready = true; lastPulse = Date.now(); clearTimeout(startup);
-        resolve(Object.freeze({ pid: Number(match[1]), brokerPid: child.pid, lost, closed, failureCode,
+        generation = Number(match[2]); ready = true; lastPulse = Date.now(); clearTimeout(startup);
+        resolve(Object.freeze({ pid: Number(match[1]), brokerPid: child.pid, generation, get alive() { return !terminal; }, lost, closed, failureCode,
+          async deliverBootstrap(input: string, expected: ExpectedBootstrapAcknowledgment, signal?: AbortSignal) {
+            if (offered) { end('failed'); throw failure(); } offered = true;
+            deliveryId = expected.id;
+            try {
+              if (input.length > 1024) throw failure(); const offer = JSON.parse(input);
+              await request('delivery', expected.id, { ...offer, generation }, new BootstrapAckDecoder(expected), signal);
+              if (terminal || signal?.aborted) throw failure();
+            } catch { end('failed'); throw failure(); }
+          },
+          async activateBootstrap(id: string) {
+            if (!delivered || activationRequested || id !== deliveryId) { end('failed'); throw failure(); } activationRequested = true;
+            await request('activate', id, { v: 1, type: 'ACTIVATE', id, generation }); if (terminal) throw failure(); activated = true;
+          },
+          async requestBootstrapRedemption(id: string) {
+            if (!activated || redemptionRequested || id !== deliveryId) { end('failed'); throw failure(); } redemptionRequested = true;
+            const token = await request('redeem', id, { v: 1, type: 'REDEEM', id, generation }); if (terminal || !token) throw failure(); return token;
+          },
           async shutdown() { end('closed'); if (!await closed) throw failure(); } }));
       } else {
-        if (frame !== '{"v":1,"type":"ALIVE"}') throw failure();
-        lastPulse = Date.now();
+        if (frame === '{"v":1,"type":"ALIVE"}') { lastPulse = Date.now(); return; }
+        const active = operation; if (!active) throw failure();
+        let token: string | undefined;
+        if (active.kind === 'delivery') { active.ack!.push(Buffer.from(frame + '\n')); active.ack!.finish(); delivered = true; }
+        else if (active.kind === 'activate') {
+          const result = /^\{"v":1,"type":"ACTIVATED","id":"([a-f0-9-]{36})","generation":([1-9][0-9]{0,8})\}$/.exec(frame);
+          if (!result || result[1] !== active.id || Number(result[2]) !== generation) throw failure();
+        } else {
+          const result = /^\{"v":1,"type":"REDEEMED","id":"([a-f0-9-]{36})","generation":([1-9][0-9]{0,8}),"token":"(bootstrap_[A-Za-z0-9_-]{43})"\}$/.exec(frame);
+          if (!result || result[1] !== active.id || Number(result[2]) !== generation) throw failure(); token = result[3];
+        }
+        operation = undefined; active.cleanup(); lastPulse = Date.now(); active.resolve(token);
       }
     };
     child.stdout.on('data', (chunk: Buffer) => {
@@ -91,9 +145,9 @@ export function startApplicationCompanion(options: { signal?: AbortSignal; mode?
         let newline: number;
         while ((newline = pending.indexOf('\n')) !== -1) {
           const frame = pending.slice(0, newline); pending = pending.slice(newline + 1);
-          if (frame.length > 256) throw failure(); line(frame);
+          if (frame.length > 1024) throw failure(); line(frame);
         }
-        if (pending.length > 256) throw failure();
+        if (pending.length > 1024) throw failure();
       } catch { end('failed'); }
     });
     child.on('error', () => end('failed'));
