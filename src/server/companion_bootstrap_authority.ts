@@ -16,6 +16,9 @@ export class CompanionBootstrapAuthority {
   #session?: AuthorityReceipt;
   #expiry?: ReturnType<typeof setTimeout>;
   #deadline?: CompanionDeadline;
+  #ended = new AbortController();
+  /** Trusted fixture composition only; synchronous terminal resource cancellation. */
+  get boundaryEnded(): AbortSignal { return this.#ended.signal; }
   readonly companion: CompanionControl;
   private constructor(transport: CompanionLifetime, private readonly clock: () => number = Date.now, private readonly elapsedClock?: () => number) {
     this.#transport = transport;
@@ -32,7 +35,7 @@ export class CompanionBootstrapAuthority {
     if (!companion.alive || options.signal?.aborted) { await companion.shutdown(); throw denied(); }
     return new CompanionBootstrapAuthority(companion, options.clock, options.elapsedClock);
   }
-  #invalidate() { if (this.#disposed) return; this.#disposed = true; this.#receipt = undefined; this.#session = undefined; this.#deadline = undefined; clearTimeout(this.#expiry); this.#authority.dispose(); }
+  #invalidate() { if (this.#disposed) return; this.#disposed = true; this.#receipt = undefined; this.#session = undefined; this.#deadline = undefined; clearTimeout(this.#expiry); this.#authority.dispose(); this.#ended.abort(); }
   #live() {
     try {
       if (this.#deadline && this.#deadline.remaining() <= 0) throw denied();
@@ -96,11 +99,24 @@ export class CompanionBootstrapAuthority {
     // Revoke server authority before awaiting native acknowledgment. Logout is terminal.
     try {
       this.#authority.revokeSession(this.#session.id); clearTimeout(this.#expiry); this.#session = undefined;
+      this.#ended.abort();
       await this.#transport.logoutSession(signal);
     }
     catch { this.#invalidate(); await this.#transport.shutdown(); throw denied(); }
     this.#invalidate(); await this.#transport.shutdown();
   }
   validateSession(token: unknown) { this.#live(); return this.#authority.validateSession(token); }
+  /** Receipt object identity prevents forged metadata from becoming authority. */
+  authorizeFixtureReceipt(receipt: AuthorityReceipt) {
+    this.#live();
+    if (this.#loggingOut || !this.#session || receipt !== this.#session) throw denied();
+  }
+  async probeHttpFixture(endpoint: { port: number; pin: string }, operation: 'read' | 'events', signal?: AbortSignal): Promise<void> {
+    this.#live();
+    if (!this.#session || this.#loggingOut || !this.#transport.probeHttpFixture) throw denied();
+    this.authorizeFixtureReceipt(this.#session);
+    try { await this.#transport.probeHttpFixture(endpoint, operation, signal); this.#live(); }
+    catch { throw denied(); }
+  }
   async dispose() { this.#invalidate(); await this.#transport.shutdown(); }
 }

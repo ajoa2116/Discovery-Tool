@@ -21,6 +21,22 @@ internal sealed class SessionRelay(int generation)
     internal async Task Handle(JsonElement request, Wire channel, Wire parent, Func<Task<JsonElement>> read)
     {
         string type = Wire.Text(request, "type");
+        if (type == "SESSION_PROBE")
+        {
+            Wire.Shape(request, type, "id", "nonce", "expiresAt", "generation", "port", "pin", "operation", "probe");
+            var binding = JsonSerializer.SerializeToElement(Command("SESSION_PROBE"));
+            Bound(binding, "SESSION_PROBE", false);
+            if (!activated || loggedOut || Wire.Text(request, "id") != id || Wire.Text(request, "nonce") != nonce ||
+                request.GetProperty("generation").GetInt32() != generation || request.GetProperty("expiresAt").GetInt64() != expiresAt) throw new IOException();
+            string probe = Wire.Text(request, "probe");
+            if (!Regex.IsMatch(probe, "^[a-f0-9]{32}$")) throw new IOException();
+            await channel.Send(request); var probeReply = await read();
+            Wire.Shape(probeReply, "SESSION_PROBED", "id", "nonce", "digest", "expiresAt", "generation", "probe");
+            if (Wire.Text(probeReply, "probe") != probe || Wire.Text(probeReply, "id") != id || Wire.Text(probeReply, "nonce") != nonce ||
+                Wire.Text(probeReply, "digest") != digest || probeReply.GetProperty("expiresAt").GetInt64() != expiresAt || probeReply.GetProperty("generation").GetInt32() != generation) throw new IOException();
+            Bound(binding, "SESSION_PROBE", false);
+            await parent.Send(probeReply); return;
+        }
         if (type == "SESSION_OFFER")
         {
             Wire.Shape(request, type, "token", "id", "nonce", "expiresAt", "generation");

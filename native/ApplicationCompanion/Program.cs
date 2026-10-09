@@ -20,6 +20,7 @@ internal static class Program
         try
         {
             WindowsBoundary.RequireUnelevated();
+            if (args.SequenceEqual(new[] { "--http-fixture-identity" })) { HttpFixtureProof.Identity(); return 0; }
             if (args.SequenceEqual(new[] { "--document-self-test" })) return DocumentTests.Run();
             if (args.SequenceEqual(new[] { "--session-self-test" })) return SessionTests.Run();
             if (args.SequenceEqual(new[] { "--bootstrap-self-test" })) return BootstrapTests.Run();
@@ -87,7 +88,7 @@ internal static class Program
             {
                 if (!redeemed) throw new IOException();
                 var next = await Await(pulse, command, pipe); child.Verify(pipe); await RejectFailure(parent, channel, next); Pulse(next, generation);
-                await session.Handle(request, channel, parent, () => ReadChild(channel, command, child, parent, pipe, 2000));
+                await session.Handle(request, channel, parent, () => ReadChild(channel, command, child, parent, pipe, type == "SESSION_PROBE" ? 4000 : 2000));
                 if (mode == "session-heartbeat-stall" && type == "SESSION_ACTIVATE") await Task.Delay(10000);
                 continue;
             }

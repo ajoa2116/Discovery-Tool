@@ -18,6 +18,7 @@ internal sealed class CompanionSession
     internal bool Expired => HasGrant && (clock() >= expiresAt || Environment.TickCount64 >= elapsedDeadline);
     private readonly DocumentReadiness document;
     private readonly Func<long> clock;
+    private readonly HttpFixtureProof httpFixture = new();
     internal CompanionSession(DocumentReadiness document, Func<long>? clock = null) { this.document = document; this.clock = clock ?? (() => DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()); }
     private void Live()
     {
@@ -66,5 +67,20 @@ internal sealed class CompanionSession
         Bound(value, "SESSION_LOGOUT"); if (phase != Phase.Active) throw new IOException();
         var result = Frame("SESSION_LOGGED_OUT"); Invalidate(); return result;
     });
-    internal void Invalidate() { phase = Phase.Terminal; token = ""; nonce = ""; digest = ""; }
+    internal async Task<object> Probe(JsonElement value)
+    {
+        try
+        {
+            Live();
+            Wire.Shape(value, "SESSION_PROBE", "id", "nonce", "expiresAt", "generation", "port", "pin", "operation", "probe");
+            if (phase != Phase.Active || Wire.Text(value, "id") != id || Wire.Text(value, "nonce") != nonce ||
+                value.GetProperty("expiresAt").GetInt64() != expiresAt || value.GetProperty("generation").GetInt32() != generation ||
+                !Regex.IsMatch(Wire.Text(value, "probe"), "^[a-f0-9]{32}$")) throw new IOException();
+            await httpFixture.Probe(value, () => { Live(); return token; }, Live);
+            Live();
+            return new { v = 1, type = "SESSION_PROBED", id, nonce, digest, expiresAt, generation, probe = Wire.Text(value, "probe") };
+        }
+        catch { Invalidate(); throw new IOException(); }
+    }
+    internal void Invalidate() { phase = Phase.Terminal; token = ""; nonce = ""; digest = ""; httpFixture.Dispose(); }
 }

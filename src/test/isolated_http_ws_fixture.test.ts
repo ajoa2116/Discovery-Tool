@@ -1,0 +1,286 @@
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+import { request, createServer } from 'node:https';
+import { connect } from 'node:tls';
+import { execFileSync } from 'node:child_process';
+import { X509Certificate, createHash } from 'node:crypto';
+import { WebSocket } from 'ws';
+import { CompanionBootstrapAuthority } from '../server/companion_bootstrap_authority.ts';
+import { APPLICATION_COMPANION_PATH, type CompanionLifetime, type CompanionLoss } from '../server/application_companion_supervisor.ts';
+import { APPLICATION_SESSION_MS } from '../server/application_session_authority.ts';
+import { startIsolatedHttpWsFixture } from '../server/isolated_http_ws_fixture.ts';
+
+const delay = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
+const deferred = () => { let resolve!: () => void; const promise = new Promise<void>(done => { resolve = done; }); return { resolve, promise }; };
+function trustedOwner(holdActivation = false) {
+  let bootstrap = '', token = '', alive = true, elapsed = 0;
+  const activating = deferred(), activation = deferred();
+  let lose!: (reason: CompanionLoss) => void;
+  const lost = new Promise<CompanionLoss>(resolve => { lose = resolve; });
+  const transport: CompanionLifetime = {
+    pid: 1, brokerPid: 2, generation: 1, get alive() { return alive; }, lost,
+    closed: lost.then(() => true), failureCode: lost.then(() => undefined),
+    async deliverBootstrap(input) { bootstrap = JSON.parse(input).token; }, async activateBootstrap() {},
+    async requestBootstrapRedemption() { return bootstrap; }, async deliverSession(value) { token = value; },
+    async activateSession() { activating.resolve(); if (holdActivation) await activation.promise; },
+    async logoutSession() {}, async shutdown() { alive = false; lose('closed'); },
+  };
+  // Same trusted private-channel seam as the existing boundary timing tests. No bare authority.
+  const owner = Reflect.construct(CompanionBootstrapAuthority, [transport, Date.now, () => elapsed]) as CompanionBootstrapAuthority;
+  return { owner, token: () => token, activating, activation, expire: () => { elapsed = APPLICATION_SESSION_MS; },
+    lose: () => { alive = false; lose('failed'); } };
+}
+type Fixture = Awaited<ReturnType<typeof startIsolatedHttpWsFixture>>;
+const headers = (f: Fixture, token?: string) => ({ Host: `127.0.0.1:${f.endpoint.port}`, Origin: 'https://companion-fixture.invalid', ...(token ? { Authorization: `Bearer ${token}` } : {}) });
+// Adversarial server-boundary clients deliberately bypass TLS pinning; actual native tests below prove pinning.
+function http(f: Fixture, token?: string, extra: Record<string, string> = {}, path = '/proof') {
+  return new Promise<number>((resolve, reject) => {
+    const req = request({ hostname: '127.0.0.1', port: f.endpoint.port, path, method: 'GET', rejectUnauthorized: false,
+      agent: false, headers: { ...headers(f, token), ...extra }, timeout: 2500 }, res => { res.resume(); resolve(res.statusCode!); });
+    req.on('error', reject); req.on('timeout', () => req.destroy(new Error('Test timeout.'))); req.end();
+  });
+}
+function ws(f: Fixture, token?: string, extra: Record<string, string> = {}) {
+  const socket = new WebSocket(`wss://127.0.0.1:${f.endpoint.port}/events`, {
+    rejectUnauthorized: false, headers: { ...headers(f, token), ...extra }, handshakeTimeout: 2000, perMessageDeflate: false,
+  });
+  socket.on('error', () => {});
+  return socket;
+}
+const opened = (socket: WebSocket) => new Promise<void>((resolve, reject) => { socket.once('open', resolve); socket.once('error', () => reject(new Error('Test connection denied.'))); });
+const closed = (socket: WebSocket) => new Promise<void>(resolve => { if (socket.readyState === WebSocket.CLOSED) resolve(); else socket.once('close', () => resolve()); });
+async function active(options: Parameters<typeof startIsolatedHttpWsFixture>[1] = {}) {
+  const f = trustedOwner(); await f.owner.issueBootstrap(); await f.owner.deliverSession();
+  const server = await startIsolatedHttpWsFixture(f.owner, options);
+  return { ...f, server, async close() { await server.close(); await f.owner.dispose(); } };
+}
+
+test('synthetic read, receive-only events and reconnect require the active owner', async () => {
+  const f = await active();
+  try {
+    assert.equal(await http(f.server, f.token()), 200);
+    for (let i = 0; i < 2; i++) {
+      const socket = ws(f.server, f.token()); await opened(socket);
+      const received = new Promise<string>(resolve => socket.once('message', data => resolve(String(data))));
+      assert.equal(f.server.emit(), 1); assert.equal(await received, '{"type":"FIXTURE_EVENT","value":1}');
+      const ending = closed(socket); socket.send('no inbound commands'); await ending;
+    }
+    assert.equal(f.server.snapshot().sockets, 0);
+  } finally { await f.close(); }
+});
+
+test('outbound queue holds at most one fixed event per socket and inbound ping is rejected', async () => {
+  const f = await active();
+  try {
+    const socket = ws(f.server, f.token()); await opened(socket);
+    assert.equal(f.server.emit(), 1);
+    for (let i = 0; i < 100; i++) assert.equal(f.server.emit(), 0);
+    assert.equal(f.server.snapshot().queued, 1);
+    const ending = closed(socket); socket.ping(); await ending;
+  } finally { await f.close(); }
+});
+
+test('HTTP denies missing, malformed, foreign authority, hostile Origin/Host, cookies and URL authority', async () => {
+  const f = await active(), foreign = await active();
+  try {
+    for (const token of [undefined, 'malformed', foreign.token()]) assert.equal(await http(f.server, token), 403);
+    const hostile: Record<string, string>[] = [ { Origin: 'null' }, { Origin: 'https://hostile.invalid' }, { Origin: '' },
+      { Host: 'localhost:3001' }, { Host: `localhost:${f.server.endpoint.port}` }, { Cookie: 'ambient=1' },
+      { Authorization: `bearer ${f.token()}` }, { 'Content-Length': '1' }, { Host: 'hostile.invalid', 'X-Forwarded-Host': `127.0.0.1:${f.server.endpoint.port}` } ];
+    for (const extra of hostile) {
+      assert.equal(await http(f.server, f.token(), extra), 403);
+    }
+    assert.equal(await http(f.server, f.token(), {}, '/proof?token=forbidden'), 403);
+    assert.equal(await http(f.server, f.token(), {}, '/other'), 403);
+    assert.throws(() => f.owner.authorizeFixtureReceipt({ id: 'forged', expiresAt: Date.now() + 1000 }));
+  } finally { await f.close(); await foreign.close(); }
+});
+
+test('duplicate headers are denied on the TLS wire before HTTP work and WS upgrade', async () => {
+  const f = await active();
+  try {
+    for (const name of ['Host', 'Origin', 'Authorization']) for (const upgrade of [false, true]) {
+      const h = headers(f.server, f.token());
+      const response = await new Promise<string>((resolve, reject) => {
+        const socket = connect({ host: '127.0.0.1', port: f.server.endpoint.port, rejectUnauthorized: false });
+        let output = ''; socket.setTimeout(2000, () => socket.destroy(new Error('Test timeout.')));
+        socket.on('error', reject); socket.on('data', data => { output += String(data); }); socket.on('end', () => resolve(output));
+        socket.on('secureConnect', () => socket.write(`GET /${upgrade ? 'events' : 'proof'} HTTP/1.1\r\n${Object.entries(h).map(([k,v]) => `${k}: ${v}`).join('\r\n')}\r\n${name}: ${h[name as keyof typeof h]}\r\nConnection: ${upgrade ? 'Upgrade' : 'close'}\r\n${upgrade ? 'Upgrade: websocket\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n' : ''}\r\n`));
+      });
+      assert.doesNotMatch(response, /101 Switching|200 OK/);
+      assert.equal(f.server.snapshot().pending, 0);
+    }
+  } finally { await f.close(); }
+});
+
+test('WS denies missing/malformed/foreign tokens and hostile or missing Origin', async () => {
+  const f = await active(), foreign = await active();
+  try {
+    for (const token of [undefined, 'malformed', foreign.token()]) { const socket = ws(f.server, token); await assert.rejects(opened(socket)); await closed(socket); }
+    for (const Origin of ['', 'null', 'http://localhost:5173', 'https://hostile.invalid']) { const socket = ws(f.server, f.token(), { Origin }); await assert.rejects(opened(socket)); await closed(socket); }
+    assert.equal(f.server.snapshot().sockets, 0);
+  } finally { await f.close(); await foreign.close(); }
+});
+
+test('provisional authority cannot authorize HTTP or WS until native activation acknowledgment', async () => {
+  const f = trustedOwner(true); await f.owner.issueBootstrap();
+  const granting = f.owner.deliverSession(); await f.activating.promise;
+  const server = await startIsolatedHttpWsFixture(f.owner);
+  try {
+    assert.equal(await http(server, f.token()), 403);
+    const socket = ws(server, f.token()); await assert.rejects(opened(socket)); await closed(socket);
+    f.activation.resolve(); await granting; assert.equal(await http(server, f.token()), 200);
+  } finally { f.activation.resolve(); await granting; await server.close(); await f.owner.dispose(); }
+});
+
+test('logout cancels pending read and immediately closes active sockets and endpoint', async () => {
+  const f = await active({ readDelayMs: 800 });
+  try {
+    const socket = ws(f.server, f.token()); await opened(socket); const ending = closed(socket);
+    const pending = http(f.server, f.token()).catch(() => 0);
+    while (!f.server.snapshot().pending) await delay(5);
+    await f.owner.companion.logoutSession();
+    assert.equal(f.server.snapshot().ended, true); assert.equal(f.server.emit(), 0);
+    assert.notEqual(await pending, 200); await ending;
+    await assert.rejects(http(f.server, f.token()));
+  } finally { await f.close(); }
+});
+
+test('logout during upgrade cancels the hook and cannot admit a late acknowledgment', async () => {
+  const reached = deferred(), release = deferred(); let cancelled = false;
+  const f = await active({ beforeUpgrade: async signal => { signal.addEventListener('abort', () => { cancelled = true; }); reached.resolve(); await release.promise; } });
+  try {
+    const socket = ws(f.server, f.token()); const denial = assert.rejects(opened(socket)); await reached.promise;
+    await f.owner.logout(); assert.equal(cancelled, true); release.resolve(); await denial; await closed(socket);
+    assert.equal(f.server.snapshot().sockets, 0);
+  } finally { release.resolve(); await f.close(); }
+});
+
+test('elapsed expiry with no intervening timer callback denies outbound events and pending responses', async () => {
+  const f = await active({ readDelayMs: 100 });
+  try {
+    const socket = ws(f.server, f.token()); await opened(socket); const ending = closed(socket);
+    const pending = http(f.server, f.token()).catch(() => 0);
+    while (!f.server.snapshot().pending) await delay(5);
+    f.expire(); // Same JS turn: expiry watchers have not run.
+    assert.equal(f.server.emit(), 0); assert.equal(f.owner.boundaryEnded.aborted, true);
+    assert.notEqual(await pending, 200); await ending;
+  } finally { await f.close(); }
+});
+
+test('process/IPC loss closes sockets and cancels pending fixture work', async () => {
+  const f = await active({ readDelayMs: 800 });
+  try {
+    const socket = ws(f.server, f.token()); await opened(socket); const ending = closed(socket);
+    const pending = http(f.server, f.token()).catch(() => 0);
+    while (!f.server.snapshot().pending) await delay(5);
+    f.lose(); await ending; assert.notEqual(await pending, 200); assert.equal(f.server.emit(), 0);
+  } finally { await f.close(); }
+});
+
+test('socket count, pending work, inbound payloads and work lifetime are bounded', async () => {
+  const f = await active({ readDelayMs: 1500 }); const clients: WebSocket[] = [];
+  try {
+    for (let i = 0; i < 2; i++) { const socket = ws(f.server, f.token()); clients.push(socket); await opened(socket); }
+    const excess = ws(f.server, f.token()); await assert.rejects(opened(excess)); await closed(excess);
+    const ending = closed(clients[0]); clients[0].send('x'.repeat(257)); await ending;
+    const first = http(f.server, f.token()), second = http(f.server, f.token());
+    while (f.server.snapshot().pending < 2) await delay(5);
+    assert.equal(await http(f.server, f.token()), 403);
+    assert.deepEqual(await Promise.all([first, second]), [403, 403]);
+    assert.equal(f.server.snapshot().pending, 0);
+  } finally { clients.forEach(client => client.terminate()); await f.close(); }
+});
+
+test('development Origin policy is explicit and fresh fixture instances have distinct pins', async () => {
+  const f = await active({ development: true }), other = await active();
+  try {
+    assert.notEqual(f.server.endpoint.pin, other.server.endpoint.pin);
+    for (const Origin of ['http://localhost:5173', 'http://127.0.0.1:5173']) assert.equal(await http(f.server, f.token(), { Origin }), 200);
+    assert.equal(await http(f.server, f.token(), { Origin: 'http://localhost:5174' }), 403);
+  } finally { await f.close(); await other.close(); }
+});
+
+test('real native-held credential authenticates pinned HTTP and receive-only WS', async () => {
+  const owner = await CompanionBootstrapAuthority.start(); let server: Fixture | undefined;
+  try {
+    await owner.issueBootstrap(); await owner.deliverSession(); server = await startIsolatedHttpWsFixture(owner);
+    await owner.probeHttpFixture(server.endpoint, 'read');
+    const timer = setInterval(() => server!.emit(), 30);
+    try { await owner.probeHttpFixture(server.endpoint, 'events'); } finally { clearInterval(timer); }
+    await owner.logout(); assert.equal(server.snapshot().ended, true);
+  } finally { await server?.close(); await owner.dispose(); }
+});
+
+test('real native wrong pin sends no authenticated HTTP request', async () => {
+  const owner = await CompanionBootstrapAuthority.start(); let server: Fixture | undefined;
+  try {
+    await owner.issueBootstrap(); await owner.deliverSession(); server = await startIsolatedHttpWsFixture(owner);
+    await assert.rejects(owner.probeHttpFixture({ ...server.endpoint, pin: '0'.repeat(64) }, 'read'));
+    assert.equal(server.snapshot().pending, 0); assert.equal(server.snapshot().sockets, 0);
+    assert.equal(server.snapshot().requests, 0); assert.equal(server.snapshot().upgrades, 0);
+    await owner.companion.lost;
+  } finally { await server?.close(); await owner.dispose(); }
+});
+
+test('real native refuses destination rebinding after its first pinned request', async () => {
+  const owner = await CompanionBootstrapAuthority.start(), foreign = await active(); let server: Fixture | undefined;
+  try {
+    await owner.issueBootstrap(); await owner.deliverSession(); server = await startIsolatedHttpWsFixture(owner);
+    await owner.probeHttpFixture(server.endpoint, 'read');
+    await assert.rejects(owner.probeHttpFixture(foreign.server.endpoint, 'read'));
+    assert.equal(foreign.server.snapshot().requests, 0);
+  } finally { await server?.close(); await owner.dispose(); await foreign.close(); }
+});
+
+for (const operation of ['read', 'events'] as const) test(`real native ${operation} refuses redirects without credential forwarding`, async () => {
+  // A trusted adversarial TLS fixture; all key material stays in private test/native memory.
+  const material = JSON.parse(execFileSync(APPLICATION_COMPANION_PATH, ['--http-fixture-identity'], { encoding: 'utf8', timeout: 5000, maxBuffer: 16384, windowsHide: true }));
+  const pin = createHash('sha256').update(new X509Certificate(material.cert).raw).digest('hex');
+  const target = await active(); let contacted = 0;
+  const rogue = createServer(material);
+  rogue.on('request', (_req, res) => { contacted++; res.writeHead(302, { Location: `https://127.0.0.1:${target.server.endpoint.port}/proof` }); res.end(); });
+  rogue.on('upgrade', (_req, socket) => { contacted++; socket.end(`HTTP/1.1 302 Found\r\nLocation: wss://127.0.0.1:${target.server.endpoint.port}/events\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`); });
+  rogue.on('tlsClientError', () => {});
+  await new Promise<void>(resolve => rogue.listen(0, '127.0.0.1', resolve));
+  const address = rogue.address(); assert.ok(address && typeof address !== 'string');
+  const owner = await CompanionBootstrapAuthority.start();
+  try {
+    await owner.issueBootstrap(); await owner.deliverSession();
+    await assert.rejects(owner.probeHttpFixture({ port: address.port, pin }, operation));
+    assert.equal(contacted, 1); assert.equal(target.server.snapshot().requests, 0); assert.equal(target.server.snapshot().upgrades, 0);
+  } finally { await owner.dispose(); await target.close(); await new Promise<void>(resolve => rogue.close(() => resolve())); }
+});
+
+for (const ending of ['logout', 'broker-death'] as const) test(`real native pending WS is cancelled by ${ending}`, async () => {
+  const owner = await CompanionBootstrapAuthority.start(); let server: Fixture | undefined;
+  try {
+    await owner.issueBootstrap(); await owner.deliverSession(); server = await startIsolatedHttpWsFixture(owner);
+    const pending = assert.rejects(owner.probeHttpFixture(server.endpoint, 'events'));
+    const deadline = Date.now() + 1800;
+    while (!server.snapshot().sockets && Date.now() < deadline) await delay(5);
+    assert.equal(server.snapshot().sockets, 1);
+    if (ending === 'logout') await owner.logout().catch(() => {}); else process.kill(owner.companion.brokerPid);
+    await pending; await owner.companion.lost; await delay(0);
+    assert.equal(owner.boundaryEnded.aborted, true); assert.equal(server.snapshot().ended, true); assert.equal(server.emit(), 0);
+  } finally { await server?.close(); await owner.dispose(); }
+});
+
+test('blocked event loop cannot extend an existing socket lease', async () => {
+  const f = await active();
+  try {
+    const socket = ws(f.server, f.token()); await opened(socket); const ending = closed(socket);
+    // Deliberately stop timer callbacks; outbound dispatch must enforce elapsed time itself.
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2600);
+    assert.equal(f.server.emit(), 0); await ending;
+  } finally { await f.close(); }
+});
+
+for (const mode of ['session-heartbeat-stall', 'session-channel-loss'] as const) test(`actual ${mode} revokes fixture endpoint`, async () => {
+  const owner = await CompanionBootstrapAuthority.start({ mode }); let server: Fixture | undefined;
+  try {
+    await owner.issueBootstrap(); await owner.deliverSession(); server = await startIsolatedHttpWsFixture(owner);
+    await owner.companion.lost;
+    await delay(0); assert.equal(server.snapshot().ended, true); assert.equal(server.emit(), 0);
+  } finally { await server?.close(); await owner.dispose(); }
+});

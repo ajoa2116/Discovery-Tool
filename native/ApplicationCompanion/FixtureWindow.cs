@@ -151,6 +151,7 @@ internal sealed class FixtureWindow : Form
     {
         if (terminal || !document.IsReady) throw new IOException();
         string type = Wire.Text(command, "type");
+        if (type == "SESSION_PROBE") { await wire!.Send(await session.Probe(command)); return; }
         if (type == "CLOSE") { Wire.Shape(command, "CLOSE"); Close(); return; }
         if (type == "ACK") { Wire.Shape(command, "ACK"); return; }
         if (type.StartsWith("SESSION_", StringComparison.Ordinal)) { await HandleSession(command); return; }

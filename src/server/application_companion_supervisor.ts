@@ -30,6 +30,7 @@ export interface CompanionLifetime {
   deliverSession(token: string, receipt: { id: string; expiresAt: number }, signal?: AbortSignal): Promise<void>;
   activateSession(signal?: AbortSignal): Promise<void>;
   logoutSession(signal?: AbortSignal): Promise<void>;
+  probeHttpFixture?(endpoint: { port: number; pin: string }, operation: 'read' | 'events', signal?: AbortSignal): Promise<void>;
   shutdown(): Promise<void>;
 }
 const failure = (code?: string) => Object.assign(new Error('Application companion unavailable.'), { code });
@@ -63,7 +64,8 @@ export function startApplicationCompanion(options: { signal?: AbortSignal; mode?
     let deliveryId = '';
     let session: { id: string; nonce: string; digest: string; expiresAt: number; generation: number } | undefined;
     let sessionOffered = false, sessionDelivered = false, sessionActivationRequested = false, sessionActivated = false, sessionLogoutRequested = false;
-    let operation: { kind: 'delivery' | 'activate' | 'redeem' | 'session-delivery' | 'session-activate' | 'session-logout'; id: string; ack?: BootstrapAckDecoder; resolve: (token?: string) => void; reject: () => void; cleanup: () => void; deadline: CompanionDeadline } | undefined;
+    let operation: { kind: 'delivery' | 'activate' | 'redeem' | 'session-delivery' | 'session-activate' | 'session-logout' | 'session-probe'; id: string; ack?: BootstrapAckDecoder; resolve: (token?: string) => void; reject: () => void; cleanup: () => void; deadline: CompanionDeadline } | undefined;
+    let probeNonce = '';
     let cleanupTimer: ReturnType<typeof setTimeout> | undefined;
     let finishLoss!: (reason: CompanionLoss) => void, finishClosed!: (confirmed: boolean) => void, finishCode!: (code?: string) => void;
     const lost = new Promise<CompanionLoss>(done => { finishLoss = done; });
@@ -73,7 +75,7 @@ export function startApplicationCompanion(options: { signal?: AbortSignal; mode?
     const startup = setTimeout(() => end('failed'), 16000);
     const checkHeartbeat = () => { try { if (ready && !operation && pulseDeadline.remaining() <= 0) end('failed'); } catch { end('failed'); } };
     const heartbeat = setInterval(checkHeartbeat, 500);
-    const request = (kind: 'delivery' | 'activate' | 'redeem' | 'session-delivery' | 'session-activate' | 'session-logout', id: string, input: object, ack?: BootstrapAckDecoder, signal?: AbortSignal): Promise<string | undefined> => {
+    const request = (kind: 'delivery' | 'activate' | 'redeem' | 'session-delivery' | 'session-activate' | 'session-logout' | 'session-probe', id: string, input: object, ack?: BootstrapAckDecoder, signal?: AbortSignal): Promise<string | undefined> => {
       if (!ready || terminal || operation || signal?.aborted) { end('failed'); return Promise.reject(failure()); }
       return new Promise((done, denied) => {
         let deadline: CompanionDeadline;
@@ -163,12 +165,23 @@ export function startApplicationCompanion(options: { signal?: AbortSignal; mode?
             await request('session-logout', session.id, { v: 1, type: 'SESSION_LOGOUT', ...command }, undefined, signal);
             if (terminal || signal?.aborted) throw failure(); sessionActivated = false; end('closed');
           },
+          async probeHttpFixture(endpoint: { port: number; pin: string }, operation: 'read' | 'events', signal?: AbortSignal) {
+            if (!session || !sessionActivated || sessionLogoutRequested || !Number.isInteger(endpoint.port) || endpoint.port < 1 || endpoint.port > 65535 || !/^[a-f0-9]{64}$/.test(endpoint.pin) || !['read', 'events'].includes(operation)) throw failure();
+            probeNonce = randomBytes(16).toString('hex');
+            const { digest: _digest, ...binding } = session;
+            await request('session-probe', session.id, { v: 1, type: 'SESSION_PROBE', ...binding, port: endpoint.port, pin: endpoint.pin, operation, probe: probeNonce }, undefined, signal);
+            if (terminal || signal?.aborted) throw failure();
+          },
           async shutdown() { end('closed'); if (!await closed) throw failure(); } }));
       } else {
         if (frame === '{"v":1,"type":"ALIVE"}') { if (!operation && pulseDeadline.remaining() <= 0) throw failure(); pulseDeadline = new CompanionDeadline(4500, elapsedNow); return; }
         const active = operation; if (!active || active.deadline.remaining() <= 0) throw failure();
         let token: string | undefined;
-        if (active.kind.startsWith('session-')) {
+        if (active.kind === 'session-probe') {
+          const match = /^\{"v":1,"type":"SESSION_PROBED","id":"([a-f0-9-]{36})","nonce":"([a-f0-9]{64})","digest":"([a-f0-9]{64})","expiresAt":([0-9]{1,16}),"generation":([1-9][0-9]{0,8}),"probe":"([a-f0-9]{32})"\}$/.exec(frame);
+          if (!session || !match || match[1] !== session.id || match[2] !== session.nonce || match[3] !== session.digest || Number(match[4]) !== session.expiresAt || Number(match[5]) !== generation || match[6] !== probeNonce || Date.now() >= session.expiresAt) throw failure();
+        }
+        else if (active.kind.startsWith('session-')) {
           const match = /^\{"v":1,"type":"(SESSION_DELIVERED|SESSION_ACTIVATED|SESSION_LOGGED_OUT)","id":"([a-f0-9-]{36})","nonce":"([a-f0-9]{64})","digest":"([a-f0-9]{64})","expiresAt":([0-9]{1,16}),"generation":([1-9][0-9]{0,8})\}$/.exec(frame);
           const type = active.kind === 'session-delivery' ? 'SESSION_DELIVERED' : active.kind === 'session-activate' ? 'SESSION_ACTIVATED' : 'SESSION_LOGGED_OUT';
           if (!session || !match || match[1] !== type || match[2] !== session.id || match[3] !== session.nonce || match[4] !== session.digest || Number(match[5]) !== session.expiresAt || Number(match[6]) !== generation || Date.now() >= session.expiresAt) throw failure();
