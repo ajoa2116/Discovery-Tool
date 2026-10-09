@@ -1,14 +1,39 @@
 import assert from 'node:assert/strict';
-import { test } from 'node:test';
+import { test, after } from 'node:test';
+import { getEventListeners } from 'node:events';
 import { request, createServer } from 'node:https';
 import { connect } from 'node:tls';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { X509Certificate, createHash } from 'node:crypto';
 import { WebSocket } from 'ws';
 import { CompanionBootstrapAuthority } from '../server/companion_bootstrap_authority.ts';
-import { APPLICATION_COMPANION_PATH, type CompanionLifetime, type CompanionLoss } from '../server/application_companion_supervisor.ts';
+import { APPLICATION_COMPANION_PATH, startApplicationCompanion, type CompanionLifetime, type CompanionLoss } from '../server/application_companion_supervisor.ts';
 import { APPLICATION_SESSION_MS } from '../server/application_session_authority.ts';
 import { startIsolatedHttpWsFixture } from '../server/isolated_http_ws_fixture.ts';
+
+const fixturePids = () => {
+  const result = spawnSync('powershell.exe', ['-NoProfile', '-Command', 'Get-Process -Name ApplicationCompanion -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Id'], { encoding: 'utf8', timeout: 8000, windowsHide: true });
+  assert.ok(result.status === 0 || result.status === 1); assert.equal(result.error, undefined);
+  return result.stdout.trim().split(/\s+/).filter(Boolean).map(Number);
+};
+const baseline = new Set(fixturePids());
+const browserPids = () => {
+  // CIM can retain exited runtime records while this test runner is alive.
+  // Require an actual live process as well as the isolated fixture profile.
+  const result = spawnSync('powershell.exe', ['-NoProfile', '-Command', "$ErrorActionPreference = 'Stop'; $live = @([System.Diagnostics.Process]::GetProcessesByName('msedgewebview2') | ForEach-Object { try { if (-not $_.HasExited) { $_.Id } } finally { $_.Dispose() } }); Get-CimInstance Win32_Process -Filter \"Name = 'msedgewebview2.exe'\" | Where-Object { $_.CommandLine -like '*CCTVApplicationCompanion*' -and $live -contains [int]$_.ProcessId } | Select-Object -ExpandProperty ProcessId"], { encoding: 'utf8', timeout: 10000, windowsHide: true });
+  assert.equal(result.status, 0); assert.equal(result.error, undefined);
+  return result.stdout.trim().split(/\s+/).filter(Boolean).map(Number);
+};
+const browserBaseline = new Set(browserPids());
+after(async () => {
+  // Startup rejection may precede bounded asynchronous cleanup.
+  const deadline = Date.now() + 6000;
+  while (fixturePids().some(pid => !baseline.has(pid)) && Date.now() < deadline) await new Promise(done => setTimeout(done, 100));
+  assert.deepEqual(fixturePids().filter(pid => !baseline.has(pid)), [], 'no owned broker/fixture survives any failure');
+  const browserDeadline = Date.now() + 6000;
+  while (browserPids().some(pid => !browserBaseline.has(pid)) && Date.now() < browserDeadline) await new Promise(done => setTimeout(done, 100));
+  assert.deepEqual(browserPids().filter(pid => !browserBaseline.has(pid)), [], 'no owned fixture WebView2 process remains');
+});
 
 const delay = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
 const deferred = () => { let resolve!: () => void; const promise = new Promise<void>(done => { resolve = done; }); return { resolve, promise }; };
@@ -17,19 +42,32 @@ function trustedOwner(holdActivation = false) {
   const activating = deferred(), activation = deferred();
   let lose!: (reason: CompanionLoss) => void;
   const lost = new Promise<CompanionLoss>(resolve => { lose = resolve; });
+  const probes: { port: number; pin: string }[] = [];
   const transport: CompanionLifetime = {
     pid: 1, brokerPid: 2, generation: 1, get alive() { return alive; }, lost,
     closed: lost.then(() => true), failureCode: lost.then(() => undefined),
     async deliverBootstrap(input) { bootstrap = JSON.parse(input).token; }, async activateBootstrap() {},
     async requestBootstrapRedemption() { return bootstrap; }, async deliverSession(value) { token = value; },
     async activateSession() { activating.resolve(); if (holdActivation) await activation.promise; },
+    async probeHttpFixture(endpoint) { probes.push(endpoint); },
     async logoutSession() {}, async shutdown() { alive = false; lose('closed'); },
   };
   // Same trusted private-channel seam as the existing boundary timing tests. No bare authority.
   const owner = Reflect.construct(CompanionBootstrapAuthority, [transport, Date.now, () => elapsed]) as CompanionBootstrapAuthority;
-  return { owner, token: () => token, activating, activation, expire: () => { elapsed = APPLICATION_SESSION_MS; },
+  return { owner, probes, token: () => token, activating, activation, expire: () => { elapsed = APPLICATION_SESSION_MS; },
     lose: () => { alive = false; lose('failed'); } };
 }
+// Trusted private transport fault injection tests native TLS/redirect refusal without exposing
+// a destination override on the owner credential API.
+async function faultOwner(replace: (endpoint: { port: number; pin: string }) => { port: number; pin: string }) {
+  const transport = await startApplicationCompanion();
+  const wrapped: CompanionLifetime = { ...transport,
+    get alive() { return transport.alive; },
+    async probeHttpFixture(endpoint, operation, signal) { await transport.probeHttpFixture!(replace(endpoint), operation, signal); },
+  };
+  return Reflect.construct(CompanionBootstrapAuthority, [wrapped]) as CompanionBootstrapAuthority;
+}
+
 type Fixture = Awaited<ReturnType<typeof startIsolatedHttpWsFixture>>;
 const headers = (f: Fixture, token?: string) => ({ Host: `127.0.0.1:${f.endpoint.port}`, Origin: 'https://companion-fixture.invalid', ...(token ? { Authorization: `Bearer ${token}` } : {}) });
 // Adversarial server-boundary clients deliberately bypass TLS pinning; actual native tests below prove pinning.
@@ -205,30 +243,36 @@ test('real native-held credential authenticates pinned HTTP and receive-only WS'
   const owner = await CompanionBootstrapAuthority.start(); let server: Fixture | undefined;
   try {
     await owner.issueBootstrap(); await owner.deliverSession(); server = await startIsolatedHttpWsFixture(owner);
-    await owner.probeHttpFixture(server.endpoint, 'read');
-    const timer = setInterval(() => server!.emit(), 30);
-    try { await owner.probeHttpFixture(server.endpoint, 'events'); } finally { clearInterval(timer); }
+    for (let i = 0; i < 2; i++) {
+      await owner.probeHttpFixture(server, 'read');
+      const timer = setInterval(() => server!.emit(), 30);
+      try { await owner.probeHttpFixture(server, 'events'); } finally { clearInterval(timer); }
+    }
+    assert.equal(server.snapshot().requests, 2); assert.equal(server.snapshot().upgrades, 2);
     await owner.logout(); assert.equal(server.snapshot().ended, true);
   } finally { await server?.close(); await owner.dispose(); }
 });
 
-test('real native wrong pin sends no authenticated HTTP request', async () => {
-  const owner = await CompanionBootstrapAuthority.start(); let server: Fixture | undefined;
+for (const operation of ['read', 'events'] as const) test(`real native wrong pin sends no authenticated ${operation} request`, async () => {
+  const owner = await faultOwner(endpoint => ({ ...endpoint, pin: '0'.repeat(64) })); let server: Fixture | undefined;
   try {
     await owner.issueBootstrap(); await owner.deliverSession(); server = await startIsolatedHttpWsFixture(owner);
-    await assert.rejects(owner.probeHttpFixture({ ...server.endpoint, pin: '0'.repeat(64) }, 'read'));
+    await assert.rejects(owner.probeHttpFixture(server, operation));
     assert.equal(server.snapshot().pending, 0); assert.equal(server.snapshot().sockets, 0);
     assert.equal(server.snapshot().requests, 0); assert.equal(server.snapshot().upgrades, 0);
     await owner.companion.lost;
   } finally { await server?.close(); await owner.dispose(); }
 });
 
-test('real native refuses destination rebinding after its first pinned request', async () => {
+test('real native rejects foreign, substituted and fabricated endpoints before its first request', async () => {
   const owner = await CompanionBootstrapAuthority.start(), foreign = await active(); let server: Fixture | undefined;
   try {
     await owner.issueBootstrap(); await owner.deliverSession(); server = await startIsolatedHttpWsFixture(owner);
-    await owner.probeHttpFixture(server.endpoint, 'read');
-    await assert.rejects(owner.probeHttpFixture(foreign.server.endpoint, 'read'));
+    for (const endpoint of [foreign.server, foreign.server.endpoint, server.endpoint, { ...server }, { ...server.endpoint }, null])
+      for (const operation of ['read', 'events'] as const) await assert.rejects(owner.probeHttpFixture(endpoint, operation));
+    assert.equal(server.snapshot().requests, 0); assert.equal(server.snapshot().upgrades, 0);
+    await owner.probeHttpFixture(server, 'read');
+    await assert.rejects(owner.probeHttpFixture(foreign.server, 'read'));
     assert.equal(foreign.server.snapshot().requests, 0);
   } finally { await server?.close(); await owner.dispose(); await foreign.close(); }
 });
@@ -244,23 +288,25 @@ for (const operation of ['read', 'events'] as const) test(`real native ${operati
   rogue.on('tlsClientError', () => {});
   await new Promise<void>(resolve => rogue.listen(0, '127.0.0.1', resolve));
   const address = rogue.address(); assert.ok(address && typeof address !== 'string');
-  const owner = await CompanionBootstrapAuthority.start();
+  const owner = await faultOwner(() => ({ port: address.port, pin })); let server: Fixture | undefined;
   try {
-    await owner.issueBootstrap(); await owner.deliverSession();
-    await assert.rejects(owner.probeHttpFixture({ port: address.port, pin }, operation));
+    await owner.issueBootstrap(); await owner.deliverSession(); server = await startIsolatedHttpWsFixture(owner);
+    await assert.rejects(owner.probeHttpFixture(server, operation));
     assert.equal(contacted, 1); assert.equal(target.server.snapshot().requests, 0); assert.equal(target.server.snapshot().upgrades, 0);
-  } finally { await owner.dispose(); await target.close(); await new Promise<void>(resolve => rogue.close(() => resolve())); }
+  } finally { await server?.close(); await owner.dispose(); await target.close(); await new Promise<void>(resolve => rogue.close(() => resolve())); }
 });
 
-for (const ending of ['logout', 'broker-death'] as const) test(`real native pending WS is cancelled by ${ending}`, async () => {
+for (const ending of ['logout', 'broker-death', 'fixture-close'] as const) test(`real native pending WS is cancelled by ${ending}`, async () => {
   const owner = await CompanionBootstrapAuthority.start(); let server: Fixture | undefined;
   try {
     await owner.issueBootstrap(); await owner.deliverSession(); server = await startIsolatedHttpWsFixture(owner);
-    const pending = assert.rejects(owner.probeHttpFixture(server.endpoint, 'events'));
+    const pending = assert.rejects(owner.probeHttpFixture(server, 'events'));
     const deadline = Date.now() + 1800;
     while (!server.snapshot().sockets && Date.now() < deadline) await delay(5);
     assert.equal(server.snapshot().sockets, 1);
-    if (ending === 'logout') await owner.logout().catch(() => {}); else process.kill(owner.companion.brokerPid);
+    if (ending === 'logout') await owner.logout().catch(() => {});
+    else if (ending === 'broker-death') process.kill(owner.companion.brokerPid);
+    else await server.close();
     await pending; await owner.companion.lost; await delay(0);
     assert.equal(owner.boundaryEnded.aborted, true); assert.equal(server.snapshot().ended, true); assert.equal(server.emit(), 0);
   } finally { await server?.close(); await owner.dispose(); }
@@ -282,5 +328,85 @@ for (const mode of ['session-heartbeat-stall', 'session-channel-loss'] as const)
     await owner.issueBootstrap(); await owner.deliverSession(); server = await startIsolatedHttpWsFixture(owner);
     await owner.companion.lost;
     await delay(0); assert.equal(server.snapshot().ended, true); assert.equal(server.emit(), 0);
+  } finally { await server?.close(); await owner.dispose(); }
+});
+
+test('owner binding is immutable, rejects stale/closed handles and removes lifetime listeners', async () => {
+  const f = await active(), foreign = await active();
+  try {
+    assert.equal(getEventListeners(f.owner.boundaryEnded, 'abort').length, 1);
+    for (const input of [foreign.server, f.server.endpoint, { ...f.server }, { endpoint: f.server.endpoint },
+      Object.defineProperty({}, 'endpoint', { get() { throw new Error('must never inspect caller fields'); } })])
+      await assert.rejects(f.owner.probeHttpFixture(input, 'read'));
+    assert.equal(f.probes.length, 0);
+    assert.ok(Object.isFrozen(f.server)); assert.ok(Object.isFrozen(f.server.endpoint));
+    await f.owner.probeHttpFixture(f.server, 'read');
+    assert.deepEqual(f.probes[0], f.server.endpoint); assert.notEqual(f.probes[0], f.server.endpoint);
+    assert.ok(Object.isFrozen(f.probes[0]));
+    assert.equal(getEventListeners(f.owner.boundaryEnded, 'abort').length, 1);
+    await assert.rejects(startIsolatedHttpWsFixture(f.owner));
+    await f.server.close();
+    assert.equal(getEventListeners(f.owner.boundaryEnded, 'abort').length, 0);
+    await assert.rejects(f.owner.probeHttpFixture(f.server, 'read'));
+    await assert.rejects(startIsolatedHttpWsFixture(f.owner));
+    await assert.rejects(foreign.owner.probeHttpFixture(f.server, 'events'));
+    assert.equal(f.probes.length, 1); assert.equal(foreign.probes.length, 0);
+  } finally { await f.close(); await foreign.close(); }
+});
+
+test('concurrent construction cannot replace the first owner endpoint', async () => {
+  const f = trustedOwner();
+  await f.owner.issueBootstrap(); await f.owner.deliverSession();
+  const creating = startIsolatedHttpWsFixture(f.owner);
+  await assert.rejects(startIsolatedHttpWsFixture(f.owner));
+  const server = await creating;
+  try { await f.owner.probeHttpFixture(server, 'read'); assert.deepEqual(f.probes[0], server.endpoint); }
+  finally { await server.close(); await f.owner.dispose(); }
+});
+
+test('client disconnect cancels upgrade immediately and removes pending abort listeners', async () => {
+  const reached = deferred(), release = deferred(), cancelled = deferred();
+  let signal: AbortSignal | undefined, attempts = 0;
+  const f = await active({ beforeUpgrade: async current => {
+    signal = current;
+    if (++attempts > 1) return;
+    current.addEventListener('abort', cancelled.resolve, { once: true });
+    reached.resolve(); await release.promise;
+  } });
+  try {
+    const client = ws(f.server, f.token()); await reached.promise;
+    const ending = closed(client); client.terminate();
+    await Promise.race([cancelled.promise, delay(350).then(() => { throw new Error('Disconnect did not cancel upgrade promptly.'); })]);
+    await ending; await delay(0);
+    assert.equal(signal!.aborted, true); assert.equal(f.server.snapshot().pending, 0);
+    assert.equal(getEventListeners(signal!, 'abort').length, 0);
+    assert.equal(f.server.snapshot().sockets, 0);
+    release.resolve(); await delay(0); assert.equal(f.server.snapshot().sockets, 0);
+    const reconnected = ws(f.server, f.token()); await opened(reconnected);
+    assert.equal(getEventListeners(signal!, 'abort').length, 0);
+    reconnected.terminate(); await closed(reconnected);
+    await f.server.close(); await delay(0);
+    assert.equal(f.server.snapshot().connections, 0);
+    assert.equal(getEventListeners(f.owner.boundaryEnded, 'abort').length, 0);
+  } finally { release.resolve(); await f.close(); }
+});
+
+test('native monotonic deadline rejects late certificate and post-await work without timer cancellation', () => {
+  const result = execFileSync(APPLICATION_COMPANION_PATH, ['--http-fixture-deadline-self-test'], {
+    encoding: 'utf8', timeout: 8000, windowsHide: true,
+  });
+  const value = JSON.parse(result); assert.equal(value.type, 'HTTP_FIXTURE_DEADLINE_TEST_OK'); assert.equal(value.checks, 22);
+});
+
+test('real native rejects a closed endpoint before the first request without losing live owner authority', async () => {
+  const owner = await CompanionBootstrapAuthority.start(); let server: Fixture | undefined;
+  try {
+    await owner.issueBootstrap(); await owner.deliverSession(); server = await startIsolatedHttpWsFixture(owner);
+    await server.close();
+    for (const operation of ['read', 'events'] as const) await assert.rejects(owner.probeHttpFixture(server, operation));
+    assert.equal(server.snapshot().requests, 0); assert.equal(server.snapshot().upgrades, 0);
+    assert.equal(owner.companion.alive, true);
+    await assert.rejects(startIsolatedHttpWsFixture(owner));
+    assert.equal(getEventListeners(owner.boundaryEnded, 'abort').length, 0);
   } finally { await server?.close(); await owner.dispose(); }
 });

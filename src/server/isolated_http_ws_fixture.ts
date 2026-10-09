@@ -5,7 +5,7 @@ import type { IncomingMessage } from 'node:http';
 import type { Socket } from 'node:net';
 import { WebSocketServer, WebSocket } from 'ws';
 import { APPLICATION_COMPANION_PATH } from './application_companion_supervisor.ts';
-import { CompanionBootstrapAuthority } from './companion_bootstrap_authority.ts';
+import type { CompanionBootstrapAuthority } from './companion_bootstrap_authority.ts';
 import type { AuthorityReceipt } from './application_session_authority.ts';
 import { CompanionDeadline } from './companion_deadline.ts';
 
@@ -29,11 +29,17 @@ async function identity(signal: AbortSignal): Promise<{ key: string; cert: strin
 }
 
 /** Never imported by production. All options are trusted test composition, never request input. */
-export async function startIsolatedHttpWsFixture(owner: CompanionBootstrapAuthority, options: {
+export type FixtureOptions = {
   development?: boolean;
   readDelayMs?: number;
   beforeUpgrade?: (signal: AbortSignal) => Promise<void>;
-} = {}) {
+};
+export type OwnedFixtureBinding = Awaited<ReturnType<typeof createOwnedHttpWsFixture>>;
+export function startIsolatedHttpWsFixture(owner: CompanionBootstrapAuthority, options: FixtureOptions = {}) {
+  return owner.startHttpFixture(options);
+}
+/** Internal construction only: creates resources, never registers caller-supplied endpoints. */
+export async function createOwnedHttpWsFixture(owner: CompanionBootstrapAuthority, options: FixtureOptions) {
   if (owner.boundaryEnded.aborted || !owner.companion.alive) throw unavailable();
   const material = await identity(owner.boundaryEnded);
   if (owner.boundaryEnded.aborted || !owner.companion.alive) throw unavailable();
@@ -50,9 +56,12 @@ export async function startIsolatedHttpWsFixture(owner: CompanionBootstrapAuthor
   let requests = 0, upgrades = 0;
   let sweep: ReturnType<typeof setInterval> | undefined;
   let closePromise: Promise<void> | undefined;
+  const lifetime = new AbortController();
   const stop = () => {
     if (closePromise) return closePromise;
     ended = true;
+    lifetime.abort();
+    owner.boundaryEnded.removeEventListener('abort', end);
     clearInterval(sweep);
     for (const controller of work) controller.abort();
     for (const [socket, state] of sockets) { clearTimeout(state.timer); socket.terminate(); }
@@ -109,32 +118,49 @@ export async function startIsolatedHttpWsFixture(owner: CompanionBootstrapAuthor
     requests++;
     res.setHeader('Cache-Control', 'no-store'); res.setHeader('Connection', 'close');
     let pending: ReturnType<typeof begin> | undefined;
+    let disconnected: (() => void) | undefined;
+    let aborted: (() => void) | undefined;
     try {
       const receipt = authenticate(req, '/proof'); pending = begin();
       const controller = pending.controller;
-      const disconnected = () => controller.abort(); res.once('close', disconnected);
+      disconnected = () => controller.abort(); res.once('close', disconnected);
       await new Promise<void>((resolve, reject) => {
         const timer = setTimeout(resolve, options.readDelayMs ?? 0);
-        controller.signal.addEventListener('abort', () => { clearTimeout(timer); reject(unavailable()); }, { once: true });
-        if (controller.signal.aborted) { clearTimeout(timer); reject(unavailable()); }
+        aborted = () => { clearTimeout(timer); reject(unavailable()); };
+        controller.signal.addEventListener('abort', aborted, { once: true });
+        if (controller.signal.aborted) aborted();
       });
       pending.live(); check(receipt);
       res.writeHead(200, { 'Content-Type': 'application/json' }); res.end('{"fixture":"read-only"}');
     } catch { if (!res.destroyed) { res.writeHead(403, { 'Content-Type': 'text/plain' }); res.end('Unavailable.'); } }
-    finally { pending?.finish(); }
+    finally {
+      if (disconnected) res.removeListener('close', disconnected);
+      if (aborted) pending?.controller.signal.removeEventListener('abort', aborted);
+      pending?.finish();
+    }
   });
   server.on('upgrade', async (req, socket, head) => {
     upgrades++;
     let pending: ReturnType<typeof begin> | undefined;
+    let disconnected: (() => void) | undefined;
+    let aborted: (() => void) | undefined;
     try {
       const receipt = authenticate(req, '/events');
       if (sockets.size >= 2 || head.length > 256 || req.headers['sec-websocket-protocol'] !== undefined || req.headers['sec-websocket-extensions'] !== undefined) throw unavailable();
       pending = begin();
+      const controller = pending.controller;
+      disconnected = () => controller.abort();
+      socket.once('close', disconnected);
+      socket.once('end', disconnected);
+      socket.once('error', disconnected);
+      if (socket.destroyed || socket.readableEnded) controller.abort();
+      pending.live();
       // Trusted hook exercises logout during an asynchronous upgrade without authorizing late work.
       if (options.beforeUpgrade) await Promise.race([new Promise<never>((_, reject) => {
-        pending!.controller.signal.addEventListener('abort', () => reject(unavailable()), { once: true });
-        if (pending!.controller.signal.aborted) reject(unavailable());
-      }), options.beforeUpgrade(pending.controller.signal)]);
+        aborted = () => reject(unavailable());
+        controller.signal.addEventListener('abort', aborted, { once: true });
+        if (controller.signal.aborted) aborted();
+      }), options.beforeUpgrade(controller.signal)]);
       pending.live(); check(receipt);
       if (socket.destroyed || sockets.size >= 2) throw unavailable();
       wss.handleUpgrade(req, socket, head, client => {
@@ -146,8 +172,15 @@ export async function startIsolatedHttpWsFixture(owner: CompanionBootstrapAuthor
         client.on('error', () => client.terminate());
         client.once('close', () => { clearTimeout(timer); sockets.delete(client); });
       });
-    } catch { if (!socket.destroyed) socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n'); }
-    finally { pending?.finish(); }
+    } catch {
+      if (pending?.controller.signal.aborted) socket.destroy();
+      else if (!socket.destroyed) socket.end('HTTP/1.1 403 Forbidden\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
+    }
+    finally {
+      if (disconnected) for (const name of ['close', 'end', 'error']) socket.removeListener(name, disconnected);
+      if (aborted) pending?.controller.signal.removeEventListener('abort', aborted);
+      pending?.finish();
+    }
   });
   sweep = setInterval(() => {
     if (!owner.companion.alive || owner.boundaryEnded.aborted) { end(); return; }
@@ -169,7 +202,7 @@ export async function startIsolatedHttpWsFixture(owner: CompanionBootstrapAuthor
     port = address.port;
   } catch { clearInterval(sweep); owner.boundaryEnded.removeEventListener('abort', end); await stop(); throw unavailable(); }
   const endpoint = Object.freeze({ port, pin });
-  return Object.freeze({ endpoint,
+  const fixture = Object.freeze({ endpoint,
     emit() {
       let sent = 0;
       for (const [socket, state] of sockets) {
@@ -187,4 +220,6 @@ export async function startIsolatedHttpWsFixture(owner: CompanionBootstrapAuthor
       pending: work.size, connections: connections.size, requests, upgrades, ended }),
     async close() { clearInterval(sweep); owner.boundaryEnded.removeEventListener('abort', end); await stop(); },
   });
+  // A separate private snapshot is consumed only by the creating owner's credential path.
+  return Object.freeze({ fixture, endpoint: Object.freeze({ port, pin }), ended: lifetime.signal });
 }

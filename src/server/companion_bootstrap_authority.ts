@@ -2,6 +2,7 @@ import { CompanionDeadline } from './companion_deadline.ts';
 import { ApplicationSessionAuthority, APPLICATION_SESSION_MS, type ApplicationSecret, type AuthorityReceipt } from './application_session_authority.ts';
 import { PrivateBootstrapTransport } from './private_bootstrap_transport.ts';
 import { startApplicationCompanion, type CompanionFixtureMode, type CompanionLifetime } from './application_companion_supervisor.ts';
+import type { FixtureOptions, OwnedFixtureBinding } from './isolated_http_ws_fixture.ts';
 
 export type CompanionControl = Pick<CompanionLifetime, 'pid' | 'brokerPid' | 'generation' | 'alive' | 'lost' | 'closed' | 'failureCode' | 'logoutSession' | 'shutdown'>;
 const denied = () => new Error('Companion authority unavailable.');
@@ -17,6 +18,8 @@ export class CompanionBootstrapAuthority {
   #expiry?: ReturnType<typeof setTimeout>;
   #deadline?: CompanionDeadline;
   #ended = new AbortController();
+  #fixtureStarted = false;
+  #fixture?: OwnedFixtureBinding;
   /** Trusted fixture composition only; synchronous terminal resource cancellation. */
   get boundaryEnded(): AbortSignal { return this.#ended.signal; }
   readonly companion: CompanionControl;
@@ -111,12 +114,39 @@ export class CompanionBootstrapAuthority {
     this.#live();
     if (this.#loggingOut || !this.#session || receipt !== this.#session) throw denied();
   }
-  async probeHttpFixture(endpoint: { port: number; pin: string }, operation: 'read' | 'events', signal?: AbortSignal): Promise<void> {
+  /** One immutable endpoint per owner lifetime; no registration of caller descriptors. */
+  async startHttpFixture(options: FixtureOptions = {}) {
     this.#live();
-    if (!this.#session || this.#loggingOut || !this.#transport.probeHttpFixture) throw denied();
+    if (this.#fixtureStarted || this.#loggingOut) throw denied();
+    this.#fixtureStarted = true;
+    const { createOwnedHttpWsFixture } = await import('./isolated_http_ws_fixture.ts');
+    this.#live();
+    const binding = await createOwnedHttpWsFixture(this, Object.freeze({ ...options }));
+    try { this.#live(); if (this.#ended.signal.aborted || binding.ended.aborted) throw denied(); }
+    catch { await binding.fixture.close(); throw denied(); }
+    this.#fixture = binding;
+    return binding.fixture;
+  }
+  /** Only the original opaque fixture handle is accepted, never its public diagnostics. */
+  async probeHttpFixture(fixture: unknown, operation: 'read' | 'events', signal?: AbortSignal): Promise<void> {
+    this.#live();
+    const binding = this.#fixture;
+    if (!binding || fixture !== binding.fixture || binding.ended.aborted || signal?.aborted ||
+        !['read', 'events'].includes(operation) || !this.#session || this.#loggingOut || !this.#transport.probeHttpFixture) throw denied();
     this.authorizeFixtureReceipt(this.#session);
-    try { await this.#transport.probeHttpFixture(endpoint, operation, signal); this.#live(); }
+    const controller = new AbortController();
+    const cancel = () => controller.abort();
+    const signals = [binding.ended, this.#ended.signal, ...(signal ? [signal] : [])];
+    for (const source of signals) source.addEventListener('abort', cancel, { once: true });
+    try {
+      if (signals.some(source => source.aborted)) throw denied();
+      await this.#transport.probeHttpFixture(binding.endpoint, operation, controller.signal);
+      this.#live();
+      if (controller.signal.aborted || binding.ended.aborted) throw denied();
+      this.authorizeFixtureReceipt(this.#session!);
+    }
     catch { throw denied(); }
+    finally { for (const source of signals) source.removeEventListener('abort', cancel); }
   }
   async dispose() { this.#invalidate(); await this.#transport.shutdown(); }
 }

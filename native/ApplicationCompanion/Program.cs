@@ -21,6 +21,7 @@ internal static class Program
         {
             WindowsBoundary.RequireUnelevated();
             if (args.SequenceEqual(new[] { "--http-fixture-identity" })) { HttpFixtureProof.Identity(); return 0; }
+            if (args.SequenceEqual(new[] { "--http-fixture-deadline-self-test" })) return HttpFixtureDeadlineTests.Run();
             if (args.SequenceEqual(new[] { "--document-self-test" })) return DocumentTests.Run();
             if (args.SequenceEqual(new[] { "--session-self-test" })) return SessionTests.Run();
             if (args.SequenceEqual(new[] { "--bootstrap-self-test" })) return BootstrapTests.Run();
