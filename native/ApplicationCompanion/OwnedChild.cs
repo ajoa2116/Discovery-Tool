@@ -38,6 +38,17 @@ internal sealed class OwnedChild : IDisposable
         if (!WindowsBoundary.ValidPipeName(pipe) || !Program.Modes.Contains(mode)) throw new IOException();
         string image = Environment.ProcessPath!;
         var command = new StringBuilder($"\"{image}\" --fixture {pipe} {Environment.ProcessId} {mode}");
+        return StartOwned(image, command, mode == "assignment-failure");
+    }
+    // Headless launcher boundary only. Never accepts an arbitrary executable or arguments.
+    internal static OwnedChild StartLauncherPeer(string pipe, string mode)
+    {
+        if (!WindowsBoundary.ValidPipeName(pipe) || !NativeLauncherLease.Modes.Contains(mode)) throw new IOException();
+        string image = Environment.ProcessPath!;
+        return StartOwned(image, new StringBuilder($"\"{image}\" --launcher-peer {pipe} {Environment.ProcessId} {mode}"), false);
+    }
+    private static OwnedChild StartOwned(string image, StringBuilder command, bool assignmentFailure)
+    {
         var ownedJob = WindowsBoundary.CreateOwnedJob();
         SafeFileHandle? handle = null; Process? child = null;
         IntPtr attributes = IntPtr.Zero, jobValue = IntPtr.Zero; bool initialized = false;
@@ -48,7 +59,7 @@ internal sealed class OwnedChild : IDisposable
             attributes = Marshal.AllocHGlobal((int)size);
             if (!InitializeProcThreadAttributeList(attributes, 1, 0, ref size)) throw new IOException();
             initialized = true; jobValue = Marshal.AllocHGlobal(IntPtr.Size);
-            Marshal.WriteIntPtr(jobValue, mode == "assignment-failure" ? IntPtr.Zero : ownedJob.DangerousGetHandle());
+            Marshal.WriteIntPtr(jobValue, assignmentFailure ? IntPtr.Zero : ownedJob.DangerousGetHandle());
             if (!UpdateProcThreadAttribute(attributes, 0, 0x2000D /* JOB_LIST */, jobValue, (nuint)IntPtr.Size, IntPtr.Zero, IntPtr.Zero)) throw new IOException();
             var startup = new StartupInfoEx { Startup = new StartupInfo { Size = Marshal.SizeOf<StartupInfoEx>() }, Attributes = attributes };
             if (!CreateProcess(image, command, IntPtr.Zero, IntPtr.Zero, false, 0x4 | 0x08000000 | 0x80000 /* SUSPENDED, NO_WINDOW, EXTENDED */,

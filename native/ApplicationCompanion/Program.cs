@@ -20,6 +20,12 @@ internal static class Program
         try
         {
             WindowsBoundary.RequireUnelevated();
+            if (args.SequenceEqual(new[] { "--launcher-self-test" })) return NativeLauncherTests.Run();
+            if (args.SequenceEqual(new[] { "--launcher-owner-loss-test" }))
+            { NativeLauncherTests.OwnerLoss().GetAwaiter().GetResult(); return 0; }
+            if (args.Length == 4 && args[0] == "--launcher-peer" && WindowsBoundary.ValidPipeName(args[1]) &&
+                int.TryParse(args[2], out int ownerPid) && NativeLauncherLease.Modes.Contains(args[3]))
+            { NativeLauncherLease.Peer(args[1], ownerPid, args[3]).GetAwaiter().GetResult(); return 0; }
             if (args.SequenceEqual(new[] { "--http-fixture-identity" })) { HttpFixtureProof.Identity(); return 0; }
             if (args.SequenceEqual(new[] { "--http-fixture-deadline-self-test" })) return HttpFixtureDeadlineTests.Run();
             if (args.SequenceEqual(new[] { "--document-self-test" })) return DocumentTests.Run();
