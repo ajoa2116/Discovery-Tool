@@ -76,7 +76,10 @@ test('both local Hosts preserve connections and messages without changing Origin
   }
 });
 
-test('production WebSocket upgrade uses the existing HTTP Host policy', async () => {
+test('production WebSocket admission and broadcasts use the shared authentication boundary', async () => {
   const source = await readFile(new URL('../server/index.ts', import.meta.url), 'utf8');
-  assert.match(source, /new WebSocketServer\(\{ server, path: '\/ws', verifyClient: \(info: \{ req: IncomingMessage \}\) => httpHostAllowed\(info\.req\.rawHeaders\) \}\)/);
+  assert.match(source, /verifyClient: \(info: \{ req: IncomingMessage \}\) => authentication\.verifyUpgrade\(info\.req\)/);
+  assert.match(source, /authentication\.accept\(socket, req\)/);
+  assert.match(source, /authentication\.send\(client, msg\)/);
+  assert.doesNotMatch(source, /client\.send\(/);
 });

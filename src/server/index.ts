@@ -19,10 +19,11 @@ import { wsDiscoveryEvidence } from '../core/drivers/ws_discovery_evidence.ts';
 import { ForegroundDiscovery } from '../core/engine/foreground_discovery.ts';
 import { createForegroundDiscoveryRouter } from './foreground_discovery_routes.ts';
 import express from 'express';
-import { httpHostAllowed, validateHttpHost } from './http_host_validation.ts';
+import { validateHttpHost } from './http_host_validation.ts';
+import { ProductionAuthenticationBoundary } from './production_authentication_boundary.ts';
 import cors from 'cors';
 import { createServer, type IncomingMessage } from 'http';
-import { WebSocketServer, WebSocket } from 'ws';
+import { WebSocketServer } from 'ws';
 import { pipelineEngine } from '../core/engine/pipeline.ts';
 import { projectDb } from '../core/storage/project_db.ts';
 import { appStateDb } from '../core/storage/app_db.ts';
@@ -63,8 +64,14 @@ const operationTasks = new OperationTasks(tasks);
 let advancedTaskSessionId='';
 const app = express();
 app.use(validateHttpHost);
+// No trusted production launcher/backend handoff exists yet. API and event access
+// remain closed; static UI assets confer no session authority.
+const authentication = new ProductionAuthenticationBoundary();
+app.use('/api', authentication.http);
 const server = createServer(app);
-const wss = new WebSocketServer({ server, path: '/ws', verifyClient: (info: { req: IncomingMessage }) => httpHostAllowed(info.req.rawHeaders) });
+const wss = new WebSocketServer({ server, path: '/ws', maxPayload: 256, perMessageDeflate: false,
+  verifyClient: (info: { req: IncomingMessage }) => authentication.verifyUpgrade(info.req) });
+wss.on('connection', (socket, req) => { authentication.accept(socket, req); });
 const startupFailure=(error:NodeJS.ErrnoException)=>{console.error(startupFailureMessage(error.code));process.exit(1);};
 server.once('error',startupFailure);
 wss.once('error',startupFailure);
@@ -125,9 +132,7 @@ const broadcast = (data: any) => {
   if(data.type==='PAIR_STATE_CHANGED')operationTasks.pair(data.data.pair);
   const msg = JSON.stringify(data);
   wss.clients.forEach(client => {
-    if (client.readyState === WebSocket.OPEN) {
-      client.send(msg);
-    }
+    authentication.send(client, msg);
   });
 };
 const safeError = (res:any,error:unknown,status:number,operation:string,deviceId?:string) => {
@@ -624,6 +629,6 @@ const shutdown = new ShutdownCoordinator(
   () => new Promise(resolve => server.close(() => resolve())),
 );
 let terminating = false;
-const terminate = (signal: string) => { if (terminating) return; terminating = true; clearInterval(browserSessionTimer); cameraRenderers.dispose(); cameraBrowserSessions.clear(); console.info(`[Shutdown] ${signal}: stopping discovery, diagnostics, sockets, and HTTP service.`); void shutdown.shutdown().finally(() => { console.info('[Shutdown] Complete. Pair recovery state was preserved.'); process.exitCode = 0; }); };
+const terminate = (signal: string) => { if (terminating) return; terminating = true; authentication.dispose(); clearInterval(browserSessionTimer); cameraRenderers.dispose(); cameraBrowserSessions.clear(); console.info(`[Shutdown] ${signal}: stopping discovery, diagnostics, sockets, and HTTP service.`); void shutdown.shutdown().finally(() => { console.info('[Shutdown] Complete. Pair recovery state was preserved.'); process.exitCode = 0; }); };
 process.once('SIGINT', () => terminate('SIGINT'));
 process.once('SIGTERM', () => terminate('SIGTERM'));
