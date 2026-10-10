@@ -8,6 +8,8 @@ using System.Text.RegularExpressions;
 
 namespace ApplicationCompanion;
 
+internal enum HttpFixtureCheckpoint { HttpResponse, HttpBody, WsConnected, WsReceiving, WsReceived }
+
 // Isolated proof only. No document API, arbitrary destination or production composition.
 internal sealed class HttpFixtureProof : IDisposable
 {
@@ -16,11 +18,14 @@ internal sealed class HttpFixtureProof : IDisposable
     private readonly CancellationTokenSource ended = new();
     private readonly Func<double>? elapsed;
     private readonly Action<CancellationTokenSource> scheduleTimeout;
+    private readonly Action<HttpFixtureCheckpoint>? checkpoint;
     // Internal deterministic test seam only; never accepted from IPC or caller endpoints.
-    internal HttpFixtureProof(Func<double>? elapsed = null, Action<CancellationTokenSource>? scheduleTimeout = null)
+    internal HttpFixtureProof(Func<double>? elapsed = null, Action<CancellationTokenSource>? scheduleTimeout = null,
+        Action<HttpFixtureCheckpoint>? checkpoint = null)
     {
         this.elapsed = elapsed;
         this.scheduleTimeout = scheduleTimeout ?? (source => source.CancelAfter(1800));
+        this.checkpoint = checkpoint;
     }
     internal static void Identity()
     {
@@ -66,9 +71,11 @@ internal sealed class HttpFixtureProof : IDisposable
             Check();
             // TLS validation occurs before HttpClient writes any HTTP headers. No redirects/proxies/cookies.
             using var response = await client.SendAsync(request, HttpCompletionOption.ResponseContentRead, timeout.Token);
+            checkpoint?.Invoke(HttpFixtureCheckpoint.HttpResponse);
             Check();
             if ((int)response.StatusCode != 200) throw new IOException();
             string content = await response.Content.ReadAsStringAsync(timeout.Token);
+            checkpoint?.Invoke(HttpFixtureCheckpoint.HttpBody);
             Check();
             if (content != "{\"fixture\":\"read-only\"}") throw new IOException();
         }
@@ -82,9 +89,12 @@ internal sealed class HttpFixtureProof : IDisposable
             socket.Options.SetRequestHeader("Authorization", "Bearer " + credential());
             Check();
             await socket.ConnectAsync(new Uri($"wss://127.0.0.1:{port}/events"), invoker, timeout.Token);
+            checkpoint?.Invoke(HttpFixtureCheckpoint.WsConnected);
             Check();
             var bytes = new byte[256];
+            checkpoint?.Invoke(HttpFixtureCheckpoint.WsReceiving);
             var result = await socket.ReceiveAsync(new ArraySegment<byte>(bytes), timeout.Token);
+            checkpoint?.Invoke(HttpFixtureCheckpoint.WsReceived);
             Check();
             if (!result.EndOfMessage || result.MessageType != WebSocketMessageType.Text ||
                 Encoding.UTF8.GetString(bytes, 0, result.Count) != "{\"type\":\"FIXTURE_EVENT\",\"value\":1}") throw new IOException();

@@ -3,6 +3,7 @@ import { test, after } from 'node:test';
 import { getEventListeners } from 'node:events';
 import { request, createServer } from 'node:https';
 import { connect } from 'node:tls';
+import { createServer as createListener } from 'node:net';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { X509Certificate, createHash } from 'node:crypto';
 import { WebSocket } from 'ws';
@@ -395,7 +396,8 @@ test('native monotonic deadline rejects late certificate and post-await work wit
   const result = execFileSync(APPLICATION_COMPANION_PATH, ['--http-fixture-deadline-self-test'], {
     encoding: 'utf8', timeout: 8000, windowsHide: true,
   });
-  const value = JSON.parse(result); assert.equal(value.type, 'HTTP_FIXTURE_DEADLINE_TEST_OK'); assert.equal(value.checks, 22);
+  const value = JSON.parse(result); assert.equal(value.type, 'HTTP_FIXTURE_DEADLINE_TEST_OK');
+  assert.equal(value.cases, 16); assert.equal(value.checks, 94);
 });
 
 test('real native rejects a closed endpoint before the first request without losing live owner authority', async () => {
@@ -409,4 +411,127 @@ test('real native rejects a closed endpoint before the first request without los
     await assert.rejects(startIsolatedHttpWsFixture(owner));
     assert.equal(getEventListeners(owner.boundaryEnded, 'abort').length, 0);
   } finally { await server?.close(); await owner.dispose(); }
+});
+
+
+function assertShutdown(server: Fixture) {
+  const state = server.snapshot();
+  assert.equal(state.ended, true); assert.equal(state.shutdownComplete, true);
+  assert.equal(state.listening, false); assert.equal(state.httpClosed, true); assert.equal(state.websocketClosed, true);
+  assert.equal(state.connections, 0); assert.equal(state.websocketClients, 0);
+  assert.equal(state.sockets, 0); assert.equal(state.queued, 0); assert.equal(state.pending, 0);
+}
+async function reusePort(port: number) {
+  const listener = createListener();
+  try {
+    await new Promise<void>((resolve, reject) => {
+      listener.once('error', reject); listener.listen({ port, host: '127.0.0.1' }, resolve);
+    });
+    const address = listener.address(); assert.ok(address && typeof address !== 'string'); assert.equal(address.port, port);
+  } finally { if (listener.listening) await new Promise<void>(resolve => listener.close(() => resolve())); }
+}
+
+test('concurrent and abort-reentrant shutdown share one promise and join pending handlers', async () => {
+  const reached = deferred(), release = deferred(); const nested: Promise<void>[] = [];
+  let f!: Awaited<ReturnType<typeof active>>;
+  f = await active({ readDelayMs: 800, beforeUpgrade: async signal => {
+    signal.addEventListener('abort', () => nested.push(f.server.close()), { once: true });
+    reached.resolve(); await release.promise;
+  } });
+  try {
+    const client = ws(f.server, f.token()); const denied = assert.rejects(opened(client)); await reached.promise;
+    const pendingRead = http(f.server, f.token()).catch(() => 0);
+    while (f.server.snapshot().pending !== 2) await delay(5);
+    const first = f.server.close(), second = f.server.close();
+    assert.equal(first, second); assert.equal(nested.length, 1); assert.equal(nested[0], first);
+    await Promise.all([first, second, ...nested]);
+    assertShutdown(f.server); assert.equal(getEventListeners(f.owner.boundaryEnded, 'abort').length, 0);
+    await denied; await closed(client); assert.notEqual(await pendingRead, 200);
+    release.resolve(); await delay(0); assertShutdown(f.server);
+    assert.equal(f.server.close(), first); await reusePort(f.server.endpoint.port);
+    await assert.rejects(f.owner.probeHttpFixture(f.server, 'read')); assert.equal(f.probes.length, 0);
+  } finally { release.resolve(); await f.close(); }
+});
+
+for (const ending of ['close', 'logout', 'process-loss', 'hook-failure'] as const)
+  test(`shutdown during pending listen joins late listener creation: ${ending}`, async () => {
+    const f = trustedOwner(); await f.owner.issueBootstrap(); await f.owner.deliverSession();
+    let shared: Promise<void> | undefined, revoking: Promise<void> | undefined;
+    let port = 0, completed = false, completedAtListening: boolean | undefined, samePromise = false;
+    try {
+      await assert.rejects(startIsolatedHttpWsFixture(f.owner, {
+        onListenRequested: close => {
+          if (ending === 'logout') revoking = f.owner.logout();
+          else if (ending === 'process-loss') f.lose();
+          shared = close(); samePromise = shared === close();
+          void shared.then(() => { completed = true; });
+          if (ending === 'hook-failure') throw new Error('Trusted startup hook rejected.');
+        },
+        onListening: value => { port = value; completedAtListening = completed; },
+      }));
+      assert.ok(shared); await shared; await revoking;
+      assert.equal(samePromise, true); assert.equal(completedAtListening, false); assert.equal(completed, true);
+      assert.ok(port > 0); await reusePort(port);
+      assert.equal(getEventListeners(f.owner.boundaryEnded, 'abort').length, 0);
+      await assert.rejects(startIsolatedHttpWsFixture(f.owner)); assert.equal(f.probes.length, 0);
+    } finally { await shared; await revoking; await f.owner.dispose(); }
+  });
+
+test('shutdown completion joins established WS clients, outbound queue, TCP and HTTP work', async () => {
+  const f = await active({ readDelayMs: 800 }); const clients: WebSocket[] = [];
+  try {
+    for (let i = 0; i < 2; i++) { const client = ws(f.server, f.token()); clients.push(client); await opened(client); }
+    const endings = clients.map(closed); assert.equal(f.server.emit(), 2); assert.equal(f.server.snapshot().queued, 2);
+    const pending = http(f.server, f.token()).catch(() => 0);
+    while (!f.server.snapshot().pending) await delay(5);
+    await Promise.all([f.server.close(), f.server.close()]);
+    assertShutdown(f.server); await Promise.all(endings); assert.notEqual(await pending, 200);
+    await reusePort(f.server.endpoint.port);
+  } finally { clients.forEach(client => client.terminate()); await f.close(); }
+});
+
+for (const ending of ['logout', 'expiry', 'process-loss'] as const)
+  test(`revocation joins pending upgrade/read work and endpoint shutdown: ${ending}`, async () => {
+    const reached = deferred(), release = deferred(); let signal: AbortSignal | undefined;
+    const f = await active({ readDelayMs: 800, beforeUpgrade: async current => {
+      signal = current; reached.resolve(); await release.promise;
+    } });
+    try {
+      const client = ws(f.server, f.token()); const denied = assert.rejects(opened(client)); await reached.promise;
+      const pending = http(f.server, f.token()).catch(() => 0);
+      while (f.server.snapshot().pending !== 2) await delay(5);
+      if (ending === 'logout') await f.owner.logout();
+      else if (ending === 'expiry') { f.expire(); assert.throws(() => f.owner.authorizeFixtureReceipt({ id: 'unavailable', expiresAt: Date.now() + 1000 })); }
+      else { f.lose(); await f.owner.companion.lost; await delay(0); }
+      await f.server.close(); assertShutdown(f.server); assert.equal(signal!.aborted, true);
+      assert.equal(getEventListeners(signal!, 'abort').length, 0);
+      release.resolve(); await denied; await closed(client); assert.notEqual(await pending, 200);
+      await reusePort(f.server.endpoint.port);
+    } finally { release.resolve(); await f.close(); }
+  });
+
+for (const order of ['disconnect-first', 'completion-first'] as const)
+  test(`disconnect and upgrade completion race drains resources: ${order}`, async () => {
+    const reached = deferred(), release = deferred(); let signal: AbortSignal | undefined;
+    const f = await active({ beforeUpgrade: async current => { signal = current; reached.resolve(); await release.promise; } });
+    try {
+      const client = ws(f.server, f.token()); await reached.promise;
+      const ending = closed(client);
+      if (order === 'completion-first') release.resolve();
+      client.terminate(); await ending;
+      if (order === 'disconnect-first') release.resolve();
+      await f.server.close(); assertShutdown(f.server);
+      assert.equal(getEventListeners(signal!, 'abort').length, 0);
+      assert.equal(f.server.emit(), 0); await reusePort(f.server.endpoint.port);
+    } finally { release.resolve(); await f.close(); }
+  });
+
+test('rejected upgrade hook releases cancellation listeners and joins clean shutdown', async () => {
+  let signal: AbortSignal | undefined;
+  const f = await active({ beforeUpgrade: async current => { signal = current; throw new Error('Trusted upgrade hook rejected.'); } });
+  try {
+    const client = ws(f.server, f.token()); await assert.rejects(opened(client)); await closed(client);
+    assert.equal(getEventListeners(signal!, 'abort').length, 0);
+    await f.server.close(); assertShutdown(f.server); await reusePort(f.server.endpoint.port);
+  } finally { await f.close(); }
 });

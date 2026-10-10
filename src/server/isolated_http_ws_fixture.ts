@@ -33,6 +33,9 @@ export type FixtureOptions = {
   development?: boolean;
   readDelayMs?: number;
   beforeUpgrade?: (signal: AbortSignal) => Promise<void>;
+  /** Trusted lifecycle test hooks; no endpoint registration or credential access. */
+  onListenRequested?: (close: () => Promise<void>) => void;
+  onListening?: (port: number) => void;
 };
 export type OwnedFixtureBinding = Awaited<ReturnType<typeof createOwnedHttpWsFixture>>;
 export function startIsolatedHttpWsFixture(owner: CompanionBootstrapAuthority, options: FixtureOptions = {}) {
@@ -49,31 +52,49 @@ export async function createOwnedHttpWsFixture(owner: CompanionBootstrapAuthorit
     handshakeTimeout: 1500, keepAliveTimeout: 500 });
   material.key = ''; // Drop our reference; TLS retains its in-memory key. No erasure claim.
   const wss = new WebSocketServer({ noServer: true, maxPayload: 256, perMessageDeflate: false, autoPong: false });
-  const connections = new Set<Socket>();
+  const connections = new Map<Socket, Promise<void>>();
   const sockets = new Map<WebSocket, { receipt: AuthorityReceipt; deadline: CompanionDeadline; timer: ReturnType<typeof setTimeout>; sending: boolean }>();
-  const work = new Set<AbortController>();
+  const work = new Map<AbortController, Promise<void>>();
   let ended = false, port = 0;
   let requests = 0, upgrades = 0;
   let sweep: ReturnType<typeof setInterval> | undefined;
   let closePromise: Promise<void> | undefined;
+  let settleListen!: () => void;
+  const listenSettled = new Promise<void>(resolve => { settleListen = resolve; });
+  let httpClosed = false, websocketClosed = false, shutdownComplete = false;
   const lifetime = new AbortController();
   const stop = () => {
     if (closePromise) return closePromise;
+    let complete!: () => void, fail!: (error: Error) => void;
+    // Publish before any synchronous abort callback can reenter stop().
+    closePromise = new Promise<void>((resolve, reject) => { complete = resolve; fail = reject; });
     ended = true;
+    const pending = [...work.values()];
+    const connected = [...connections.values()];
     lifetime.abort();
     owner.boundaryEnded.removeEventListener('abort', end);
     clearInterval(sweep);
-    for (const controller of work) controller.abort();
-    for (const [socket, state] of sockets) { clearTimeout(state.timer); socket.terminate(); }
-    sockets.clear();
-    for (const socket of connections) socket.destroy();
-    closePromise = new Promise<void>(resolve => {
-      wss.close(() => {});
-      if (server.listening) server.close(() => resolve()); else resolve();
-    });
+    for (const controller of work.keys()) controller.abort();
+    for (const state of sockets.values()) clearTimeout(state.timer);
+    for (const socket of wss.clients) socket.terminate();
+    for (const socket of connections.keys()) socket.destroy();
+    const wsClosing = new Promise<void>(resolve => wss.close(() => { websocketClosed = true; resolve(); }));
+    void (async () => {
+      // A pending listen must settle before deciding whether an owned listener needs closing.
+      await listenSettled;
+      await new Promise<void>((resolve, reject) => {
+        if (!server.listening) { httpClosed = true; resolve(); return; }
+        server.close(error => {
+          if (error) { reject(unavailable()); return; }
+          httpClosed = true; resolve();
+        });
+      });
+      await Promise.all([wsClosing, ...pending, ...connected]);
+      shutdownComplete = true; complete();
+    })().catch(() => fail(unavailable()));
     return closePromise;
   };
-  const end = () => { void stop(); };
+  const end = () => { void stop().catch(() => {}); };
   owner.boundaryEnded.addEventListener('abort', end, { once: true });
   const check = (receipt: AuthorityReceipt) => {
     if (ended) throw unavailable();
@@ -99,17 +120,21 @@ export async function createOwnedHttpWsFixture(owner: CompanionBootstrapAuthorit
   };
   const begin = () => {
     if (ended || work.size >= 2) throw unavailable();
-    const controller = new AbortController(); work.add(controller);
+    const controller = new AbortController();
+    let complete!: () => void;
+    work.set(controller, new Promise<void>(resolve => { complete = resolve; }));
     const timeout = setTimeout(() => controller.abort(), 1000);
     const deadline = new CompanionDeadline(1000);
     return { controller, live: () => { if (controller.signal.aborted || deadline.remaining() <= 0) throw unavailable(); },
-      finish: () => { clearTimeout(timeout); work.delete(controller); } };
+      finish: () => { clearTimeout(timeout); work.delete(controller); complete(); } };
   };
   server.on('connection', stream => {
     const socket = stream as Socket;
     if (ended || connections.size >= 8) { socket.destroy(); return; }
-    connections.add(socket); socket.setTimeout(3000, () => socket.destroy());
-    socket.on('error', () => {}); socket.once('close', () => connections.delete(socket));
+    connections.set(socket, new Promise<void>(resolve => socket.once('close', () => {
+      connections.delete(socket); resolve();
+    })));
+    socket.setTimeout(3000, () => socket.destroy()); socket.on('error', () => {});
   });
   server.on('clientError', (_error, socket) => socket.destroy());
   server.on('tlsClientError', () => {});
@@ -192,10 +217,19 @@ export async function createOwnedHttpWsFixture(owner: CompanionBootstrapAuthorit
   sweep.unref();
   try {
     await new Promise<void>((resolve, reject) => {
-      server.once('error', reject); server.listen({ port: 0, host: '127.0.0.1', backlog: 8 }, () => {
-        if (ended) server.close();
-        resolve();
-      });
+      const failed = () => { settleListen(); reject(unavailable()); };
+      server.once('error', failed);
+      try {
+        server.listen({ port: 0, host: '127.0.0.1', backlog: 8 }, () => {
+          server.removeListener('error', failed);
+          settleListen();
+          const address = server.address();
+          if (!address || typeof address === 'string') { reject(unavailable()); return; }
+          port = address.port;
+          try { options.onListening?.(port); resolve(); } catch { reject(unavailable()); }
+        });
+      } catch { server.removeListener('error', failed); settleListen(); reject(unavailable()); return; }
+      try { options.onListenRequested?.(stop); } catch { reject(unavailable()); }
     });
     const address = server.address();
     if (!address || typeof address === 'string' || ended || owner.boundaryEnded.aborted) throw unavailable();
@@ -217,8 +251,9 @@ export async function createOwnedHttpWsFixture(owner: CompanionBootstrapAuthorit
       return sent;
     },
     snapshot: () => ({ sockets: sockets.size, queued: [...sockets.values()].filter(state => state.sending).length,
-      pending: work.size, connections: connections.size, requests, upgrades, ended }),
-    async close() { clearInterval(sweep); owner.boundaryEnded.removeEventListener('abort', end); await stop(); },
+      pending: work.size, connections: connections.size, websocketClients: wss.clients.size,
+      listening: server.listening, httpClosed, websocketClosed, shutdownComplete, requests, upgrades, ended }),
+    close: stop,
   });
   // A separate private snapshot is consumed only by the creating owner's credential path.
   return Object.freeze({ fixture, endpoint: Object.freeze({ port, pin }), ended: lifetime.signal });
