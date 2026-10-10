@@ -397,7 +397,7 @@ test('native monotonic deadline rejects late certificate and post-await work wit
     encoding: 'utf8', timeout: 8000, windowsHide: true,
   });
   const value = JSON.parse(result); assert.equal(value.type, 'HTTP_FIXTURE_DEADLINE_TEST_OK');
-  assert.equal(value.cases, 16); assert.equal(value.checks, 94);
+  assert.equal(value.cases, 16); assert.equal(value.checks, 106);
 });
 
 test('real native rejects a closed endpoint before the first request without losing live owner authority', async () => {
@@ -510,20 +510,61 @@ for (const ending of ['logout', 'expiry', 'process-loss'] as const)
     } finally { release.resolve(); await f.close(); }
   });
 
+// Observe server transitions; the timeout only fails a stalled test and never
+// chooses an ordering or supplies successful evidence.
+async function waitForFixtureTransition(condition: () => boolean) {
+  const watchdog = AbortSignal.timeout(4000);
+  while (!condition()) {
+    watchdog.throwIfAborted();
+    await new Promise<void>(resolve => setImmediate(resolve));
+  }
+}
+
 for (const order of ['disconnect-first', 'completion-first'] as const)
   test(`disconnect and upgrade completion race drains resources: ${order}`, async () => {
-    const reached = deferred(), release = deferred(); let signal: AbortSignal | undefined;
-    const f = await active({ beforeUpgrade: async current => { signal = current; reached.resolve(); await release.promise; } });
+    const reached = deferred(), release = deferred(), hookCompleted = deferred();
+    let signal: AbortSignal | undefined, admitted = false;
+    const f = await active({ beforeUpgrade: async current => {
+      signal = current; reached.resolve(); await release.promise; hookCompleted.resolve();
+    } });
+    let client: WebSocket | undefined;
     try {
-      const client = ws(f.server, f.token()); await reached.promise;
+      client = ws(f.server, f.token()); client.once('open', () => { admitted = true; });
+      const opening = opened(client);
+      // Attach rejection handling before intentionally disconnecting a pending handshake.
+      const openedOrDenied = opening.then(() => true, () => false);
+      await reached.promise;
+      assert.equal(f.server.snapshot().upgrades, 1);
+      assert.equal(f.server.snapshot().pending, 1); assert.equal(f.server.snapshot().sockets, 0);
+      assert.equal(signal!.aborted, false);
       const ending = closed(client);
-      if (order === 'completion-first') release.resolve();
-      client.terminate(); await ending;
-      if (order === 'disconnect-first') release.resolve();
+      if (order === 'disconnect-first') {
+        client.terminate();
+        // The server must observe disconnect and drain its pending handler while
+        // hook completion is still withheld. Client close alone cannot prove this.
+        await waitForFixtureTransition(() => signal!.aborted && f.server.snapshot().pending === 0 && f.server.snapshot().connections === 0);
+        assert.equal(f.server.snapshot().sockets, 0); assert.equal(f.server.snapshot().websocketClients, 0);
+        assert.equal(await openedOrDenied, false); assert.equal(admitted, false);
+        release.resolve(); await hookCompleted.promise;
+        assert.equal(f.server.snapshot().sockets, 0); assert.equal(f.server.emit(), 0);
+      } else {
+        release.resolve(); await opening; await hookCompleted.promise;
+        // A successful handshake plus server registration establishes completion
+        // before any client disconnect is requested.
+        assert.equal(admitted, true); assert.equal(signal!.aborted, false);
+        assert.equal(f.server.snapshot().pending, 0); assert.equal(f.server.snapshot().sockets, 1);
+        assert.equal(f.server.snapshot().websocketClients, 1);
+        assert.equal(getEventListeners(signal!, 'abort').length, 0);
+        client.terminate();
+        await waitForFixtureTransition(() => f.server.snapshot().sockets === 0 && f.server.snapshot().connections === 0);
+        assert.equal(f.server.snapshot().websocketClients, 0);
+        assert.equal(signal!.aborted, false); // Completed work no longer owns a disconnect listener.
+      }
+      await ending;
       await f.server.close(); assertShutdown(f.server);
       assert.equal(getEventListeners(signal!, 'abort').length, 0);
       assert.equal(f.server.emit(), 0); await reusePort(f.server.endpoint.port);
-    } finally { release.resolve(); await f.close(); }
+    } finally { release.resolve(); client?.terminate(); await f.close(); }
   });
 
 test('rejected upgrade hook releases cancellation listeners and joins clean shutdown', async () => {

@@ -12,12 +12,40 @@ internal static class HttpFixtureDeadlineTests
 {
     private const string Body = "{\"fixture\":\"read-only\"}";
     private const string Event = "{\"type\":\"FIXTURE_EVENT\",\"value\":1}";
-    internal static int Run() => RunAsync().GetAwaiter().GetResult();
+    private static bool IsRevocationCompletion(Task probe, Exception? failure,
+        CancellationToken probeToken, CancellationToken watchdog) =>
+        probe.IsCanceled && !watchdog.IsCancellationRequested && probeToken.IsCancellationRequested &&
+        // ClientWebSocket connect may report its internally linked cancelled token.
+        failure is OperationCanceledException cancelled && cancelled.CancellationToken.IsCancellationRequested &&
+        cancelled.CancellationToken != watchdog;
+    internal static int Run()
+    {
+        try { return RunAsync().GetAwaiter().GetResult(); }
+        catch (Exception error) {
+            Console.Error.WriteLine($"HTTP fixture self-test failed: {error.GetType().Name}\n{error.StackTrace}");
+            return 1;
+        }
+    }
     private static async Task<int> RunAsync()
     {
         int count = 0, cases = 0;
-        void Check(bool good) { if (!good) throw new IOException(); count++; }
+        void Check(bool good) {
+            if (!good) { Console.Error.WriteLine($"HTTP fixture self-test assertion {count + 1} failed."); throw new IOException(); }
+            count++;
+        }
         void Deny(Action action) { bool denied = false; try { action(); } catch (HttpFixtureDeadlineException) { denied = true; } Check(denied); }
+        // Negative controls: requesting cancellation is insufficient if the probe stalls,
+        // faults for another reason, or only the outer watchdog wait is cancelled.
+        using var revoked = new CancellationTokenSource(); revoked.Cancel();
+        using var expiredWatchdog = new CancellationTokenSource(); expiredWatchdog.Cancel();
+        var cancelledProbe = Task.FromCanceled(revoked.Token);
+        var cancellationFailure = new OperationCanceledException(revoked.Token);
+        Check(IsRevocationCompletion(cancelledProbe, cancellationFailure, revoked.Token, CancellationToken.None));
+        Check(!IsRevocationCompletion(new TaskCompletionSource().Task, cancellationFailure, revoked.Token, CancellationToken.None));
+        var transportFailure = new IOException();
+        var faultedProbe = Task.FromException(transportFailure); _ = faultedProbe.Exception;
+        Check(!IsRevocationCompletion(faultedProbe, transportFailure, revoked.Token, CancellationToken.None));
+        Check(!IsRevocationCompletion(cancelledProbe, new OperationCanceledException(expiredWatchdog.Token), revoked.Token, expiredWatchdog.Token));
         using var cancellation = new CancellationTokenSource();
         double clock = 0; var deadline = new HttpFixtureDeadline(() => clock); deadline.Check();
         clock = 1799; deadline.Check(); await Task.Yield(); clock = 1800;
@@ -109,7 +137,10 @@ internal static class HttpFixtureDeadlineTests
             }
             var serving = Serve();
             CancellationTokenSource? timer = null;
-            using var proof = new HttpFixtureProof(() => Volatile.Read(ref elapsed), source => timer = source, stage => {
+            CancellationToken probeToken = default;
+            using var proof = new HttpFixtureProof(() => Volatile.Read(ref elapsed), source => {
+                timer = source; probeToken = source.Token;
+            }, stage => {
                 observed.Add(stage); if (stage == HttpFixtureCheckpoint.WsReceiving) receiving.TrySetResult();
             });
             var probing = proof.Probe(JsonSerializer.SerializeToElement(new { port, pin, operation }), () => "session_" + new string('a', 43), () => {});
@@ -120,15 +151,20 @@ internal static class HttpFixtureDeadlineTests
                 await ready.Task.WaitAsync(watchdog.Token);
                 Check(!probing.IsCompleted);
                 if (revoke) proof.Dispose(); else Volatile.Write(ref elapsed, atCompletion);
-                release.TrySetResult();
+                // Keep the peer open and its response withheld until cancellation has
+                // settled the actual probe. Neither peer failure nor late success can help.
+                if (!revoke) release.TrySetResult();
                 try { await probing.WaitAsync(watchdog.Token); } catch (Exception error) { failure = error; }
+                if (revoke) { Check(probing.IsCompleted); Check(!watchdog.IsCancellationRequested); }
                 cancelled = timer is not null && timer.IsCancellationRequested;
             }
             finally { release.TrySetResult(); finished.TrySetResult(); proof.Dispose(); }
             try { await serving; } catch (Exception error) { serverFailure = error; }
             if (revoke)
             {
-                Check(failure is not null && failure is not HttpFixtureDeadlineException);
+                if (!IsRevocationCompletion(probing, failure, probeToken, watchdog.Token))
+                    Console.Error.WriteLine($"Revocation evidence: {scenario}, task={probing.Status}, exception={failure?.GetType().Name}, watchdog={watchdog.IsCancellationRequested}, exceptionTokenCancelled={failure is OperationCanceledException error && error.CancellationToken.IsCancellationRequested}.");
+                Check(IsRevocationCompletion(probing, failure, probeToken, watchdog.Token));
                 Check(cancelled);
             }
             else
