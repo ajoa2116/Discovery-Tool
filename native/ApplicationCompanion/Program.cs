@@ -20,6 +20,7 @@ internal static class Program
         try
         {
             WindowsBoundary.RequireUnelevated();
+            if (args.SequenceEqual(new[] { "--backend-artifact-self-test" })) return BackendArtifactTests.Run();
             if (args.SequenceEqual(new[] { "--launcher-self-test" })) return NativeLauncherTests.Run();
             if (args.SequenceEqual(new[] { "--launcher-owner-loss-test" }))
             { NativeLauncherTests.OwnerLoss().GetAwaiter().GetResult(); return 0; }

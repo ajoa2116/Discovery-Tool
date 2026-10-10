@@ -28,6 +28,8 @@ internal sealed class OwnedChild : IDisposable
     [DllImport("kernel32.dll", SetLastError = true)] private static extern uint ResumeThread(SafeFileHandle thread);
     [DllImport("kernel32.dll", SetLastError = true)] private static extern bool TerminateProcess(SafeFileHandle process, uint code);
     [DllImport("kernel32.dll")] private static extern uint WaitForSingleObject(SafeFileHandle handle, uint milliseconds);
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern bool QueryFullProcessImageName(SafeFileHandle process, uint flags, StringBuilder image, ref uint size);
     private readonly SafeFileHandle processHandle;
     private readonly SafeFileHandle job;
     internal Process Process { get; }
@@ -89,6 +91,16 @@ internal sealed class OwnedChild : IDisposable
         if (!Alive) throw new IOException();
         WindowsBoundary.VerifyPeer(pipe, Process.Id, true);
         if (!Alive) throw new IOException();
+    }
+    internal void VerifyRuntimeIdentity(VerifiedBackendArtifacts artifacts)
+    {
+        if (!Alive) throw new BackendArtifactException("runtime-instance");
+        var image = new StringBuilder(32768); uint size = (uint)image.Capacity;
+        // Ask the kernel through the retained birth-specific process handle, not
+        // a PID lookup or a child-supplied image/entrypoint string.
+        if (!QueryFullProcessImageName(processHandle, 0, image, ref size)) throw new BackendArtifactException("runtime-instance");
+        artifacts.MatchImageFile(image.ToString());
+        if (!Alive) throw new BackendArtifactException("runtime-instance");
     }
     public void Dispose()
     {

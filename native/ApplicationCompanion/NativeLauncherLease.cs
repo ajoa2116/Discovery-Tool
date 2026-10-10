@@ -47,6 +47,10 @@ internal sealed class NativeLauncherLease : IDisposable
         try { child.Verify(pipe); } catch { Revoke("peer"); throw Denied("peer"); }
     }
     private static NativeLauncherException Denied(string reason = "invalid") => new(reason);
+    internal void VerifyRuntimeIdentity(VerifiedBackendArtifacts artifacts)
+    {
+        Check(); child.VerifyRuntimeIdentity(artifacts); Check();
+    }
     internal static async Task<NativeLauncherLease> Start(Guid instance, Guid receipt, long expiresAt,
         CancellationToken owner, string mode = "normal", bool substitutePeer = false)
     {
