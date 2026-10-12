@@ -1,3 +1,4 @@
+import { productionBackendSource } from './support/backend_source.ts';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { createServer } from 'node:http';
@@ -248,7 +249,7 @@ test('idle deadline revocation is observed before watchdog expiry', async () => 
 });
 
 test('foundation remains outside production composition and public request routes', async () => {
-  const source = await readFile(new URL('../server/index.ts', import.meta.url), 'utf8');
+  const source = productionBackendSource();
   assert.doesNotMatch(source, /BackendIdentityHandoff|createBackendInstanceIdentity/);
   assert.match(source, /new ProductionAuthenticationBoundary\(\)/);
 });

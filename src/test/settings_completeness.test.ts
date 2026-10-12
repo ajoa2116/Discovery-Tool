@@ -1,3 +1,4 @@
+import { productionBackendSource } from './support/backend_source.ts';
 import { readFileSync } from 'node:fs';
 import { IncrementalDiscoveryMonitor } from '../core/engine/incremental_discovery_monitor.ts';
 import { projectDb } from '../core/storage/project_db.ts';
@@ -6,7 +7,7 @@ import { APPLICATION_PREFERENCES_KEY, DEFAULT_APPLICATION_PREFERENCES, DEFAULT_V
 
 let passed=0,failed=0;const assert=(value:unknown,name:string)=>{if(value){console.log(`  PASS: ${name}`);passed++}else{console.error(`  FAIL: ${name}`);failed++}};
 class MemoryStorage{data=new Map<string,string>();getItem(key:string){return this.data.get(key)??null}setItem(key:string,value:string){this.data.set(key,value)}}
-const app=readFileSync('src/ui/App.tsx','utf8'),settings=readFileSync('src/ui/components/SettingsMenu.tsx','utf8'),table=readFileSync('src/ui/components/MasterDeviceTable.tsx','utf8'),server=readFileSync('src/server/index.ts','utf8'),diagnostic=readFileSync('src/core/engine/diagnostic_engine.ts','utf8'),projectSource=readFileSync('src/core/storage/project_db.ts','utf8'),reports=readFileSync('src/ui/components/SiteSurveyReportModal.tsx','utf8'),support=readFileSync('src/core/readiness/support_bundle.ts','utf8');
+const app=readFileSync('src/ui/App.tsx','utf8'),settings=readFileSync('src/ui/components/SettingsMenu.tsx','utf8'),table=readFileSync('src/ui/components/MasterDeviceTable.tsx','utf8'),server=productionBackendSource(),diagnostic=readFileSync('src/core/engine/diagnostic_engine.ts','utf8'),projectSource=readFileSync('src/core/storage/project_db.ts','utf8'),reports=readFileSync('src/ui/components/SiteSurveyReportModal.tsx','utf8'),support=readFileSync('src/core/readiness/support_bundle.ts','utf8');
 async function run(){
  const defaults=readApplicationPreferences(null);assert(defaults.monitoringEnabled&&defaults.monitoringCadenceMs===30000&&defaults.newDeviceNotifications&&defaults.browserPreference==='SYSTEM','A/E/I/M/Z authoritative V1 defaults');assert(JSON.stringify(defaults.visibleColumns)===JSON.stringify(['NAME','STATUS','IP','LAST_6','CONFIGURED','SERIAL','NOTES']),'S/V accepted columns and separate Last 6 default');
  const storage=new MemoryStorage();const changed=updateApplicationPreferences(defaults,{monitoringEnabled:false,monitoringCadenceMs:60000,browserPreference:'CHROME',visibleColumns:['NAME','IP']});persistApplicationPreferences(changed,storage);assert(readApplicationPreferences(storage as any).browserPreference==='CHROME'&&readApplicationPreferences(storage as any).monitoringCadenceMs===60000,'B preferences survive reinitialization');

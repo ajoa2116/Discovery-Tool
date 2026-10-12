@@ -56,6 +56,7 @@ internal sealed class VerifiedBackendArtifacts : IDisposable
     private long expiresAt;
     private double lifetime;
     private int terminal, bound;
+    private bool nodeFixtureOnly;
     internal CancellationToken Ended => endedToken;
     internal bool ProductionAuthority => false;
     private VerifiedBackendArtifacts() { endedToken = ended.Token; }
@@ -69,8 +70,17 @@ internal sealed class VerifiedBackendArtifacts : IDisposable
     }
     internal static VerifiedBackendArtifacts Verify(string root, byte[] manifest, byte[] signature,
         BackendReleaseTrust? trust, CancellationToken owner)
+        => VerifyCore(root, manifest, signature, trust, owner, false);
+    // Isolated fixture only: the runtime is the explicitly authorized installed
+    // Node file, not a caller-selected path or an approved production release.
+    internal static VerifiedBackendArtifacts VerifyNodeFixture(string root, byte[] manifest, byte[] signature,
+        BackendReleaseTrust trust, CancellationToken owner)
+        => VerifyCore(root, manifest, signature, trust, owner, true);
+    private static VerifiedBackendArtifacts VerifyCore(string root, byte[] manifest, byte[] signature,
+        BackendReleaseTrust? trust, CancellationToken owner, bool nodeFixture)
     {
         var result = new VerifiedBackendArtifacts();
+        result.nodeFixtureOnly = nodeFixture;
         try
         {
             if (trust is null) throw Denied("trust-root");
@@ -82,7 +92,8 @@ internal sealed class VerifiedBackendArtifacts : IDisposable
             using var document = JsonDocument.Parse(manifest, new JsonDocumentOptions { MaxDepth = 4 });
             var release = document.RootElement;
             Shape(release, "v", "purpose", "releaseId", "expiresAt", "files");
-            if (release.GetProperty("v").GetInt32() != 1 || release.GetProperty("purpose").GetString() != "isolated-runtime-reservation" ||
+            if (release.GetProperty("v").GetInt32() != 1 || release.GetProperty("purpose").GetString() !=
+                (nodeFixture ? "isolated-node-launch-fixture" : "isolated-runtime-reservation") ||
                 !Guid.TryParseExact(release.GetProperty("releaseId").GetString(), "D", out var id) || id == Guid.Empty) throw Denied("manifest");
             long now = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
             result.expiresAt = release.GetProperty("expiresAt").GetInt64();
@@ -111,7 +122,11 @@ internal sealed class VerifiedBackendArtifacts : IDisposable
                 long length = entry.GetProperty("length").GetInt64();
                 if (!System.Text.RegularExpressions.Regex.IsMatch(digest, "^[a-f0-9]{64}$") || length is <= 0 or > 134217728 ||
                     (total += length) > 268435456) throw Denied("manifest");
-                string path = directory;
+                if (nodeFixture && role == "runtime" && (relative != "node.exe" || digest != VerifiedNodeFixture.RuntimeDigest)) throw Denied("runtime-policy");
+                if (nodeFixture && role == "entry" && relative != "node-launch-driver.cjs") throw Denied("manifest");
+                string path = nodeFixture && role == "runtime" ? Path.GetDirectoryName(VerifiedNodeFixture.RuntimePath)! : directory;
+                for (var parent = new DirectoryInfo(path); parent is not null; parent = parent.Parent)
+                    if ((parent.Attributes & FileAttributes.ReparsePoint) != 0) throw Denied("path");
                 foreach (string component in relative.Split('/'))
                 {
                     path = Path.Combine(path, component);
@@ -156,12 +171,28 @@ internal sealed class VerifiedBackendArtifacts : IDisposable
     internal void MatchImageFile(string kernelImagePath)
     {
         Check();
+        MatchImageIdentity(kernelImagePath);
+        Check();
+    }
+    private void MatchImageIdentity(string kernelImagePath)
+    {
         using var loaded = new FileStream(kernelImagePath, FileMode.Open, FileAccess.Read, FileShare.Read);
         var approved = files.Single(file => file.Role == "runtime").File;
         if (!GetFileInformationByHandle(approved.SafeFileHandle, out var expected) ||
             !GetFileInformationByHandle(loaded.SafeFileHandle, out var actual) || expected.Volume != actual.Volume ||
             expected.IndexHigh != actual.IndexHigh || expected.IndexLow != actual.IndexLow) throw Denied("runtime-instance");
-        Check();
+    }
+    // Integrated fixture performs one full Check per liveness check. Retained
+    // identity checks bracket peer verification without rehashing Node repeatedly.
+    internal void MatchNodeFixtureImage(string kernelImagePath)
+    {
+        if (!nodeFixtureOnly) throw Denied("purpose");
+        lock (files) { CheckDeadline(); MatchImageIdentity(kernelImagePath); CheckDeadline(); }
+    }
+    internal void CheckNodeFixtureLifetime()
+    {
+        if (!nodeFixtureOnly) throw Denied("purpose");
+        CheckDeadline();
     }
     internal NativeArtifactReservation Bind(NativeLauncherLease lease, Guid instance, Guid receipt)
     {
@@ -174,6 +205,12 @@ internal sealed class VerifiedBackendArtifacts : IDisposable
             return new NativeArtifactReservation(this, lease);
         }
         catch { Revoke(); throw; }
+    }
+    internal void ClaimNodeFixture()
+    {
+        if (!nodeFixtureOnly) throw Denied("purpose");
+        if (Interlocked.Exchange(ref bound, 1) != 0) throw Denied("replay");
+        Check();
     }
     internal void Revoke()
     {

@@ -47,7 +47,7 @@ async function run() {
   const rejectsCode = async (action: () => Promise<unknown>, code: string) => { try { await action(); return false; } catch (error) { return error instanceof NetworkConfigurationError && error.code === code; } };
   const setup = (adapterService = new FakeAdapterService([adapter(1)]), checker = new FakeChecker(), reachable = true, recovery = new MemoryRecovery()) => {
     const db = new SiteProjectDatabase(); db.createNewProject('Pair Test'); db.upsertDevice(device());
-    return { db, adapterService, checker, recovery, service: new PairService(adapterService, checker, new FakeDiagnostics(reachable), recovery, db) };
+    return { db, adapterService, checker, recovery, service: new PairService(adapterService, checker, new FakeDiagnostics(reachable), recovery, db, {neighbors:{lookup:async()=>null}}) };
   };
 
   const eligibilityAdapters = [adapter(1), adapter(2, { mediaType: 'WIFI' }), adapter(3, { operationalStatus: 'Disconnected', eligible: false, eligibilityReason: 'Disconnected' }), adapter(4, { mediaType: 'OTHER', eligible: false })];

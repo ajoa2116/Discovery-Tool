@@ -1,3 +1,4 @@
+import { productionBackendSource } from './support/backend_source.ts';
 import { readFileSync } from 'node:fs';
 import { Device } from '../types/index.ts';
 import { ProjectReverificationEngine, ProjectReverificationWorkflow } from '../core/engine/reverification.ts';
@@ -38,7 +39,7 @@ async function run(){
   const movedDb=cleanProject([saved]);await workflow(movedDb,[moved]).run();assert(movedDb.getSession().dirty,'P persistent IP change dirties Project');
   const cancelledDb=cleanProject([saved]);let cancelled=false;try{await workflow(cancelledDb,[replacement],'CANCELLED').run()}catch{cancelled=true}assert(cancelled&&cancelledDb.getDevices().length===1&&!cancelledDb.getSession().dirty,'Q cancelled Reverify leaves Project transaction untouched');
   const failedDb=cleanProject([saved]);const failure=new ProjectReverificationWorkflow(failedDb,async()=>{throw new Error('ECONNREFUSED raw')});let safe='';try{await failure.run()}catch(error){safe=(error as Error).message}assert(safe.includes('discovery stopped unexpectedly')&&!safe.includes('ECONNREFUSED')&&failedDb.getProjectMemberDevices().length===1,'R failure is normalized, valid, and retryable');
-  const app=readFileSync('src/ui/App.tsx','utf8'),server=readFileSync('src/server/index.ts','utf8'),pipeline=readFileSync('src/core/engine/pipeline.ts','utf8'),monitor=readFileSync('src/core/engine/incremental_discovery_monitor.ts','utf8');
+  const app=readFileSync('src/ui/App.tsx','utf8'),server=productionBackendSource(),pipeline=readFileSync('src/core/engine/pipeline.ts','utf8'),monitor=readFileSync('src/core/engine/incremental_discovery_monitor.ts','utf8');
   assert(app.includes('setProjectReverifyOpen(true)')&&!/handleScanNetwork\(\);setOpenMenu\(null\)\}\}>Reverify/.test(app)&&app.includes('ProjectReverifyModal'),'S Project menu opens dedicated Reverify workflow');
   assert(app.includes('onClick={handleScanNetwork}')&&server.includes("'/api/discovery', createForegroundDiscoveryRouter") && readFileSync('src/server/foreground_discovery_routes.ts','utf8').includes("router.post('/start'")&&pipeline.includes('runDiscoveryScan'),'T ordinary Quick Scan remains independently wired');
   assert(server.includes('incrementalMonitor.yieldToTechnician()')&&server.includes('reverifyWorkflow?.isRunning()')&&monitor.includes('runNow'),'U incremental monitoring yields and does not conflict with Reverify');

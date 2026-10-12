@@ -1,3 +1,4 @@
+import { productionBackendSource } from './support/backend_source.ts';
 import { readFileSync } from 'node:fs';
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
@@ -45,7 +46,7 @@ async function run(){
  const markup=renderToStaticMarkup(React.createElement(DuplicateDrawer,props as any));
  check(markup.includes('MAC Last 6')&&markup.includes('Not available'),'UI exposes identity and honest missing fields');check(markup.includes('bg-white')&&markup.includes('overflow-y-auto')&&markup.includes('max-h-'),'T37 light, bounded scrolling surface');check(!/Credential|Password|credentialId|secret-value/.test(markup),'T38 no credential material rendered');
  const ui=readFileSync('src/ui/components/DuplicateDrawer.tsx','utf8');check(!/\/apply|\/preview|\/candidates|credentialId|authorizeIsolated/.test(ui),'T09-T11/T29-T32 no adapter/camera/credential operation in assistant');check(ui.includes('/recheck')&&!ui.includes('/rescan'),'Refresh calls functional read-only route');
- const server=readFileSync('src/server/index.ts','utf8');check(server.includes('duplicateAssistantService.recheck')&&server.includes('new DuplicateAssistantService(projectDb,incrementalMonitor)'),'T13 recheck reuses monitor without a new Task');
+ const server=productionBackendSource();check(server.includes('duplicateAssistantService.recheck')&&server.includes('new DuplicateAssistantService(projectDb,incrementalMonitor)'),'T13 recheck reuses monitor without a new Task');
  check(readFileSync('src/ui/components/BrowserModal.tsx','utf8').includes('onOpenDuplicateAssistant'),'T27 blocked access offers assistant route');
  const historyId=db.getCollisions()[0].id;
  db.upsertDevice(camera('A','192.168.1.168'),'DEVICE_ADDED',true);db.upsertDevice(camera('C','192.168.1.169'),'DEVICE_ADDED',true);

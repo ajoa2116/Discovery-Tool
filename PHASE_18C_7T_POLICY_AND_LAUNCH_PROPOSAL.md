@@ -1,0 +1,89 @@
+# Phase 18C.7T — Policy and controlled launch proposal
+
+Prepared October 11, 2026. **TLS custody distinction approved below; remaining release policies are draft. No production activation or authority grant.**
+
+## Approved custody distinction — October 11, 2026
+
+The user approved only this custody distinction and a bounded synthetic HTTPS/WS fixture:
+
+- An ephemeral TLS certificate private key may reside in trusted Node memory. Generate a fresh identity for each backend session; never persist or log its private key. Passing the key through supported Node HTTPS configuration is permitted. Dropping references does not prove erasure of managed strings or OpenSSL memory.
+- Native owner challenges and private bridge secrets remain native. This TLS exception does not permit copying owner challenges, private channel state or native authentication secrets into JavaScript, arguments, environment, logs or fixture results.
+- Release-signing key custody and production activation remain unapproved. The release key is distinct from the ephemeral TLS certificate key. In native-binding item 3, “signing key” means the release-signing key; TLS custody follows this explicit exception.
+
+The fixture must use one actual Node HTTPS server with Express and WebSocket handling on that same listener. Its exact server/WS/session association follows 7Q's one-use, object-identity, deadline and terminal-revocation rules; it grants no authority. Authenticating the native owner to the exact owned Node backend remains pending. Staged dependency closure remains unverified. The production API/WebSocket boundary and camera safety gates stay enabled.
+
+Implemented only in `src/test/support/synthetic_tls_binding.ts`, exercised by `src/test/synthetic_tls_binding.test.ts`. Reuses 7Q's listener registration and `CompanionDeadline` without weakening its genuine owner/receipt checks or inventing a native-authenticated owner. The fixture uses a non-authorizing local session object, one real loopback HTTPS listener, Express and `ws`; the existing bounded native identity generator supplies fresh TLS material through redirected in-memory output. Only the public pin and opaque test operations/state are exposed; no TLS private key is persisted or logged. Native owner/bridge authentication and its exact 7Q owner/receipt association are explicitly pending.
+
+Final focused command `node --import tsx --test --test-concurrency=1 src/test/synthetic_tls_binding.test.ts` passed **13/13 tests** in 12.393 s. Covered fresh pins, HTTP/WS pinned verification, genuine and copied server/WS/session/candidate substitutions, replay, foreign endpoint and wrong-pin denial before synthetic responses/upgrades, production API/WS denial, elapsed/absolute expiry, active-WS cancellation, pending-listen cancellation and startup callback failure. The first run exposed six cleanup assertions observing sockets before their close events; cleanup now awaits actual tracked socket/request/client closure, preserving the zero-resource assertions. Baseline comparison after the final run found **zero residual validation processes and zero new TCP listeners**. No full validation or builds, real service/camera/adapter operations, production authorization, commits or pushes occurred. The historical unexplained native failures remain unresolved.
+
+## Checkpoint and baseline
+
+Inspection confirmed branch `codex/post-field-corrections-1`, HEAD `4bc9704cc9b688f70972ebc0cf50cf61d1f9ae4b`, initially clean working tree, and the same live GitHub branch tip. No checkpoint differences were found. The prior checkpoint records 457 passing automated tests and successful TypeScript, production, three native Release builds, and native security checks. Those checks were not rerun for this documentation-only preparation.
+
+No AGENTS.md was found in the checkout or its parent directories. No standalone Master Blueprint v1.1 was found in the checkout; 7Q/7R/7S record the same limitation. Existing implemented contracts and reports are the available baseline; this proposal cannot establish conformity with unavailable blueprint text. Any additional blueprint requirement must be reconciled before implementation.
+
+Relevant evidence: 18A security inventory; 7G session lifetime; 7K exact endpoint binding; 7P production denial; 7Q exact process-local identity; 7R native launch ownership; 7S artifact verification; Windows deployment readiness and 17E deployment/privilege gates. Older deployment descriptions of unauthenticated API availability are historical; 7P is the current production boundary.
+
+Today `BackendReleaseTrust.Production` is null. Artifact/reservation and 7Q candidate results explicitly grant no production authority. Production constructs `ProductionAuthenticationBoundary()` without an owner. The startup script runs `process.execPath --import tsx src/server/index.ts`, inheriting the parent environment. Native OwnedChild launches only same-image fixture peers; its current process creation also inherits the environment. None of these paths verifies production Node provenance.
+
+## Decisions requiring approval
+
+All values below are proposals, not accepted defaults.
+
+| Decision | Concrete proposal | Approval needed |
+| --- | --- | --- |
+| Release authority | Omar is the initial release approver. One dedicated RSA-3072 release key signs exact manifest bytes with RSA-PSS/SHA-256. Keep its private key offline in hardware-backed custody; never in the repository, application, or ordinary build job. Pin the public key and its SHA-256 fingerprint in the verified native owner. | Approve authority, algorithm and custody; identify the actual key/fingerprint before provisioning. No key is generated here. |
+| Distribution trust | Authenticode-sign installer/native owner/native bridge through a separately selected certificate provider. Embed the release trust root in that protected owner; manifests cannot nominate trust keys. An installer/update must authenticate the owner itself, not merely let a replaceable executable check its own signature. | Approve installer/code-signing ownership and certificate procurement separately. |
+| Runtime and payload | Bundle one exact tested Windows x64 Node release from authenticated upstream distribution, with pinned hash/version and provenance evidence. Build backend JavaScript ahead of release; exclude runtime tsx and npm/network installation. Package an explicit inventory of all executable and runtime-loaded dependencies. | Approve packaging direction. Exact Node version, dependency inventory and digests require a subsequent concrete release review; the locally installed Node is not automatically approved. |
+| Storage and privilege | Administrator-installed, versioned local fixed-disk payload under Program Files, with ordinary users denied modification of files and ancestor directories. Normal owner/backend run unelevated in the same interactive logon; mutable projects/recovery data remain outside executable storage. Updates occur while the app is stopped. | Approve an administrative install/update step. This does not authorize elevation or installer execution now. User-writable portable production distribution is excluded from this proposal. |
+| Expiry, rollback and offline use | Initial release approval expires 90 days after signing. Use a monotonically increasing release sequence; refuse releases below an administrator-protected installed minimum. Key rotation and revocation arrive through authenticated manual updates; no manifest-provided key or automatic network updater. | Approve 90-day offline limit, rollback refusal and manual updates. Offline machines cannot learn of a new revocation until updated; expired releases refuse launch. |
+| Launch versus release lifetime | A release manifest is reusable until expiry/revocation. Each launch has a fresh one-use reservation and native receipt, bounded by the existing three-second startup and ten-second handoff limits. Preserve existing session/heartbeat limits; do not turn a ten-second fixture approval into a long-lived session. | Approve this separation. Implement a distinct production manifest/state contract; leave the existing isolated one-use 7S fixture schema intact. |
+| Supported threat boundary | Trust reviewed executable code and Windows kernel/system components. Protected installation plus controlled loading must prevent ordinary payload substitution. Administrator/kernel compromise and successful arbitrary in-process injection are outside this application-level proof. | Confirm this boundary. If resisting hostile same-user process injection is required, establish OS-enforced process/code isolation first; signatures, pipes and Node flags alone do not satisfy it. |
+
+The signed production manifest must bind schema/purpose, product, architecture, release sequence/ID, validity interval, exact Node/bridge versions, protocol compatibility, controlled entrypoint/launch configuration, and file roles/lengths/hashes. Reject unknown/duplicate fields, role/path ambiguity and extra loadable files. Preserve existing bounds until the actual inventory proves they are sufficient; exceeding 64 files/256 MiB requires explicit review rather than silent expansion. Key identifiers select only already pinned keys.
+
+## Complete execution closure still to prove
+
+1. Produce a deterministic build inventory from package-lock and actual output, with upstream provenance, dependency/license review and reproducibility evidence. Hashes prove correspondence to approved bytes; they do not establish that the approver selected safe code.
+2. Trace static and dynamic imports, package export conditions, Node built-ins and native DLL loading. Include sql.js runtime assets if selected by the production graph, compiled backend modules, package metadata controlling resolution, frontend/static assets, native host/bridge assemblies and their runtime dependencies. Bundling does not automatically close dynamic imports, WASM or native addons.
+3. Enumerate subprocess paths: current code invokes PowerShell, ping/network helpers and native hosts; `scripts/observe-windows-receive.ps1` is a file-based executable input. Pin app-owned scripts/binaries and arguments. Define supported Windows/system binary provenance and absolute resolution separately; do not claim every OS binary is covered by the app manifest. No physical helper operation is exercised in 7T.
+4. Separate data from code. Projects, vault references and recovery records must never select modules, preload code, native libraries or subprocess executables. Sign security-relevant loading/configuration inputs.
+5. Replace inherited launch state with an explicit environment/argument allowlist and protected working directory. Exclude NODE_OPTIONS/NODE_PATH, inspection/debug/preload flags, module/compile caches and external configuration loading unless explicitly reviewed. Review PATH, DLL search, certificate/OpenSSL configuration and writable temporary locations. Never copy bearer/challenge credentials into environment or arguments.
+6. Close check-to-launch races: verify protected ancestors and file identities, retain measured handles, block replacement, remeasure at use, verify the suspended child's kernel image through its retained birth-specific handle, and prove the child can load only the approved graph. Path/file-ID comparison alone is not mapped-code attestation. Test junctions, hard-link aliases, ancestor replacement and pre-existing writable mappings; unsupported conditions deny launch.
+
+## Native owner and exact backend binding
+
+Recommended design to prove, not an existing capability:
+
+1. The verified unelevated native owner validates the approved release and creates a logon-scoped, first-instance, remote-rejecting private pipe before backend creation. Use a fully qualified approved executable, explicit environment/working directory and no shell. Create suspended and atomically assign the kill-on-close Job; retain process/thread/job handles, verify membership/image/loading conditions before resume, and terminate on any incomplete step. Do not relax the same-image fixture verifier: implement a separate production verifier using approved Node image and owned process provenance.
+2. A signed, inventoried native Node bridge inside that owned backend performs bilateral kernel pipe-peer/token/session checks. The owner compares the actual client to its retained owned process; the bridge authenticates the exact live native owner and its approved image. A helper outside the backend cannot alone prove Node owns the channel. Startup routing metadata is nonsecret and confers no authority.
+3. The bridge keeps fresh challenges and private channel state in native memory, binds a one-use launch receipt to release measurement, exact owner/backend lifetimes and protocol/session generation, and rejects replay/foreign owners. JavaScript receives only an opaque nonsecret handle and terminal lifecycle observation; no challenge, signing key or browser credential. APIs accepting caller PID/port/GUID proof are prohibited.
+4. Trusted backend composition creates and retains the exact 7Q owner, active receipt and listener references in private state. Associate the bridge handle once with those exact objects; copied metadata cannot register another listener. This relies on the verified backend code being trusted, as 7Q does; it is not protection from malicious code already inside Node. Bridge support for this mapping must be demonstrated in a non-authorizing fixture before production composition changes.
+5. Preserve exact endpoint ownership and native TLS pinning. A future production TLS listener must be created by trusted composition, bound privately to that listener/session lifetime and authenticated over the verified channel. Its port and pin must never come from browser input or a public registration route. Perform a private endpoint possession check before any credential attachment; port occupancy or stdout readiness is insufficient. The supported mechanism for listener/TLS binding is a required feasibility deliverable, not assumed solved by a GUID handshake. Existing plaintext production startup is not promoted to the pinned native transport.
+
+7T should deliver the release tooling/verification contract after policy approval, controlled launch foundation, and a non-authorizing bridge/listener proof. **Keep the production boundary owner absent.** Real production request/event transport, approved Origin/destination composition and cooperative cancellation/rechecks before physical side effects remain further activation prerequisites. Camera launch gates remain independently enabled. Successful backend launch is not authorization to use its API or operate devices.
+
+## Failure handling and evidence
+
+Publish terminal denial before callbacks or cleanup. Signature, closure, provenance, ACL, image, job, bridge, handshake, listener/pin, clock, cancellation or deadline failure must revoke the candidate and collect only owned children. Owner exit, backend death, channel loss, listener closure, logout and expiry permanently terminate the association. Never recycle a receipt, revive a listener by port reuse, kill an unrelated port occupant, or fall back to direct Node startup. Dispose handles, pipe endpoints, timers/listeners, pending sockets and native secret buffers; preserve project/adapter recovery records. Managed-string erasure is not claimed. Retain current generic external errors and resource/time limits.
+
+Required tests start with valid live controls, then demand the intended classified rejection:
+
+- Foreign/revoked signer, expired/rollback release, duplicate fields, wrong purpose/architecture/protocol, tampered/missing/extra files, dependency/WASM/native-host substitution and unsupported inventory bounds.
+- Environment/preload/DLL search injection, mutable storage/ancestor races, retained-file replacement, wrong executable/entrypoint, elevated/wrong-logon peers, atomic assignment failure, resume failure and timeout at every startup stage.
+- Actual independent/substituted peers, PID reuse/process replacement, foreign owner, copied/replayed/expired receipt, wrong local owner/session/listener references, same-port listener replacement, wrong TLS pin and late readiness.
+- Cancellation, delayed timer delivery and wall-clock changes; native owner crash, backend crash, pipe loss, logout and listener loss both before and after binding. Observe real child exits and zero surviving owned descendants/listeners. A watchdog timeout is failure, not revocation evidence.
+- Production API/WS remain default-deny, no secret exposure through JS/URLs/arguments/environment/logs/errors, and camera gates unchanged.
+
+After implementation: focused native/Node tests, TypeScript and production build, affected native Release builds, then one complete regression and all three native builds at the integrated checkpoint. No cameras/adapters/configuration changes or production activation are authorized by this proposal.
+
+## Technical references
+
+These references inform the proposed controls; they do not approve any runtime version:
+
+- [Node CLI](https://nodejs.org/api/cli.html): environment and preload/loader options require explicit launch control.
+- [Node permission model](https://nodejs.org/api/permissions.html): permission flags are not protection against malicious in-process code.
+- [Windows CreateProcessW](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessw): explicit executable, environment and working-directory control.
+- [Windows DLL search order](https://learn.microsoft.com/en-us/windows/win32/dlls/dynamic-link-library-search-order): executable verification alone does not close library resolution.
+
+Only this draft was added. No source, policy key, manifest approval, production launch, build/test execution, commit or push occurred during preparation.

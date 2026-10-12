@@ -39,7 +39,7 @@ async function run(){
   const checker={check:async(ip:string)=>{checked.push(ip);return {availability:ip==='192.168.1.137'?'OCCUPIED' as const:'AVAILABLE' as const,evidence:['Deterministic software check']}}};
   projectDb.upsertDevice({...fieldCamera(),id:'known',anchor:{macAddress:'00:11:22:33:44:88',vendor:'Unknown'},network:{...fieldCamera().network,ipAddress:'192.168.1.174'}});
   const recovery={load:async()=>saved,save:async(value:PairSessionState)=>{saves++;saved=structuredClone(value)},clear:async()=>{saved=null}};
-  const pair=new PairService(adapters,checker,diagnostics,recovery,projectDb);
+  const pair=new PairService(adapters,checker,diagnostics,recovery,projectDb,{neighbors:{lookup:async()=>null}});
   const eligible=await pair.getEligibility(manual.id);
   a(canOfferPair(eligible)&&eligible.sessionVerification==='NOT_VERIFIED'&&mutations===0,'fresh Pair eligibility is read-only and needs no live verification');
   const preview=await pair.prepare(manual.id,8);
@@ -60,7 +60,7 @@ async function run(){
   a(projectDb.getDeviceById(manual.id)?.status==='DIFFERENT_SUBNET','Restore refreshes network relationship');
   const blockedDb=new SiteProjectDatabase();blockedDb.startQuickWork();
   blockedDb.upsertDevice({...fieldCamera(),network:{...fieldCamera().network,ipAddress:'192.168.0.124'}});
-  const blockedPair=new PairService(adapters,checker,diagnostics,recovery,blockedDb);
+  const blockedPair=new PairService(adapters,checker,diagnostics,recovery,blockedDb,{neighbors:{lookup:async()=>null}});
   a(await rejects(()=>blockedPair.prepare(fieldCamera().id,8)),'backend rejects local-host Pair preparation');
   blockedDb.startQuickWork();blockedDb.upsertDevice(fieldCamera());
   const duplicatePreview=await blockedPair.prepare(fieldCamera().id,8);

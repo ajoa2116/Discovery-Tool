@@ -1,3 +1,4 @@
+import { productionBackendSource } from './support/backend_source.ts';
 import assert from 'node:assert/strict';
 import express from 'express';
 import {TaskManager,TASK_PHASES} from '../core/tasks/task_manager.ts';
@@ -140,7 +141,7 @@ try{
  }
  const noCancel=await post(`/api/tasks/${encodeURIComponent(httpTasks.snapshot().tasks[0].id)}/cancel`);check(noCancel.status===409,'finished task cannot pretend to cancel');
 }finally{server.closeAllConnections();await new Promise<void>(r=>server.close(()=>r()));}
-const source=readFileSync('src/server/index.ts','utf8');
+const source=productionBackendSource();
 check(source.includes('finishDiagnostic()')&&source.includes("tasks.begin('DIAGNOSTICS'"),'accepted diagnostics explicitly observes eventual completion');
 check(source.includes('tasks:tasks.snapshot()'),'support bundle includes bounded safe task snapshot');
 check(!readFileSync('src/core/tasks/task_manager.ts','utf8').includes('factory_credentials'),'factory hint values excluded from task model');

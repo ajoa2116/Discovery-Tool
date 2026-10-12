@@ -1,3 +1,4 @@
+import { productionBackendSource } from './support/backend_source.ts';
 import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -60,7 +61,7 @@ async function run(){
   const pairUi=readFileSync(new URL('../ui/components/PairNetworkModal.tsx',import.meta.url),'utf8'),networkUi=readFileSync(new URL('../ui/components/NetworkAdapterModal.tsx',import.meta.url),'utf8');
   check(pairUi.includes('Keep Current')&&networkUi.includes('Keep Current'),'both retained workflows expose Keep Current');
   check(pairUi.includes('onClick={onClose}')&&networkUi.includes('onClose'),'modal dismissal remains independent of Restore');
-  const server=readFileSync(new URL('../server/index.ts',import.meta.url),'utf8');
+  const server=productionBackendSource();
   check((server.match(/pairService\.restore\(/g)||[]).length===1&&server.includes("app.post('/api/pair/restore'"),'T13 scan/save/save-as/project/exit have no implicit restore call');
   const root=await mkdtemp(join(tmpdir(),'cctv-retained-'));
   try {

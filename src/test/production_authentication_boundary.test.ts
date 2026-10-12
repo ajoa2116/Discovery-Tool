@@ -1,3 +1,4 @@
+import { productionBackendSource } from './support/backend_source.ts';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { getEventListeners } from 'node:events';
@@ -271,7 +272,7 @@ test('revocation during upgrade rechecks authority before admitting any subscrip
 });
 
 test('production registration closes all API prefixes before every side-effect middleware', async () => {
-  const source = await readFile(new URL('../server/index.ts', import.meta.url), 'utf8');
+  const source = productionBackendSource();
   assert.match(source, /const authentication = new ProductionAuthenticationBoundary\(\);\s*app\.use\('\/api', authentication\.http\);/);
   const gate = source.indexOf("app.use('/api', authentication.http)");
   assert.ok(gate > source.indexOf('app.use(validateHttpHost)'));

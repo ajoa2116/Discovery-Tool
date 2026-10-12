@@ -1,3 +1,5 @@
+import { Phase1Topology } from '../core/engine/phase1_topology.ts';
+import { fieldNic } from './support/first_camera_field.ts';
 import { appStateDb } from '../core/storage/app_db.ts';
 import { projectDb } from '../core/storage/project_db.ts';
 import { osVault } from '../core/storage/vault.ts';
@@ -68,7 +70,9 @@ async function runTests() {
 
   // 4. 6-Phase Pipeline Execution
   console.log('\n[Test Suite 4: 6-Phase Batch Execution Sequence]');
-  await pipelineEngine.runFullPipeline();
+  const topology = Phase1Topology.execute;
+  Phase1Topology.execute = async () => ({interfaces:[fieldNic()],logs:['Synthetic test topology']});
+  try { await pipelineEngine.runFullPipeline(); } finally { Phase1Topology.execute = topology; }
   const phases = pipelineEngine.getStates();
   assert(phases.every(p => p.status === 'COMPLETED'), 'All 6 phases completed');
   

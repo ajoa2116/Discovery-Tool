@@ -1,3 +1,4 @@
+import { productionBackendSource } from './support/backend_source.ts';
 import { readFileSync } from 'node:fs';
 import { SiteProjectDatabase } from '../core/storage/project_db.ts';
 import { Device } from '../types/index.ts';
@@ -33,7 +34,7 @@ const currentOnly=project.upsertDevice({...projectA,lastSeenAt:'rediscovered'});
 assert(!project.getProject().devices.some(value=>value.id===projectA.id),'separate Project removal does not clear current-list suppression');project.rediscoverManuallyRemoved();project.restoreDiscoveredDevice(currentOnly);assert(project.getProject().devices.some(value=>value.id===projectA.id),'explicit Rediscover permits Project-removed live device');
 assert(!JSON.parse(project.exportProjectJson()).project.devices.some((value:Device)=>value.id===projectA.id),'rediscovery does not silently re-add removed Project membership');
 
-const server=readFileSync('src/server/index.ts','utf8'),dialog=readFileSync('src/ui/components/DeviceRemovalDialog.tsx','utf8'),menu=readFileSync('src/ui/components/FloatingDeviceActionsMenu.tsx','utf8');
+const server=productionBackendSource(),dialog=readFileSync('src/ui/components/DeviceRemovalDialog.tsx','utf8'),menu=readFileSync('src/ui/components/FloatingDeviceActionsMenu.tsx','utf8');
 assert(server.includes('removeDeviceFromCurrentList')&&server.includes('removeDeviceFromProject'),'server exposes distinct current-list and Project removal paths');
 assert(!server.match(/remove-(?:current|project)[\s\S]{0,500}(?:cameraNetwork|osVault|applyTemporary|configure)/),'removal routes perform no camera, adapter, credential, or network mutation');
 assert(dialog.includes('This does not change or delete the physical device.')&&dialog.includes('role="alertdialog"'),'confirmation truthfully distinguishes list removal from physical deletion');

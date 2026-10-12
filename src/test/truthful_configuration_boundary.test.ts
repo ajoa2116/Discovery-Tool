@@ -1,3 +1,4 @@
+import { productionBackendSource } from './support/backend_source.ts';
 import { readFileSync } from 'node:fs';
 import { LegacyConfigurationBoundary } from '../core/network/legacy_configuration_boundary.ts';
 import { CameraConfigurationError, CameraConfigurationProvider, CameraConfigurationService } from '../core/network/camera_configuration_service.ts';
@@ -26,7 +27,7 @@ async function run(){
   db.upsertDevice(device('other','192.168.1.20','aa:bb:cc:dd:ee:ff'));const ambiguous=boundary.read('camera');assert(ambiguous.status==='NEEDS_ATTENTION'&&ambiguous.message.includes('Duplicate Assistant'),'F duplicated IP returns explicit ambiguous identity state');
   assert(await rejects(()=>service.inspect('camera',ref.id),'Duplicate IP'),'P modern configuration preserves Duplicate Assistant protection');
   db.removeDeviceFromProject('other');await service.inspect('camera',ref.id);assert(provider.seen==='camera','G authenticated configuration resolves the requested stable ID');
-  const server=readFileSync('src/server/index.ts','utf8'),onvif=readFileSync('src/core/drivers/onvif.ts','utf8');assert(onvif.includes('createDefaultOnvifConfig')&&!server.includes('createDefaultOnvifConfig'),'H default helper remains internal and is never served as current state');
+  const server=productionBackendSource(),onvif=readFileSync('src/core/drivers/onvif.ts','utf8');assert(onvif.includes('createDefaultOnvifConfig')&&!server.includes('createDefaultOnvifConfig'),'H default helper remains internal and is never served as current state');
   const before=JSON.stringify(db.getDeviceById('camera'));assert(await rejects(()=>boundary.updateLocalMetadata('camera',{onvifConfig:{},manufacturerParams:{}}),'cannot change physical camera'),'I legacy write cannot locally simulate a camera write');assert(JSON.stringify(db.getDeviceById('camera'))===before,'I rejected legacy physical write leaves device unchanged');
   const updated=boundary.updateLocalMetadata('camera',{technician:{name:'Lobby',location:'North',notes:'Local only'}});assert(updated.technician?.name==='Lobby'&&updated.technician.notes==='Local only','J local technician Name/Location/Notes editing remains functional');
   const project=JSON.parse(db.exportProjectJson());assert(!project.project.devices[0].onvifConfig&&!JSON.stringify(project).includes('pool.ntp.org'),'K Project save contains no synthetic camera configuration');

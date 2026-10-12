@@ -6,10 +6,11 @@ namespace ApplicationCompanion;
 
 internal static class NativeLauncherTests
 {
-    internal static int Run()
+    internal static int Run(bool diagnostics = false)
     {
-        try { RunAsync().GetAwaiter().GetResult(); return 0; }
-        catch { Console.Error.WriteLine("Native launcher self-test failed."); return 1; }
+        var trace = new NativeSelfTestTrace("launcher", diagnostics);
+        try { RunAsync(trace).GetAwaiter().GetResult(); trace.Report(); return 0; }
+        catch (Exception error) { trace.Report(error); return 1; }
     }
     internal static async Task OwnerLoss()
     {
@@ -20,22 +21,23 @@ internal static class NativeLauncherTests
         Environment.Exit(0);
     }
     private static long Expiry(int duration = 10000) => DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() + duration;
-    private static async Task RunAsync()
+    private static async Task RunAsync(NativeSelfTestTrace trace)
     {
         int checks = 0, cases = 0;
-        void Check(bool value) { if (!value) throw new IOException(); checks++; }
+        void Check(bool value, [System.Runtime.CompilerServices.CallerLineNumber] int line = 0) { trace.Check(value, line); checks++; }
         bool Alive(int pid) { try { using var p = Process.GetProcessById(pid); return !p.HasExited; } catch (ArgumentException) { return false; } }
-        async Task Deny(string reason, Func<Task<NativeLauncherLease>> create)
+        async Task Deny(string reason, Func<Task<NativeLauncherLease>> create, [System.Runtime.CompilerServices.CallerLineNumber] int line = 0)
         {
-            bool denied = false;
+            bool denied = false; string actual = "accepted"; trace.Step("deny", line);
             try { using var unexpected = await create(); }
-            catch (NativeLauncherException failure) { denied = failure.Reason == reason; }
-            Check(denied); cases++;
+            catch (NativeLauncherException failure) { actual = failure.Reason; denied = actual == reason; }
+            trace.Denial(reason, actual, line); Check(denied, line); cases++;
         }
         using var owner = new CancellationTokenSource();
         Guid instance = Guid.NewGuid(), receipt = Guid.NewGuid();
         // Test the reused real ACL/first-instance primitive.
         string name = WindowsBoundary.NewPipeName();
+        trace.Step("acquire-or-wait");
         using (var pipe = WindowsBoundary.CreatePipe(name))
         {
             var descriptor = WindowsBoundary.Descriptor(pipe);
@@ -48,6 +50,7 @@ internal static class NativeLauncherTests
         // A real connected kernel server is required, even when another same-image
         // native owner has the right session/logon identity and is still alive.
         string ownerPipe = WindowsBoundary.NewPipeName();
+        trace.Step("acquire-or-wait");
         using (var server = WindowsBoundary.CreatePipe(ownerPipe))
         using (var foreignOwner = OwnedChild.StartLauncherPeer(WindowsBoundary.NewPipeName(), "no-connect"))
         {
@@ -59,6 +62,7 @@ internal static class NativeLauncherTests
             catch (IOException failure) { rejected = failure.Message == "PIPE_PEER_REJECTED"; }
             Check(rejected); cases++;
         }
+        trace.Step("acquire-or-wait");
         using (var lease = await NativeLauncherLease.Start(instance, receipt, Expiry(), owner.Token))
         {
             lease.Check(); Check(lease.InstanceId == instance && lease.ReceiptId == receipt);
@@ -83,6 +87,7 @@ internal static class NativeLauncherTests
         {
             using var lease = await Launch(mode);
             int pid = lease.PeerPid;
+            trace.Step("acquire-or-wait");
             await lease.Completion.WaitAsync(TimeSpan.FromSeconds(4));
             Check(lease.Ended.IsCancellationRequested); Check(lease.EndReason == (mode == "replay" ? "replay" : "channel"));
             Check(!Alive(pid)); cases++;
@@ -95,9 +100,11 @@ internal static class NativeLauncherTests
             lifetime.Cancel(); await lease.Completion.WaitAsync(TimeSpan.FromSeconds(4));
             Check(lease.EndReason == "owner"); Check(reentrantDenied); Check(!Alive(pid)); cases++;
         }
+        trace.Step("acquire-or-wait");
         using (var lease = await Launch())
         {
             int pid = lease.PeerPid; using (var peer = Process.GetProcessById(pid)) peer.Kill();
+            trace.Step("acquire-or-wait");
             await lease.Completion.WaitAsync(TimeSpan.FromSeconds(4));
             Check(lease.Ended.IsCancellationRequested); Check(lease.EndReason == "channel"); Check(!Alive(pid)); cases++;
         }
@@ -105,15 +112,18 @@ internal static class NativeLauncherTests
         using (var cancelled = new CancellationTokenSource(300))
         { await Deny("owner", () => NativeLauncherLease.Start(Guid.NewGuid(), Guid.NewGuid(), Expiry(), cancelled.Token, "no-connect")); }
         await Deny("expiry", () => Launch("stall"));
+        trace.Step("acquire-or-wait");
         using (var lease = await NativeLauncherLease.Start(Guid.NewGuid(), Guid.NewGuid(), Expiry(2000), owner.Token))
         {
             int pid = lease.PeerPid;
+            trace.Step("acquire-or-wait");
             await lease.Completion.WaitAsync(TimeSpan.FromSeconds(4));
             Check(lease.Ended.IsCancellationRequested); Check(lease.EndReason == "expiry"); Check(!Alive(pid)); cases++;
         }
         // Second native owner verifies the kernel job handles close on abrupt owner loss.
         var start = new ProcessStartInfo(Environment.ProcessPath!, "--launcher-owner-loss-test")
         { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true };
+        trace.Step("acquire-or-wait");
         using (var crashedOwner = Process.Start(start)!)
         {
             string pidLine = await crashedOwner.StandardOutput.ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(5)) ?? "";

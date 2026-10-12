@@ -79,7 +79,7 @@ test('wire requests are rejected before downstream middleware; API and assets re
 });
 
 test('production registration precedes all other Express middleware and Vite API proxy rewrites Host', async () => {
-  const source = await readFile(new URL('../server/index.ts', import.meta.url), 'utf8');
+  const source = await readFile(new URL('../server/backend_application.ts', import.meta.url), 'utf8');
   assert.match(source, /const app = express\(\);\s*app\.use\(validateHttpHost\);/);
   const vite = await readFile(new URL('../../vite.config.ts', import.meta.url), 'utf8');
   assert.match(vite, /'\/api':\s*\{\s*target: 'http:\/\/localhost:3001',\s*changeOrigin: true/);

@@ -7,20 +7,21 @@ namespace ApplicationCompanion;
 
 internal static class BackendArtifactTests
 {
-    internal static int Run()
+    internal static int Run(bool diagnostics = false)
     {
-        try { RunAsync().GetAwaiter().GetResult(); return 0; }
-        catch { Console.Error.WriteLine("Backend artifact self-test failed."); return 1; }
+        var trace = new NativeSelfTestTrace("artifact", diagnostics);
+        try { RunAsync(trace).GetAwaiter().GetResult(); trace.Report(); return 0; }
+        catch (Exception error) { trace.Report(error); return 1; }
     }
-    private static async Task RunAsync()
+    private static async Task RunAsync(NativeSelfTestTrace trace)
     {
         int checks = 0, cases = 0;
-        void Check(bool value) { if (!value) throw new IOException(); checks++; }
-        void Deny(string reason, Action action)
+        void Check(bool value, [System.Runtime.CompilerServices.CallerLineNumber] int line = 0) { trace.Check(value, line); checks++; }
+        void Deny(string reason, Action action, [System.Runtime.CompilerServices.CallerLineNumber] int line = 0)
         {
-            bool denied = false;
-            try { action(); } catch (BackendArtifactException failure) { denied = failure.Reason == reason; }
-            Check(denied);
+            bool denied = false; string actual = "accepted"; trace.Step("deny", line);
+            try { action(); } catch (BackendArtifactException failure) { actual = failure.Reason; denied = actual == reason; }
+            trace.Denial(reason, actual, line); Check(denied, line);
         }
         long Expiry(int duration = 10000) => DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() + duration;
         using var signer = RSA.Create(2048); using var attacker = RSA.Create(2048);
@@ -47,6 +48,7 @@ internal static class BackendArtifactTests
             Deny("signature", () => VerifiedBackendArtifacts.Verify(root, approval, forged, trust, CancellationToken.None)); cases++;
             var tampered = (byte[])approval.Clone(); tampered[^2] ^= 1;
             Deny("signature", () => VerifiedBackendArtifacts.Verify(root, tampered, signature, trust, CancellationToken.None)); cases++;
+            trace.Step("acquire-or-wait");
             using (var verified = VerifiedBackendArtifacts.Verify(root, approval, signature, trust, CancellationToken.None))
             {
                 verified.Check(); Check(!verified.ProductionAuthority); Check(!verified.Ended.IsCancellationRequested);
@@ -114,6 +116,7 @@ internal static class BackendArtifactTests
             // A signed copy of the exact executable bytes still has the wrong kernel file identity.
             File.Copy(Environment.ProcessPath!, Path.Combine(root, "runtime.bin"), true);
             approval = Manifest(root);
+            trace.Step("acquire-or-wait");
             using (var verified = VerifiedBackendArtifacts.Verify(root, approval, Sign(approval), trust, CancellationToken.None))
             using (var lease = await Launch(CancellationToken.None))
             {
@@ -123,6 +126,7 @@ internal static class BackendArtifactTests
             }
             foreach (bool wrongReceipt in new[] { false, true })
             {
+                trace.Step("acquire-or-wait");
                 approval = NativeApproval();
                 using var verified = VerifiedBackendArtifacts.Verify(imageRoot, approval, Sign(approval), trust, CancellationToken.None);
                 using var lease = await Launch(CancellationToken.None);
@@ -130,43 +134,53 @@ internal static class BackendArtifactTests
                 Check(verified.Ended.IsCancellationRequested); lease.Check();
             }
             cases++;
+            trace.Step("acquire-or-wait");
             approval = NativeApproval();
+            trace.Step("acquire-or-wait");
             using (var verified = VerifiedBackendArtifacts.Verify(imageRoot, approval, Sign(approval), trust, CancellationToken.None))
             using (var lease = await Launch(CancellationToken.None))
             using (var reservation = verified.Bind(lease, lease.InstanceId, lease.ReceiptId))
             {
                 reservation.Check(); Check(!reservation.ProductionAuthority); Check(!lease.Ended.IsCancellationRequested);
                 Deny("replay", () => verified.Bind(lease, lease.InstanceId, lease.ReceiptId));
+                trace.Step("acquire-or-wait");
                 await lease.Completion.WaitAsync(TimeSpan.FromSeconds(4)); Check(lease.Ended.IsCancellationRequested); cases++;
             }
             // Both directions of lifetime loss: cancellation of files or native owner.
             foreach (bool cancelArtifacts in new[] { false, true })
             {
                 using var artifactOwner = new CancellationTokenSource(); using var nativeOwner = new CancellationTokenSource();
+                trace.Step("acquire-or-wait");
                 approval = NativeApproval();
                 using var verified = VerifiedBackendArtifacts.Verify(imageRoot, approval, Sign(approval), trust, artifactOwner.Token);
                 using var lease = await Launch(nativeOwner.Token);
                 using var reservation = verified.Bind(lease, lease.InstanceId, lease.ReceiptId);
                 reservation.Check();
                 (cancelArtifacts ? artifactOwner : nativeOwner).Cancel();
+                trace.Step("acquire-or-wait");
                 await lease.Completion.WaitAsync(TimeSpan.FromSeconds(4));
                 Check(verified.Ended.IsCancellationRequested && lease.Ended.IsCancellationRequested);
                 Check(lease.EndReason == (cancelArtifacts ? "artifacts" : "owner"));
                 Deny("expiry", reservation.Check);
             }
             cases++;
+            trace.Step("acquire-or-wait");
             approval = NativeApproval();
+            trace.Step("acquire-or-wait");
             using (var verified = VerifiedBackendArtifacts.Verify(imageRoot, approval, Sign(approval), trust, CancellationToken.None))
             using (var lease = await Launch(CancellationToken.None))
             using (var reservation = verified.Bind(lease, lease.InstanceId, lease.ReceiptId))
             {
                 using (var peer = Process.GetProcessById(lease.PeerPid)) peer.Kill();
+                trace.Step("acquire-or-wait");
                 await lease.Completion.WaitAsync(TimeSpan.FromSeconds(4));
                 using var replacement = await Launch(CancellationToken.None);
                 replacement.Check(); Check(verified.Ended.IsCancellationRequested);
                 Deny("expiry", reservation.Check); replacement.Check(); cases++;
             }
+            trace.Step("acquire-or-wait");
             approval = Manifest(root, duration: 600);
+            trace.Step("acquire-or-wait");
             using (var verified = VerifiedBackendArtifacts.Verify(root, approval, Sign(approval), trust, CancellationToken.None))
             {
                 var lost = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);

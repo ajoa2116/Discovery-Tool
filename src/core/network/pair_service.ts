@@ -100,6 +100,8 @@ function snapshotFingerprint(snapshot: WindowsAdapterSnapshot): string {
 }
 
 export class PairService {
+  private recoveryPersistence: 'unverified'|'pending'|'absent'|'retained'|'cleared'|'failed' = 'unverified';
+  getRecoveryPersistence() { return this.recoveryPersistence; }
   private session: PairSessionState | null = null;
   private retainedBeforeMatch:PairSessionState|null=null;
   private recoveryInspecting=false;
@@ -117,16 +119,23 @@ export class PairService {
     private readonly verificationOptions: {windowMs?:number;settleMs?:number;neighbors?:NeighborProvider;matchCheckerFactory?:(adapter:WindowsAdapterSnapshot,localAddress:string)=>CandidateAddressChecker;changed?:(state:PairSessionState)=>void} = {},
   ) {}
 
-  async initializeRecovery(): Promise<PairSessionState | null> {
-    if(this.mutationPending||this.recoveryInspecting)throw new NetworkConfigurationError('Recovery operation already in progress.','PAIR_OPERATION_ACTIVE');
+  async initializeRecovery(signal?: AbortSignal): Promise<PairSessionState | null> {
+    signal?.throwIfAborted();
+    if(this.mutationPending||this.recoveryInspecting||this.networkPreparing||this.preparationController)throw new NetworkConfigurationError('Recovery operation already in progress.','PAIR_OPERATION_ACTIVE');
     this.recoveryInspecting=true;
-    try { return await this.inspectRecovery(); } finally { this.recoveryInspecting=false; }
+    this.recoveryPersistence='pending';
+    try { return await this.inspectRecovery(signal); } finally {
+      if(this.recoveryPersistence==='pending')this.recoveryPersistence='unverified';
+      this.recoveryInspecting=false;
+    }
   }
 
-  private async inspectRecovery(): Promise<PairSessionState | null> {
+  private async inspectRecovery(signal?: AbortSignal): Promise<PairSessionState | null> {
     let recovered: unknown;
     try { recovered = await this.recovery.load(); }
-    catch { return this.invalidRecoveryStatus(); }
+    catch { this.recoveryPersistence='unverified'; signal?.throwIfAborted(); return this.invalidRecoveryStatus(); }
+    this.recoveryPersistence = recovered === null ? 'absent' : 'retained';
+    signal?.throwIfAborted();
     if (recovered === null) return this.getStatus();
     if(legacyRecoverySession(recovered)){
       this.legacyRecord=structuredClone(recovered);
@@ -136,10 +145,16 @@ export class PairService {
     if (!validRecoverySession(recovered)) return this.invalidRecoveryStatus();
     this.session = { ...recovered, state:'ROLLBACK_REQUIRED', recoveryDisposition:'ATTENTION_REQUIRED', recoveryAvailable:true,
       message:'Recovery requires review. The current adapter configuration has not been verified.', updatedAt:new Date().toISOString() };
+    let evidenceCleared=false;
     try {
-      const current = await this.currentRecoveryAdapter();
+      const current = await this.currentRecoveryAdapter(signal);
+      signal?.throwIfAborted();
       if (sameAdapterConfiguration(recovered.originalAdapter,current)) {
-        await this.recovery.clear();
+        this.recoveryPersistence='pending';
+        try { await this.recovery.clear(); } catch(error) { this.recoveryPersistence='failed'; throw error; }
+        this.recoveryPersistence='cleared';
+        evidenceCleared=true;
+        signal?.throwIfAborted();
         this.session = {...this.session,adapter:current,state:'RESTORED',recoveryAvailable:false,recoveryDisposition:'ALREADY_RESTORED',message:'Original configuration is already active. No adapter change was made.'};
       } else if (recovered.state==='PAIRED' && recovered.adapterConfigurationVerified===true && sameAdapterConfiguration(recovered.adapter,current) && current.operationalStatus.toLowerCase()==='up') {
         this.session = {...this.session,adapter:current,state:'PAIRED',recoveryDisposition:'HEALTHY_RETAINED',message:'Configuration previously applied by CCTV Network Assistant. Original configuration safely retained. Keep Current or Restore Original whenever ready.'};
@@ -147,7 +162,24 @@ export class PairService {
         this.session.message='The current configuration differs from the verified recovery state, or a previous mutation was interrupted. Review before explicitly restoring the original configuration.';
       }
     } catch (error) {
-      this.session.message=error instanceof Error?error.message:'Adapter recovery inspection is unavailable.';
+      // A store clear can finish after cancellation. Retain the original record
+      // before releasing the inspection lock; never restore an adapter here.
+      if(signal?.aborted && evidenceCleared) {
+        this.recoveryPersistence='pending';
+        try { await this.recovery.save(recovered); this.recoveryPersistence='retained'; }
+        catch(storageError) {
+          this.recoveryPersistence='failed';
+          this.session.errorCode='RECOVERY_RETENTION_FAILED';
+          this.session.message='Recovery evidence could not be saved after cancellation. Persistence is unverified; check original adapter state before further changes.';
+          throw storageError;
+        }
+      }
+      signal?.throwIfAborted();
+      // clear() can record failure before throwing into this handler; read the current outcome.
+      if(this.getRecoveryPersistence()==='failed') {
+        this.session.errorCode='RECOVERY_PERSISTENCE_FAILED';
+        this.session.message='Recovery storage operation failed. Persistence is unverified; check original adapter state before further changes.';
+      } else this.session.message=error instanceof Error?error.message:'Adapter recovery inspection is unavailable.';
     }
     return this.getStatus();
   }
@@ -156,13 +188,13 @@ export class PairService {
     // Safe display-only status. Never overwrite the malformed recovery evidence with placeholders.
     this.invalidRecovery=true;
     const adapter:WindowsAdapterSnapshot={interfaceIndex:0,interfaceAlias:'Unverified adapter',mediaType:'OTHER',operationalStatus:'Unknown',eligible:false,dhcpEnabled:false,ipv4Addresses:[],defaultGateways:[],dnsAutomatic:false,dnsServers:[],capturedAt:''};
-    this.session={id:'invalid-recovery',state:'ROLLBACK_REQUIRED',recoveryDisposition:'ATTENTION_REQUIRED',deviceId:'',cameraIp:'',cameraSubnetMask:'',adapter,originalAdapter:adapter,candidates:[],createdAt:'',updatedAt:new Date().toISOString(),recoveryAvailable:true,errorCode:'INVALID_RECOVERY',message:'Recovery data is unreadable or incomplete. Original evidence is preserved. Adapter changes are blocked until recovery data can be safely resolved.'};
+    this.session={id:'invalid-recovery',state:'ROLLBACK_REQUIRED',recoveryDisposition:'ATTENTION_REQUIRED',deviceId:'',cameraIp:'',cameraSubnetMask:'',adapter,originalAdapter:adapter,candidates:[],createdAt:'',updatedAt:new Date().toISOString(),recoveryAvailable:true,errorCode:'INVALID_RECOVERY',message:'Recovery data is unreadable or incomplete. Persistence is unverified; this inspection did not clear the record. Adapter changes are blocked until recovery data can be safely resolved.'};
     return this.getStatus()!;
   }
 
-  private async currentRecoveryAdapter():Promise<WindowsAdapterSnapshot> {
+  private async currentRecoveryAdapter(signal?:AbortSignal):Promise<WindowsAdapterSnapshot> {
     if(this.invalidRecovery||!validRecoverySession(this.session))throw new NetworkConfigurationError('Recovery data cannot safely identify the original physical adapter.','INVALID_RECOVERY');
-    const matches=(await this.adapters.inspectAdapters()).filter(adapter=>samePhysicalAdapter(this.session!.originalAdapter,adapter));
+    const matches=(await this.adapters.inspectAdapters(signal)).filter(adapter=>samePhysicalAdapter(this.session!.originalAdapter,adapter));
     if(matches.length!==1)throw new NetworkConfigurationError('The original physical adapter is missing or cannot be uniquely identified. Recovery evidence is preserved.','ADAPTER_IDENTITY_MISMATCH');
     return matches[0];
   }
@@ -201,8 +233,10 @@ export class PairService {
     const device = this.database.getDeviceById(deviceId);
     if (!device) throw new NetworkConfigurationError('The selected camera no longer exists.', 'DEVICE_NOT_FOUND');
     this.preparationController?.abort();
-    this.preparationController = new AbortController();
-    const adapters = await this.adapters.inspectAdapters(this.preparationController.signal);
+    const controller = new AbortController(); this.preparationController = controller;
+    try {
+    const adapters = await this.adapters.inspectAdapters(controller.signal);
+    this.assertPreparationActive(controller);
     const adapter = adapters.find(item => item.interfaceIndex === interfaceIndex);
     if (!adapter?.eligible) throw new NetworkConfigurationError(adapter?.eligibilityReason || 'The selected adapter is unavailable.', 'ADAPTER_INELIGIBLE');
     const block = pairTargetBlock(device, adapters, this.database.getDevices());
@@ -212,38 +246,44 @@ export class PairService {
     if (prefix === null || prefix === undefined || prefix < 1 || prefix > 30) throw new NetworkConfigurationError('The subnet mask is invalid or unsupported for Pair.', 'INVALID_SUBNET');
     const now = new Date().toISOString();
     this.session = { id: crypto.randomUUID(), state: 'CHECKING_ADDRESS', deviceId, cameraIp: device.network.ipAddress, cameraSubnetMask: prefixToSubnetMask(prefix), subnetSource: knownMask ? 'CAMERA_EVIDENCE' : 'ADAPTER_PREFIX_PROPOSAL', adapter, originalAdapter: structuredClone(adapter), candidates: [], createdAt: now, updatedAt: now, recoveryAvailable: false };
-    const candidates = await this.findCandidates(device, prefix, adapters, this.preparationController.signal);
-    if (this.preparationController.signal.aborted) throw new NetworkConfigurationError('Pair preparation was cancelled.', 'CANCELLED');
+    const candidates = await this.findCandidates(device, prefix, adapters, controller.signal);
+    this.assertPreparationActive(controller);
     if (!candidates.length) { this.session.state = 'FAILED'; this.session.errorCode = 'NO_CONFIDENT_CANDIDATE'; this.session.message = 'No candidate address passed the conservative availability checks.'; throw new NetworkConfigurationError(this.session.message, this.session.errorCode); }
     this.session.candidates = candidates;
     this.session.selectedCandidate = candidates[0];
     this.session.state = 'READY_FOR_CONFIRMATION';
     this.session.message = 'Review the complete before/after preview and explicitly confirm Pair.';
     this.session.updatedAt = new Date().toISOString();
-    this.preparationController = null;
     this.audit('Pair preview prepared', { deviceId, interfaceIndex, proposedIp: candidates[0].ipAddress });
     return this.getStatus()!;
+    } finally { if(this.preparationController===controller)this.preparationController=null; }
+  }
+
+  private assertPreparationActive(controller:AbortController):void {
+    if(controller.signal.aborted || this.preparationController!==controller)throw new NetworkConfigurationError('Pair preparation was cancelled.','CANCELLED');
   }
 
   async prepareNetwork(input:NetworkMatchInput):Promise<PairSessionState> {
     if(this.recoveryInspecting||this.networkPreparing||this.mutationPending||(this.preparationController&&(!this.session||['PREPARING','CHECKING_ADDRESS'].includes(this.session.state))))throw new NetworkConfigurationError('Another adapter operation is in progress.','PAIR_SESSION_ACTIVE');
     if(this.session&&['CHECKING_ADDRESS','APPLYING','VERIFYING','PAIRED','RESTORING','ROLLBACK_REQUIRED'].includes(this.session.state))throw new NetworkConfigurationError('Restore or resolve the current adapter operation first.','PAIR_SESSION_ACTIVE');
     const error=networkMatchError(input);if(error)throw new NetworkConfigurationError(error,'INVALID_INPUT');
+    const controller=new AbortController();this.preparationController=controller;
     this.networkPreparing=true;try {
-    const adapters=await this.adapters.inspectAdapters();const adapter=adapters.find(a=>a.interfaceIndex===input.interfaceIndex&&a.eligible);
+    const adapters=await this.adapters.inspectAdapters(controller.signal);this.assertPreparationActive(controller);const adapter=adapters.find(a=>a.interfaceIndex===input.interfaceIndex&&a.eligible);
     if(!adapter)throw new NetworkConfigurationError('Select a current eligible adapter.','ADAPTER_INELIGIBLE');
     if([...adapters.flatMap(a=>a.ipv4Addresses.map(ip=>ip.address)),...this.database.getDevices().map(d=>d.network.ipAddress)].includes(input.ipAddress))throw new NetworkConfigurationError('That address is already assigned to a known device or local adapter.','CANDIDATE_CHANGED');
     const now=new Date().toISOString();
     this.session={id:crypto.randomUUID(),purpose:'NETWORK_MATCH',state:'CHECKING_ADDRESS',deviceId:'',cameraIp:'',cameraSubnetMask:prefixToSubnetMask(input.prefixLength),adapter,originalAdapter:structuredClone(adapter),temporaryGateway:input.gateway||undefined,candidates:[],createdAt:now,updatedAt:now,recoveryAvailable:false};
     try {
-      const result=await this.checker.check(input.ipAddress);
+      const result=await this.checker.check(input.ipAddress,{signal:controller.signal});
+      this.assertPreparationActive(controller);
       if(this.session.state!=='CHECKING_ADDRESS')throw new NetworkConfigurationError('Preview was cancelled.','CANCELLED');
       if(result.availability!=='AVAILABLE')throw new NetworkConfigurationError('The requested address is occupied or could not be checked confidently.','CANDIDATE_CHANGED');
       const candidate:PairCandidate={ipAddress:input.ipAddress,prefixLength:input.prefixLength,confidence:'AVAILABLE',evidence:result.evidence};
       this.session.candidates=[candidate];this.session.selectedCandidate=candidate;this.session.state='READY_FOR_CONFIRMATION';this.session.message='Review the preserved and temporary PC adapter settings, then explicitly confirm.';
       this.audit('NETWORK_MATCH_PREVIEWED',{interfaceIndex:input.interfaceIndex,temporaryIp:input.ipAddress});return this.getStatus()!;
     } catch(error){if(this.session.state!=='CANCELLED')this.session.state='FAILED';throw error;}
-    }finally{this.networkPreparing=false;}
+    }finally{this.networkPreparing=false;if(this.preparationController===controller)this.preparationController=null;}
   }
 
   async prepareMatchPreview(plan:MatchApplyPlan):Promise<PairSessionState> {
@@ -251,16 +291,17 @@ export class PairService {
     const retained=this.session?.state==='PAIRED'&&this.session.recoveryDisposition==='HEALTHY_RETAINED'?this.getStatus():null;
     if(this.session?.recoveryAvailable&&!retained)throw new NetworkConfigurationError('Resolve the current recovery state first.','PAIR_SESSION_ACTIVE');
     if(this.session?.state==='READY_FOR_CONFIRMATION')throw new NetworkConfigurationError('Cancel the current preview first.','PAIR_SESSION_ACTIVE');
+    const controller=new AbortController();this.preparationController=controller;
     this.networkPreparing=true;
     try {
-      const adapters=await this.adapters.inspectAdapters(),current=adapters.find(a=>a.interfaceIndex===plan.adapter.interfaceIndex);
+      const adapters=await this.adapters.inspectAdapters(controller.signal);this.assertPreparationActive(controller);const current=adapters.find(a=>a.interfaceIndex===plan.adapter.interfaceIndex);
       if(Date.now()-plan.createdAt>120000||!current||!validRecoverySnapshot(current)||!samePhysicalAdapter(current,plan.adapter)||snapshotFingerprint(current)!==snapshotFingerprint(plan.adapter)||!plan.preview.candidates.length)throw new NetworkConfigurationError('Adapter or candidate preview changed; search again.','BASELINE_CHANGED');
       if(retained&&(!samePhysicalAdapter(retained.originalAdapter,current)||!sameAdapterConfiguration(retained.adapter,current)))throw new NetworkConfigurationError('Retained configuration must be resolved before changing another adapter.','BASELINE_CHANGED');
       const now=new Date().toISOString();
       const next:PairSessionState={id:crypto.randomUUID(),purpose:'CAMERA_PAIR',matchTargetAnchor:structuredClone(plan.anchor),state:'READY_FOR_CONFIRMATION',deviceId:plan.preview.deviceId,cameraIp:plan.preview.targetIp,cameraSubnetMask:prefixToSubnetMask(plan.preview.prefixLength!),subnetSource:'CAMERA_EVIDENCE',adapter:current,originalAdapter:retained?structuredClone(retained.originalAdapter):structuredClone(current),candidates:structuredClone(plan.preview.candidates),selectedCandidate:structuredClone(plan.preview.candidates[0]),recoveryAvailable:Boolean(retained),createdAt:now,updatedAt:now,message:'Match Network preview only. Confirm the displayed candidate to change this PC adapter; camera settings and credentials remain unchanged.'};
       if(this.matchTargetUnsafe(next,adapters))throw new NetworkConfigurationError('Target identity changed or is ambiguous. Search again.','UNSAFE_TARGET');
       this.retainedBeforeMatch=retained;this.session=next;return this.getStatus()!;
-    }finally{this.networkPreparing=false;}
+    }finally{this.networkPreparing=false;if(this.preparationController===controller)this.preparationController=null;}
   }
 
   private matchTargetUnsafe(session:PairSessionState,adapters:WindowsAdapterSnapshot[]):boolean {
