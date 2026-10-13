@@ -1,0 +1,20 @@
+const {test}=require('node:test');
+const assert=require('node:assert/strict');
+const fs=require('node:fs'),path=require('node:path'),os=require('node:os'),crypto=require('node:crypto');
+const {runLoadingHarness}=require('../../scripts/staged-backend-loading.cjs');
+test('staged startup smoke: isolated initialization, denial and shutdown',()=>{
+  assert.equal(process.execPath,'C:\\Program Files\\nodejs\\node.exe');assert.equal(process.version,'v24.19.0');
+  assert.equal(crypto.createHash('sha256').update(fs.readFileSync(process.execPath)).digest('hex'),'3602f2bb1a10f2cbab4c36886218a33c1ab3db87290e73b033c46c77147d0237');
+  const base=fs.mkdtempSync(path.join(os.tmpdir(),'discovery-startup-smoke-'));
+  const report=runLoadingHarness(path.resolve(__dirname,'../..'),path.join(base,'stage'),{executable:process.execPath,startupSmokeOnly:true});
+  console.log('Startup smoke evidence: '+path.join(base,'stage/loading-report.json'));
+  assert.equal(report.passed,true,JSON.stringify({failures:report.probe.failures,stderr:report.stderr,error:report.launchError}));
+  assert.deepEqual(report.probe.checks,['isolation-controls','staged-startup-initialization-smoke']);
+  assert.deepEqual(report.probe.blockedOperations,[]);
+  assert.equal(report.probe.realEntrypointImported,false);assert.equal(report.probe.tsxEsbuildUnavailable,true);
+  assert.ok(report.probe.loadedModules.includes('src/server/backend_application.js'));
+  assert.equal(report.probe.startupSmoke.state,'stopped');assert.equal(report.probe.startupSmoke.productionAuthority,false);
+  assert.deepEqual(report.probe.startupSmoke.phases.map(p=>p.name),['construct','start','initialize','denial','shutdown','stopped']);
+  assert.equal(report.probe.startupSmoke.apiStatus,401);assert.equal(report.probe.startupSmoke.wsAllowed,false);
+  assert.equal(report.productionAuthority,false);assert.equal(report.completeClosure,false);assert.ok(report.stageUnresolvedCount>0);
+});
