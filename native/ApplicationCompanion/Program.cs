@@ -19,10 +19,13 @@ internal static class Program
     {
         try
         {
+            var fixtureTiming = args.Length == 3 && args[0] == "--node-bridge-fixture" && NodeBridgeFixture.Modes.Contains(args[2]) ? new NodeBridgeFixture.Timing() : null;
+            fixtureTiming?.Phase("managed-entry");
             WindowsBoundary.RequireUnelevated();
+            fixtureTiming?.Phase("security-ready");
             if(args.SequenceEqual(new[]{"--fixture-completion-self-test"}))return FixtureCompletion.SelfTest();
             if(args.Length==3&&args[0]=="--verified-node-fixture-self-test"&&args[2]=="expiry-live")return VerifiedNodeFixture.Run(args[1],args[2]);
-            if (args.Length == 3 && args[0] == "--node-bridge-fixture" && NodeBridgeFixture.Modes.Contains(args[2])) return NodeBridgeFixture.Run(args[1], args[2]);
+            if (fixtureTiming is not null) return NodeBridgeFixture.Run(args[1], args[2], fixtureTiming);
             if (args.Length == 2 && args[0] == "--verified-node-fixture-self-test") return VerifiedNodeFixture.Run(args[1]);
             if (args.SequenceEqual(new[] { "--backend-artifact-self-test", "--diagnostics" })) return BackendArtifactTests.Run(true);
             if (args.SequenceEqual(new[] { "--launcher-self-test", "--diagnostics" })) return NativeLauncherTests.Run(true);

@@ -20,7 +20,7 @@ async function startStagedBackendFixture(pipe,ownerHandle,mode,ended,evidence,lo
   let material;
   let phase='authenticate';
   const started=performance.now(),phases=[];
-  const record=()=>{if(phases.length<8)phases.push({phase,elapsedMs:performance.now()-started});evidence.entryPhases=phases;const publication=publishFixtureRecord(path.join(root,'node-launch-result.json'),{passed:false,terminal:false,productionAuthority:false,entryPhase:phase,entryPhases:phases,loadingDiagnostics,compositionEvidence:evidence});if(!publication.written)evidence.diagnosticFailureCode=publication.code;};
+  const record=(entryPhase=true)=>{if(entryPhase&&phases.length<8)phases.push({phase,elapsedMs:performance.now()-started,utc:new Date().toISOString()});evidence.entryPhases=phases;const publication=publishFixtureRecord(path.join(root,'node-launch-result.json'),{passed:false,terminal:false,productionAuthority:false,entryPhase:phase,entryPhases:phases,loadingDiagnostics,compositionEvidence:evidence});if(!publication.written)evidence.diagnosticFailureCode=publication.code;};
   try{
     record();
     material=addon.authenticate(BigInt(ownerHandle),pipe,()=>ended.abort(),mode);
@@ -34,7 +34,12 @@ async function startStagedBackendFixture(pipe,ownerHandle,mode,ended,evidence,lo
       bind:(server,ws,session,port)=>addon.bind(server,ws,session,port),
       assert:(server,ws,session)=>addon.assert(server,ws,session),revoke:()=>addon.revoke()};
     phase='construct-start';record();
-    const fixture=await actualBackendTlsFixture(bridge,mode,evidence);
+    const constructionPhases=[];
+    const fixture=await actualBackendTlsFixture(bridge,mode,evidence,name=>{
+      if(constructionPhases.length>=8)return;
+      constructionPhases.push({phase:name,elapsedMs:performance.now()-started,utc:new Date().toISOString()});
+      evidence.constructionPhases=constructionPhases;record(false);
+    });
     phase='bound';record();return fixture;
   }catch(error){evidence.entryFailureCode=String(error.code??error.name).slice(0,64);try{record();}finally{if(material)material.key='';try{addon.revoke();}catch(cleanup){evidence.cleanupFailureCode=String(cleanup.code??cleanup.name).slice(0,64);}}throw error;}
 }

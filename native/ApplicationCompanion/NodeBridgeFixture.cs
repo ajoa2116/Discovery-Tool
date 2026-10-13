@@ -16,6 +16,25 @@ namespace ApplicationCompanion;
 // Strict fixture dispatch only. Never returns a production owner/receipt.
 internal static class NodeBridgeFixture
 {
+    // Bounded fixture-only stderr records survive an outer timeout. Never authority.
+    internal sealed class Timing
+    {
+        private readonly Stopwatch clock = Stopwatch.StartNew();
+        internal readonly List<object> Phases = [];
+        internal long? ExpiresAt;
+        internal bool PublicationFailed;
+        internal void Phase(string name)
+        {
+            if (Phases.Count >= 16) return;
+            var record = new { type = "FIXTURE_NATIVE_PHASE", name, pid = Environment.ProcessId,
+                elapsedMs = clock.ElapsedMilliseconds, utc = DateTimeOffset.UtcNow,
+                remainingMs = ExpiresAt is long expires ? (long?)(expires - DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()) : null,
+                productionAuthority = false };
+            Phases.Add(record);
+            try { Console.Error.WriteLine(JsonSerializer.Serialize(record)); }
+            catch { PublicationFailed = true; } // Diagnostic failure never changes the operation result.
+        }
+    }
     internal static readonly string[] ResourceModes = ["owner-wire-oversized", "owner-wire-zero", "owner-wire-limit", "owner-wire-type", "owner-wire-short", "owner-tls-malformed",
         "node-wire-oversized", "node-wire-zero", "duplicate-load", "cancel-load", "port-wrap", "port-fraction"];
     internal static readonly string[] Modes = ["normal", "wrong-owner", "foreign-owner", "foreign-node", "bad-nonce", "replay", "wrong-pin",
@@ -91,22 +110,22 @@ internal static class NodeBridgeFixture
         try { data.CopyTo(frame, 5); await pipe.WriteAsync(frame, token); await pipe.FlushAsync(token); }
         finally { CryptographicOperations.ZeroMemory(frame); }
     }
-    internal static int Run(string stage, string mode)
+    internal static int Run(string stage, string mode, Timing? timing = null)
     {
-        var clock = Stopwatch.StartNew();
-        var phases = new List<object>();
-        void Phase(string name) { if (phases.Count >= 16) throw new IOException("fixture-diagnostic-limit"); phases.Add(new { name, elapsedMs = clock.ElapsedMilliseconds }); }
-        try { return RunAsync(Path.GetFullPath(stage), mode, Phase).GetAwaiter().GetResult(); }
+        timing ??= new Timing();
+        try { return RunAsync(Path.GetFullPath(stage), mode, timing).GetAwaiter().GetResult(); }
         catch (BackendArtifactException e) when (mode == "addon-tamper" && e.Reason == "measurement")
         { Console.WriteLine(JsonSerializer.Serialize(new { passed = true, mode, denied = "measurement", launched = false, productionAuthority = false })); return 0; }
-        catch (Exception e) { Console.Error.WriteLine(JsonSerializer.Serialize(new { passed = false, reason = e is BackendArtifactException b ? b.Reason : e.Message, exception = e.GetType().Name, phases })); return 1; }
+        catch (Exception e) { Console.Error.WriteLine(JsonSerializer.Serialize(new { passed = false, reason = e is BackendArtifactException b ? b.Reason : e.Message, exception = e.GetType().Name, phases = timing.Phases, diagnosticPublicationFailed = timing.PublicationFailed })); return 1; }
     }
-    private static async Task<int> RunAsync(string stage, string mode, Action<string> phase)
+    private static async Task<int> RunAsync(string stage, string mode, Timing timing)
     {
+        Action<string> phase = timing.Phase;
         phase("approval");
         using var signer = RSA.Create(3072); var trust = BackendReleaseTrust.ForIsolatedTests(signer);
         int duration = 10000;
         long expires = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() + duration;
+        timing.ExpiresAt = expires;
         object Row(string file, string role, string root) { string path = Path.Combine(root, file);
             return new { path = file, role, sha256 = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(path))).ToLowerInvariant(), length = new FileInfo(path).Length }; }
         VerifiedBackendArtifacts Approval(string root, bool node)
@@ -127,6 +146,7 @@ internal static class NodeBridgeFixture
         }
         using var ownerApproval = Approval(AppContext.BaseDirectory, false);
         using var approval = Approval(stage, true);
+        phase("approval-ready");
         using var tlsKey = RSA.Create(2048);
         var request = new CertificateRequest("CN=CCTV integrated fixture", tlsKey, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
         using var certificate = request.CreateSelfSigned(DateTimeOffset.UtcNow.AddMinutes(-1), DateTimeOffset.UtcNow.AddMinutes(20));
@@ -139,6 +159,7 @@ internal static class NodeBridgeFixture
         phase("launch");
         using var foreignOwner = mode == "foreign-owner" ? OwnedChild.StartLauncherPeer(WindowsBoundary.NewPipeName(), "no-connect") : null;
         using var child = OwnedChild.StartIntegratedFixture(stage, name, mode == "foreign-node" ? "no-connect" : mode, approval, foreignOwner?.Process.Id);
+        phase("process-created");
         using var observed = Process.GetProcessById(child.Process.Id); _ = observed.Handle;
         using var foreignApproval = mode == "foreign-node" ? Approval(stage, true) : null;
         using var foreign = foreignApproval is null ? null : OwnedChild.StartIntegratedFixture(stage, name, "normal", foreignApproval);
@@ -265,10 +286,12 @@ internal static class NodeBridgeFixture
         finally { CryptographicOperations.ZeroMemory(material); CryptographicOperations.ZeroMemory(privateKey); }
         // Let a terminal notification finish test-only Node cleanup; Job disposal
         // remains the bounded fallback, never a retry or authority grant.
-        if (!observed.WaitForExit(2500)) { child.Dispose(); if (!observed.WaitForExit(1000)) throw new IOException("child-cleanup"); }
+        phase("exit-wait");
+        if (!observed.WaitForExit(2500)) { phase("termination-fallback"); child.Dispose(); if (!observed.WaitForExit(1000)) throw new IOException("child-cleanup"); }
         foreign?.Dispose();
         foreignOwner?.Dispose();
         if (!observed.HasExited) throw new IOException("child-cleanup");
+        phase("exit-observed");
         bool controlOnly = mode is "node-exit" or "cancel" or "expiry" or "foreign-node";
         if(!controlOnly){
             using var completion=FixtureCompletion.Read(Path.Combine(stage,"node-launch-result.json"));
@@ -280,8 +303,9 @@ internal static class NodeBridgeFixture
             using var result = JsonDocument.Parse(File.ReadAllBytes(Path.Combine(stage, "node-launch-result.json")));
             if (authenticated || materialSent || result.RootElement.GetProperty("denial").GetString() != "owner-peer") throw new IOException("owner-peer-denial");
         }
+        phase("completion-collected");
         Console.WriteLine(JsonSerializer.Serialize(new { passed = true, mode, authenticated, materialSent, bound, port,
-            outcome, exitCode=observed.ExitCode,completionVerified=!controlOnly,controlOnly,elapsedMs = started.ElapsedMilliseconds, residualProcesses = 0, productionAuthority = false, completeClosure = false }));
+            outcome, exitCode=observed.ExitCode,completionVerified=!controlOnly,controlOnly,elapsedMs = started.ElapsedMilliseconds, diagnosticPublicationFailed = timing.PublicationFailed, residualProcesses = 0, productionAuthority = false, completeClosure = false }));
         return 0;
     }
 }

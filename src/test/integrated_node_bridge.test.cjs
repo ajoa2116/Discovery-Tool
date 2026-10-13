@@ -56,7 +56,11 @@ test('fixture owner-root relocation denials',{timeout:65000},()=>{
     const result=spawnSync(image,['--node-bridge-fixture',stage,'normal'],{encoding:'utf8',windowsHide:true,shell:false,timeout:20000,
       env:{SystemRoot:process.env.SystemRoot}});
     fs.writeFileSync(path.join(evidence,label+'-native.json'),JSON.stringify({status:result.status,error:result.error?.message,stdout:result.stdout,stderr:result.stderr}));
-    assert.equal(result.error,undefined);assert.equal(result.status,1);assert.equal(JSON.parse(result.stderr).passed,false);
+    assert.equal(result.error,undefined);assert.equal(result.status,1);
+    const diagnostics=result.stderr.trim().split(/\r?\n/).map(line=>JSON.parse(line));
+    assert.ok(diagnostics.length>=2&&diagnostics.length<=17);
+    for(const phase of diagnostics.slice(0,-1))assert.equal(phase.type,'FIXTURE_NATIVE_PHASE');
+    assert.equal(diagnostics.at(-1).passed,false);
     const driver=JSON.parse(fs.readFileSync(path.join(stage,'node-launch-result.json'),'utf8'));
     fs.renameSync(path.join(stage,'node-launch-result.json'),path.join(evidence,label+'-driver.json'));
     assert.equal(driver.denial,'owner-image');assert.equal(driver.productionAuthority,false);
@@ -85,8 +89,13 @@ for(const mode of modes)test('owned Node/native bridge: '+mode,{timeout:25000},(
   let driver;
   if(fs.existsSync(path.join(stage,'node-launch-result.json'))){driver=JSON.parse(fs.readFileSync(path.join(stage,'node-launch-result.json'),'utf8'));
     fs.renameSync(path.join(stage,'node-launch-result.json'),path.join(evidence,mode+'-driver.json'));}
-  assert.equal(result.error,undefined);assert.equal(result.status,0,result.stderr);assert.equal(result.stderr,'');
+  assert.equal(result.error,undefined);assert.equal(result.status,0,result.stderr);
+  const nativePhases=result.stderr.trim().split(/\r?\n/).filter(Boolean).map(line=>JSON.parse(line));
+  assert.ok(nativePhases.length>0&&nativePhases.length<=16);
+  for(const phase of nativePhases){assert.equal(phase.type,'FIXTURE_NATIVE_PHASE');assert.equal(phase.productionAuthority,false);assert.ok(phase.pid>0);assert.ok(phase.elapsedMs>=0);assert.ok(Number.isFinite(Date.parse(phase.utc)));}
+  if(mode==='composition-normal')assert.deepEqual(nativePhases.map(phase=>phase.name),['managed-entry','security-ready','approval','approval-ready','launch','process-created','pipe-connect','challenge','tls-transfer','endpoint','endpoint-proof','bound','terminal-channel','exit-wait','exit-observed','completion-collected']);
   const report=JSON.parse(result.stdout);assert.equal(report.passed,true);assert.equal(report.productionAuthority,false);
+  if(mode==='composition-normal')assert.equal(report.diagnosticPublicationFailed,false);
   if(mode==='addon-tamper'){ assert.equal(report.denied,'measurement');assert.equal(report.launched,false);return; }
   if(mode==='owner-exit') {
     const live=spawnSync('powershell.exe',['-NoProfile','-Command',`@(Get-Process -Id ${report.pid} -ErrorAction SilentlyContinue).Count`],{encoding:'utf8',windowsHide:true});

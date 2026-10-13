@@ -9,7 +9,7 @@ import { createBackendInstanceIdentity } from '../../server/backend_identity_han
 type Bridge = { ended: AbortSignal; acquireTLS(): {cert:string;key:string};
   bind(server: object, ws: object, session: object, port: number): Promise<unknown>;
   assert(server: object, ws: object, session: object): void; revoke(): void };
-export async function actualBackendTlsFixture(bridge: Bridge, mode: string, evidence: Record<string,unknown>) {
+export async function actualBackendTlsFixture(bridge: Bridge, mode: string, evidence: Record<string,unknown>, phase: (name:string)=>void = ()=>{}) {
   const material=bridge.acquireTLS();
   let server: ReturnType<typeof createServer> | undefined, ws: WebSocketServer | undefined;
   let exact: [object,object,object] | undefined, reconcile=()=>{};
@@ -24,13 +24,14 @@ export async function actualBackendTlsFixture(bridge: Bridge, mode: string, evid
     createHttpServer(app) {
       server=createServer({...material,minVersion:'TLSv1.2',maxHeaderSize:4096,handshakeTimeout:1500},app);material.key='';
       evidence.serverCreated=true;
+      phase('https-created');
       server.on('connection',socket=>{sockets.add(socket);socket.once('close',()=>sockets.delete(socket));});
       const listen=server.listen.bind(server);
       // Ephemeral port is confined to this test module. Production retains 3001.
-      server.listen=((port:number,host:string,callback:()=>void)=>{assert.equal(port,3001);assert.equal(host,'127.0.0.1');return listen(0,host,callback);}) as typeof server.listen;
+      server.listen=((port:number,host:string,callback:()=>void)=>{assert.equal(port,3001);assert.equal(host,'127.0.0.1');return listen(0,host,()=>{phase('listener-ready');callback();});}) as typeof server.listen;
       return server;
     },
-    createWebSocketServer(options) {if(mode==='composition-ws-failure') {evidence.wsFailureInjected=true;throw Error('Synthetic WS construction failed.');}return ws=new WebSocketServer(options);},
+    createWebSocketServer(options) {if(mode==='composition-ws-failure') {evidence.wsFailureInjected=true;throw Error('Synthetic WS construction failed.');}ws=new WebSocketServer(options);phase('ws-created');return ws;},
     createDiagnosticMonitor:()=>monitor() as any,createDiscoveryMonitor:()=>monitor() as any,
     scheduleReconciliation(callback){reconcile=callback;return{cancel(){evidence.reconciliationCancelled=true;}};},
     initializeRecovery(_pair,signal){signals.push(signal);return recovery;},
@@ -43,18 +44,20 @@ export async function actualBackendTlsFixture(bridge: Bridge, mode: string, evid
         exact=[http,events,session];
         createBackendInstanceIdentity(http); // Process-local listener brand only, never an owner receipt.
         evidence.bindingAttempted=true;
+        phase('bind-requested');
         const pending=bridge.bind(http,events,session,mode==='composition-endpoint-swap'?address.port+1:address.port);
         pending.catch(()=>{});
         if(mode==='composition-bind-cancel')void backend.shutdown();
-        await pending;signal.throwIfAborted();bridge.assert(...exact);
+        await pending;signal.throwIfAborted();bridge.assert(...exact);phase('bind-completed');
       }},
   };
   const backend=constructBackend(dependencies);
+  phase('construct-returned');
   const finishLate=async()=>{finishRecovery(null);finishCredentials();await backend.initialized();
     assert.equal(backend.status().state,'stopped');reconcile();evidence.lateCallbacksExercised=true;
     evidence.stopped=backend.status().state==='stopped';evidence.recoveryInspected=backend.status().recoveryInspected;
     evidence.initializationAborted=signals.every(s=>s.aborted);evidence.connections=sockets.size;};
-  try {await backend.start();}
+  try {phase('start-requested');await backend.start();phase('start-completed');}
   catch(error) {evidence.startFailureCode=error instanceof Error?String('code' in error?error.code:error.name).slice(0,64):'unknown';await backend.shutdown();await finishLate();assert.equal(server?.listening??false,false);assert.ok(signals.every(s=>s.aborted));throw Error('Actual backend fixture unavailable.');}
   assert.equal(backend.status().state,'running');assert.equal(backend.status().recoveryInspected,false);
   return {
