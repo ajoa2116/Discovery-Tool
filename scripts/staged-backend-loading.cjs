@@ -30,6 +30,7 @@ function runLoadingHarness(root, out, options = {}) {
   env.NODE_ENV = 'production';
   const executable = options.executable ?? process.execPath;
   const args = ['--permission', '--allow-fs-read=' + out, '--no-addons', '--no-experimental-strip-types', path.join(out, '.loading-probe.cjs')];
+  if (options.startupSmokeOnly === true) args.push('--startup-smoke');
   const child = spawnSync(executable, args, { cwd: out, env, windowsHide: true, shell: false, encoding: 'utf8', timeout: 30000, maxBuffer: 4 * 1024 * 1024 });
   let probe;
   try { probe = JSON.parse(child.stdout); } catch { probe = { failures: [{ check: 'probe-output', message: 'No complete JSON probe result.' }] }; }

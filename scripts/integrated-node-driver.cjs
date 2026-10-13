@@ -13,6 +13,7 @@ const root = fs.realpathSync(__dirname);
 const modules = new Set(), checks = [], failures = [], blockedOperations = [];
 let checkingGuards = false;
 const projectAllowlist = new Set([...reviewedProjects, ...testOnlyProjects, 'src/test/support/synthetic_tls_binding.js',
+  'node-launch-entry.cjs',
   'src/test/support/backend_tls_binding.js',
   'src/server/backend_identity_handoff.js', 'src/server/companion_bootstrap_authority.js', 'src/server/application_companion_supervisor.js',
   'src/server/private_bootstrap_transport.js', 'src/server/bootstrap_async_supervisor.js', 'src/server/bootstrap_ack_decoder.js',
@@ -27,6 +28,19 @@ let baselineLoadedModules = [];
 const successfulProjectImports = [], moduleReviews = [];
 let stagedComposition = false;
 let diagnosticPhase = 'driver';
+// Bounded, nonsecret loader timings. Debug output never grants trust.
+const loadingDiagnostics={resolved:0,loaded:0,resolveMs:0,loadMs:0,pathChecks:0,pathMs:0,slowest:[]};
+let diagnosticWrites=0;
+function persistLoadingDiagnostics(){
+  try{
+  if(diagnosticWrites>=12 || !fs.existsSync(path.join(root,'node-launch-result.json')))return;
+  diagnosticWrites++;
+  const file=path.join(root,'node-launch-result.json');
+  if(fs.statSync(file).size>16384)throw Error('Fixture diagnostic record exceeds bound.');
+  const record=JSON.parse(fs.readFileSync(file,'utf8'));record.loadingDiagnostics=loadingDiagnostics;
+  fs.writeFileSync(file,JSON.stringify(record));
+  }catch(error){loadingDiagnostics.diagnosticFailureCode=String(error.code??error.name).slice(0,64);}
+}
 function deny(label) {
   const error = Error('Harness prevented ' + label); error.code = 'HARNESS_BLOCKED';
   if (!checkingGuards) blockedOperations.push(label);
@@ -49,7 +63,9 @@ block(globalThis, ['setTimeout','setImmediate','fetch','WebSocket','EventSource'
 globalThis.setInterval = function(callback, delay, ...args) { if(delay !== 50) return deny('unexpected-fixture-timer'); return actualInterval(callback,delay,...args); };
 syncBuiltinESMExports();
 function stagePath(url) {
+  const started=performance.now();
   const full = fs.realpathSync(fileURLToPath(url));
+  loadingDiagnostics.pathChecks++;loadingDiagnostics.pathMs+=performance.now()-started;
   const relative = path.relative(root, full);
   if (relative === '..' || relative.startsWith('..' + path.sep) || path.isAbsolute(relative)) deny('outside-stage-resolution');
   const name = relative.split(path.sep).join('/');
@@ -60,17 +76,27 @@ function stagePath(url) {
 }
 registerHooks({
   resolve(specifier, context, next) {
+    const started=performance.now();
     if (/^(?:tsx|esbuild|@esbuild)(?:\/|$)/.test(specifier)) deny('forbidden-package:' + specifier);
     const result = next(specifier, context);
     if (!result.url.startsWith('node:')) stagePath(result.url);
+    loadingDiagnostics.resolved++;loadingDiagnostics.resolveMs+=performance.now()-started;
     return result;
   },
   load(url, context, next) {
-    if (!url.startsWith('node:')) modules.add(stagePath(url));
-    return next(url, context);
+    const started=performance.now();
+    const name=url.startsWith('node:')?url:stagePath(url);
+    if (!url.startsWith('node:')) modules.add(name);
+    const result=next(url, context),elapsedMs=performance.now()-started;
+    loadingDiagnostics.loaded++;loadingDiagnostics.loadMs+=elapsedMs;
+    loadingDiagnostics.slowest.push({name,elapsedMs});loadingDiagnostics.slowest.sort((a,b)=>b.elapsedMs-a.elapsedMs);loadingDiagnostics.slowest.length=Math.min(8,loadingDiagnostics.slowest.length);
+    if(loadingDiagnostics.loaded%24===0)persistLoadingDiagnostics();
+    return result;
   },
 });
 const load = name => import(pathToFileURL(path.join(root, name)).href);
+const {publishFixtureRecord}=require('./node-launch-entry.cjs');
+function terminalResult(value){const publication=publishFixtureRecord(path.join(root,'node-launch-result.json'),{...value,terminal:true});if(!publication.written)process.exitCode=1;return publication;}
 async function check(name, run) {
   try { await run(); checks.push(name); }
   catch (error) { failures.push({ check: name, code: error.code ?? null, message: error.message }); }
@@ -97,9 +123,10 @@ async function route(router, method, url) {
   const ended=new AbortController(); let tlsMaterial; const compositionEvidence={}; const resourceStarted=performance.now(); let loadRequests=0, replayDenials=0;
   const resourceModes=['owner-wire-oversized','owner-wire-zero','owner-wire-limit','owner-wire-type','owner-wire-short','owner-tls-malformed',
     'node-wire-oversized','node-wire-zero','duplicate-load','cancel-load','port-wrap','port-fraction'];
+  let fixture;
   try {
-    tlsMaterial=addon.authenticate(BigInt(ownerHandle),pipe,()=>ended.abort(), mode);
     const composition=mode.startsWith('composition-');
+    if(!composition)tlsMaterial=addon.authenticate(BigInt(ownerHandle),pipe,()=>ended.abort(), mode);
     const { syntheticTlsFixture }=composition?{}:await load('src/test/support/synthetic_tls_binding.js');
     const bridge={ended:ended.signal,
       acquireTLS() { assert.ok(tlsMaterial); const material=tlsMaterial; tlsMaterial=undefined; return material; },
@@ -117,10 +144,14 @@ async function route(router, method, url) {
         return pending;
       },
       assert:(server,ws,session)=>addon.assert(server,ws,session), revoke:()=>addon.revoke() };
-    const fixture=composition?await (await load('src/test/support/backend_tls_binding.js')).actualBackendTlsFixture(bridge,mode,compositionEvidence):await syntheticTlsFixture({bridge});
+    fixture=composition?await require('./node-launch-entry.cjs').startStagedBackendFixture(pipe,ownerHandle,mode,ended,compositionEvidence,loadingDiagnostics):await syntheticTlsFixture({bridge});
     assert.equal(fixture.snapshot().nativeOwnerAuthenticated,true);
     assert.equal(fixture.snapshot().productionAuthority,false);
     fixture.assertLive();
+    if(['pipe-loss','composition-pipe-loss'].includes(mode)){
+      const publication=publishFixtureRecord(path.join(root,'node-launch-result.json'),{passed:false,terminal:false,readyForTerminal:true,productionAuthority:false});
+      if(!publication.written)throw Object.assign(Error('Fixture coordination publication failed.'),{code:'FIXTURE_READY_PUBLICATION'});
+    }
     if(mode==='node-exit') process.exit(0);
     if(mode==='listener-loss') await fixture.loseListenerForTest();
     if(mode==='ws-loss') await fixture.loseWsForTest();
@@ -137,17 +168,19 @@ async function route(router, method, url) {
     assert.equal(fixture.snapshot().shutdownComplete,true);
     const native=addon.snapshot(); assert.equal(native.handlesClosed,true); assert.equal(native.referencesReleased,true);
     assert.deepEqual(blockedOperations,[]); assert.ok(!modules.has('src/server/index.js'));
-    fs.writeFileSync(path.join(root,'node-launch-result.json'),JSON.stringify({passed:true,productionAuthority:false,completeClosure:false,authenticatedBeforeClose:true,mode,denial,native,
-      fixture:fixture.snapshot(),compositionEvidence,loadedModules:[...modules].sort(),blockedOperations}),{flag:'wx'});
+    terminalResult({passed:true,productionAuthority:false,completeClosure:false,authenticatedBeforeClose:true,mode,denial,native,
+      fixture:fixture.snapshot(),compositionEvidence,loadingDiagnostics,loadedModules:[...modules].sort(),blockedOperations});
   } catch(error) {
-    addon.revoke();
-    if(resourceModes.includes(mode)||mode.startsWith('composition-')) {
-      assert.equal(ownedServer?.listening??false,false); assert.deepEqual(blockedOperations,[]);
-      assert.ok(!modules.has('src/server/index.js'));
+    const primaryCode=error.code??null;let cleanupFailureCode;
+    try{await fixture?.close();}catch(cleanup){cleanupFailureCode=String(cleanup.code??cleanup.name).slice(0,64);}
+    finally{try{addon.revoke();}catch(cleanup){cleanupFailureCode??=String(cleanup.code??cleanup.name).slice(0,64);}}
+    if(resourceModes.includes(mode)||mode.startsWith('composition-')){
+      try{assert.equal(ownedServer?.listening??false,false);assert.deepEqual(blockedOperations,[]);assert.ok(!modules.has('src/server/index.js'));}
+      catch(cleanup){cleanupFailureCode??=String(cleanup.code??cleanup.name).slice(0,64);process.exitCode=1;}
     }
-    fs.writeFileSync(path.join(root,'node-launch-result.json'),JSON.stringify({passed:false,productionAuthority:false,mode,denial:error.code??null,
-      native:addon.snapshot(),compositionEvidence,resourceElapsedMs:performance.now()-resourceStarted,loadRequests,replayDenials,listenerStopped:!(ownedServer?.listening),message:'Integrated fixture unavailable.'}),{flag:'wx'});
+    terminalResult({passed:false,productionAuthority:false,mode,denial:primaryCode,cleanupFailureCode,
+      native:addon.snapshot(),compositionEvidence,loadingDiagnostics,resourceElapsedMs:performance.now()-resourceStarted,loadRequests,replayDenials,listenerStopped:!(ownedServer?.listening),message:'Integrated fixture unavailable.'});
     if(!['wrong-owner','foreign-owner','bad-nonce','replay','wrong-pin','bind-queue-failure','composition-ws-failure','composition-bind-cancel','composition-endpoint-swap',...resourceModes].includes(mode)) process.exitCode=1;
   }
-})().catch(error=>{ fs.writeFileSync(path.join(root,'node-launch-result.json'),JSON.stringify({passed:false,code:error.code??null,phase:diagnosticPhase,
-  loaderDiagnostic:diagnosticPhase==='addon-load'?error.message:null,blockedOperations,message:'Fixture driver failed.'}),{flag:'wx'});process.exitCode=1; });
+})().catch(error=>{ terminalResult({passed:false,productionAuthority:false,code:error.code??null,phase:diagnosticPhase,
+  loaderDiagnostic:diagnosticPhase==='addon-load'?error.message:null,blockedOperations,message:'Fixture driver failed.'});process.exitCode=1; });

@@ -14,6 +14,48 @@ export function deferred<T>() {
   return { promise, resolve, reject };
 }
 
+/** One startup smoke with synthetic providers; the probe's process watchdog bounds a stalled promise. */
+export async function exerciseStagedStartupSmoke() {
+  const started = performance.now(), phases: { name: string; elapsedMs: number }[] = [];
+  const deadlineMs = 3000;
+  const phase = (name: string) => {
+    const elapsedMs = performance.now() - started;
+    phases.push({ name, elapsedMs });
+    assert.ok(elapsedMs < deadlineMs, 'Synthetic startup deadline exceeded: ' + name);
+  };
+  let f: ReturnType<typeof lifecycleFixture> | undefined;
+  try {
+    phase('construct'); f = lifecycleFixture(); assert.deepEqual(f.events, []);
+    phase('start'); await f.backend.start();
+    phase('initialize'); await f.backend.initialized();
+    assert.equal(f.backend.status().state, 'running');
+    assert.equal(f.backend.status().recoveryInitialization, 'completed');
+    assert.equal(f.backend.status().recoveryInspected, true);
+    assert.equal(f.events.filter(e => e === 'recovery.initialize').length, 1);
+    assert.equal(f.events.filter(e => e === 'credentials.initialize').length, 1);
+    phase('denial'); assert.equal((await f.request()).status, 401);
+    assert.equal(f.verifyUpgrade({ method: 'GET', url: '/ws', headers: {}, rawHeaders: ['Host', 'localhost:3001'] }), false);
+  } catch (error) {
+    throw Object.assign(new Error('Staged synthetic startup failed at ' + phases.at(-1)?.name, { cause: error }), { phases });
+  } finally {
+    if (f) {
+      // Always initiate cleanup, even if a phase assertion failed or elapsed time expired.
+      phases.push({ name: 'shutdown', elapsedMs: performance.now() - started });
+      const closing = f.backend.shutdown(); assert.equal(f.backend.shutdown(), closing); await closing;
+      assert.equal(f.backend.status().state, 'stopped'); assert.equal(f.http.listening, false);
+      assert.ok(f.signals.every(s => s.aborted));
+      // Lifecycle deliberately retains one inert error sink for late provider errors.
+      assert.equal(f.http.listenerCount('error'), 1); assert.equal(f.ws.listenerCount('connection'), 0);
+      assert.equal(f.ws.listenerCount('error'), 1);
+      f.http.emit('error', new Error('synthetic late error')); f.ws.emit('error', new Error('synthetic late error'));
+      assert.equal(f.backend.status().state, 'stopped');
+    }
+  }
+  phase('stopped');
+  return { passed: true, phases, deadlineMs, providers: 'synthetic-only', productionAuthority: false,
+    apiStatus: 401, wsAllowed: false, state: f!.backend.status().state, events: f!.events };
+}
+
 /** Also executed as emitted JavaScript by plain Node under the isolation guards. */
 export async function exerciseStagedLifecycle() {
   const f = lifecycleFixture(); assert.equal(f.events.length, 0);

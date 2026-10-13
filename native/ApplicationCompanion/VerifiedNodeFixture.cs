@@ -34,7 +34,7 @@ internal static class VerifiedNodeFixture
         private void Stop() { lock (gate) { stopped = true; child?.Dispose(); child = null; } }
         public void Dispose() { Stop(); ended.Dispose(); cancelled.Dispose(); }
     }
-    internal static int Run(string stage)
+    internal static int Run(string stage, string? focused=null)
     {
         var cases = new List<object>(); var processes = new List<Process>();
         string active = "runtime";
@@ -54,7 +54,8 @@ internal static class VerifiedNodeFixture
                     Row("src/test/backend_lifecycle_fixture.js", "dependency") } });
             byte[] Sign(byte[] bytes) => signer.SignData(bytes, HashAlgorithmName.SHA256, RSASignaturePadding.Pss);
             VerifiedBackendArtifacts Verify(byte[] bytes, CancellationToken owner = default) => VerifiedBackendArtifacts.VerifyNodeFixture(root, bytes, Sign(bytes), trust, owner);
-            void Check(bool ok) { if (!ok) throw new IOException("fixture-assertion:" + active); }
+            var timing=Stopwatch.StartNew();
+            void Check(bool ok,[System.Runtime.CompilerServices.CallerLineNumber]int line=0) { if (!ok) throw new IOException("fixture-assertion:" + active+":line="+line+":elapsedMs="+timing.ElapsedMilliseconds); }
             void Created(int pid) { var p = Process.GetProcessById(pid); _ = p.Handle; processes.Add(p); }
             void Cleanup() { foreach (var p in processes) Check(p.WaitForExit(3000)); }
             void Deny(string name, Action action, Func<Exception, bool> expected)
@@ -67,12 +68,14 @@ internal static class VerifiedNodeFixture
             }
             string result = Path.Combine(root, "node-launch-result.json");
             Check(!File.Exists(result));
+            if(focused is null){
             active = "positive";
             using (var artifacts = Verify(Manifest()))
             using (var launch = new Launch(root, artifacts, default, "normal", Created))
             {
                 Check(processes[^1].WaitForExit(7000)); Check(processes[^1].ExitCode == 0);
                 using var report = JsonDocument.Parse(File.ReadAllBytes(result));
+                FixtureCompletion.Require(processes[^1].ExitCode,report.RootElement,true,false);
                 Check(report.RootElement.GetProperty("passed").GetBoolean());
                 Check(report.RootElement.GetProperty("stagedComposition").GetBoolean());
                 Check(!report.RootElement.GetProperty("productionAuthority").GetBoolean());
@@ -107,18 +110,28 @@ internal static class VerifiedNodeFixture
                         "cancel-before-resume" => e is OperationCanceledException,
                         "resume-failure" => e is IOException && e.Message == "fixture-resume-failure:6",
                         _ => e is IOException && (e.Message == "create-process:6" || e.Message == "create-process:87" || e.Message == "job-list:6" || e.Message == "job-list:87") });
-            foreach (bool expire in new[] { false, true })
+            }
+            foreach (bool expire in focused is null ? new[] { false, true } : new[] { true })
             {
                 active = expire ? "expiry-live" : "cancellation-live";
                 using var owner = new CancellationTokenSource();
                 using var a = Verify(Manifest(expire ? 3500 : 10000), owner.Token);
                 using var launch = new Launch(root, a, owner.Token, "hold", Created);
                 var clock = Stopwatch.StartNew(); while (!File.Exists(result) && clock.ElapsedMilliseconds < 2500) Thread.Sleep(10);
-                Check(File.Exists(result)); using (var report = JsonDocument.Parse(File.ReadAllBytes(result))) Check(report.RootElement.GetProperty("passed").GetBoolean());
+                Check(File.Exists(result));
+                using(var report=FixtureCompletion.Read(result)){
+                    Check(report.RootElement.GetProperty("lifetimeReady").GetBoolean());
+                    Check(!report.RootElement.GetProperty("terminal").GetBoolean());
+                    Check(!report.RootElement.GetProperty("passed").GetBoolean());
+                    Check(!report.RootElement.GetProperty("productionAuthority").GetBoolean());
+                    Check(report.RootElement.GetProperty("runtime").GetString()=="v24.19.0");
+                    Check(report.RootElement.GetProperty("executable").GetString()==RuntimePath);
+                }
                 if (!expire) owner.Cancel();
                 Check(processes[^1].WaitForExit(5000)); Check(a.Ended.IsCancellationRequested);
+                Check(processes[^1].ExitCode is 0 or 3); // Job-close termination, or existing explicit TerminateProcess fallback.
                 File.Move(result, Path.Combine(root, "node-launch-" + active + ".json")); Cleanup();
-                cases.Add(new { name = active, outcome = "revoked-and-cleaned" });
+                cases.Add(new { name = active, outcome = "revoked-and-cleaned",exitCode=processes[^1].ExitCode,controlOnly=true,completionVerified=false });
             }
             Cleanup();
             Console.WriteLine(JsonSerializer.Serialize(new { passed = true, productionAuthority = false, completeClosure = false,

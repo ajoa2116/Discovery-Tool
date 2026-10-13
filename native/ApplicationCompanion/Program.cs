@@ -20,6 +20,8 @@ internal static class Program
         try
         {
             WindowsBoundary.RequireUnelevated();
+            if(args.SequenceEqual(new[]{"--fixture-completion-self-test"}))return FixtureCompletion.SelfTest();
+            if(args.Length==3&&args[0]=="--verified-node-fixture-self-test"&&args[2]=="expiry-live")return VerifiedNodeFixture.Run(args[1],args[2]);
             if (args.Length == 3 && args[0] == "--node-bridge-fixture" && NodeBridgeFixture.Modes.Contains(args[2])) return NodeBridgeFixture.Run(args[1], args[2]);
             if (args.Length == 2 && args[0] == "--verified-node-fixture-self-test") return VerifiedNodeFixture.Run(args[1]);
             if (args.SequenceEqual(new[] { "--backend-artifact-self-test", "--diagnostics" })) return BackendArtifactTests.Run(true);

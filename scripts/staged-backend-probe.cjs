@@ -16,6 +16,8 @@ const projectAllowlist = new Set([...reviewedProjects, ...testOnlyProjects]);
 let baselineLoadedModules = [];
 const successfulProjectImports = [], moduleReviews = [];
 let stagedComposition = false;
+const startupSmokeOnly = process.argv[2] === '--startup-smoke';
+let startupSmoke;
 function deny(label) {
   const error = Error('Harness prevented ' + label); error.code = 'HARNESS_BLOCKED';
   if (!checkingGuards) blockedOperations.push(label);
@@ -56,7 +58,7 @@ registerHooks({
 const load = name => import(pathToFileURL(path.join(root, name)).href);
 async function check(name, run) {
   try { await run(); checks.push(name); }
-  catch (error) { failures.push({ check: name, code: error.code ?? null, message: error.message }); }
+  catch (error) { failures.push({ check: name, code: error.code ?? null, message: error.message, phases: error.phases }); }
 }
 function syntheticResponse() {
   return { statusCode: 200, body: undefined, status(code) { this.statusCode = code; return this; },
@@ -87,7 +89,13 @@ async function route(router, method, url) {
     } finally { checkingGuards = false; }
   });
   // Failure of isolation controls prevents all application imports.
-  if (!failures.length) {
+  if (!failures.length && startupSmokeOnly) {
+    await check('staged-startup-initialization-smoke', async () => {
+      const { exerciseStagedStartupSmoke } = await load('src/test/backend_lifecycle_fixture.js');
+      startupSmoke = await exerciseStagedStartupSmoke(); stagedComposition = true;
+    });
+  }
+  if (!failures.length && !startupSmokeOnly) {
     await check('runtime-packages', async () => {
       const express = (await import('express')).default;
       const cors = (await import('cors')).default;
@@ -183,6 +191,6 @@ async function route(router, method, url) {
   const report = { passed: failures.length === 0, informationalOnly: true, productionAuthority: false, completeClosure: false,
     runtime: { executable: process.execPath, version: process.version, platform: process.platform, arch: process.arch, execArgv: process.execArgv },
     checks, failures, blockedOperations, loadedModules: [...modules].sort(), baselineLoadedModules, successfulProjectImports, moduleReviews,
-    realEntrypointImported: false, stagedComposition, tsxEsbuildUnavailable: checks.includes('isolation-controls') };
+    realEntrypointImported: false, stagedComposition, startupSmoke, tsxEsbuildUnavailable: checks.includes('isolation-controls') };
   console.log(JSON.stringify(report)); if (!report.passed) process.exitCode = 1;
 })().catch(error => { console.log(JSON.stringify({ passed: false, failures: [{ check: 'probe-fatal', message: error.message }] })); process.exitCode = 1; });

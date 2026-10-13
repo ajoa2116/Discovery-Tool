@@ -55,7 +55,7 @@ export async function actualBackendTlsFixture(bridge: Bridge, mode: string, evid
     evidence.stopped=backend.status().state==='stopped';evidence.recoveryInspected=backend.status().recoveryInspected;
     evidence.initializationAborted=signals.every(s=>s.aborted);evidence.connections=sockets.size;};
   try {await backend.start();}
-  catch {await backend.shutdown();await finishLate();assert.equal(server?.listening??false,false);assert.ok(signals.every(s=>s.aborted));throw Error('Actual backend fixture unavailable.');}
+  catch(error) {evidence.startFailureCode=error instanceof Error?String('code' in error?error.code:error.name).slice(0,64):'unknown';await backend.shutdown();await finishLate();assert.equal(server?.listening??false,false);assert.ok(signals.every(s=>s.aborted));throw Error('Actual backend fixture unavailable.');}
   assert.equal(backend.status().state,'running');assert.equal(backend.status().recoveryInspected,false);
   return {
     assertLive(){assert.ok(exact);bridge.assert(...exact);},

@@ -84,6 +84,12 @@ async function route(router, method, url) {
     for (const action of [() => childProcess.spawn('DO_NOT_EXECUTE'), () => net.createServer(), () => dgram.createSocket('udp4'), () => os.networkInterfaces(), () => setInterval(() => {}, 1)]) assert.throws(action, {code:'HARNESS_BLOCKED'});
     for (const input of ['tsx','esbuild','@esbuild/win32-x64','./src/server/index.js']) await assert.rejects(import(input), {code:'HARNESS_BLOCKED'});
   } finally { checkingGuards = false; }
+  if(process.argv[2]==='hold'){
+    // Lifetime control only: report the measured runtime alive, never backend completion.
+    fs.writeFileSync(path.join(root,'node-launch-result.json'),JSON.stringify({passed:false,terminal:false,lifetimeReady:true,
+      productionAuthority:false,runtime:process.version,executable:process.execPath,blockedOperations}),{flag:'w'});
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0);return;
+  }
   const { OSCredentialVault } = await load('src/core/storage/vault.js');
   OSCredentialVault.prototype.initialize = () => deny('credential-initialization');
   const { exerciseStagedLifecycle } = await load('src/test/backend_lifecycle_fixture.js');
@@ -92,6 +98,5 @@ async function route(router, method, url) {
   assert.equal(decideCameraAccess('fixture-missing-evidence', [], []).allowed, false);
   assert.deepEqual(blockedOperations, []);
   assert.ok(!modules.has('src/server/index.js'));
-  fs.writeFileSync(path.join(root, 'node-launch-result.json'), JSON.stringify({passed:true, productionAuthority:false, completeClosure:false, runtime:process.version, executable:process.execPath, arguments:process.execArgv, cwd:process.cwd(), environmentKeys:Object.keys(process.env).sort(), stagedComposition:true, realEntrypointImported:false, blockedOperations, loadedModules:[...modules].sort()}), {flag:'wx'});
-  if (process.argv[2] === 'hold') Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0);
-})().catch(error => { try { fs.writeFileSync(path.join(root, 'node-launch-result.json'), JSON.stringify({passed:false, code:error.code ?? null, message:error.message}), {flag:'wx'}); } catch {} process.exitCode=1; });
+  fs.writeFileSync(path.join(root, 'node-launch-result.json'), JSON.stringify({passed:true, terminal:true,productionAuthority:false, completeClosure:false, runtime:process.version, executable:process.execPath, arguments:process.execArgv, cwd:process.cwd(), environmentKeys:Object.keys(process.env).sort(), stagedComposition:true, realEntrypointImported:false, blockedOperations, loadedModules:[...modules].sort()}), {flag:'w'});
+})().catch(error => { try { fs.writeFileSync(path.join(root, 'node-launch-result.json'), JSON.stringify({passed:false,terminal:true,productionAuthority:false,code:error.code ?? null, message:error.message}), {flag:'w'}); } catch {} process.exitCode=1; });

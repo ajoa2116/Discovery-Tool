@@ -93,13 +93,17 @@ internal static class NodeBridgeFixture
     }
     internal static int Run(string stage, string mode)
     {
-        try { return RunAsync(Path.GetFullPath(stage), mode).GetAwaiter().GetResult(); }
+        var clock = Stopwatch.StartNew();
+        var phases = new List<object>();
+        void Phase(string name) { if (phases.Count >= 16) throw new IOException("fixture-diagnostic-limit"); phases.Add(new { name, elapsedMs = clock.ElapsedMilliseconds }); }
+        try { return RunAsync(Path.GetFullPath(stage), mode, Phase).GetAwaiter().GetResult(); }
         catch (BackendArtifactException e) when (mode == "addon-tamper" && e.Reason == "measurement")
         { Console.WriteLine(JsonSerializer.Serialize(new { passed = true, mode, denied = "measurement", launched = false, productionAuthority = false })); return 0; }
-        catch (Exception e) { Console.Error.WriteLine(JsonSerializer.Serialize(new { passed = false, reason = e is BackendArtifactException b ? b.Reason : e.Message, exception = e.GetType().Name })); return 1; }
+        catch (Exception e) { Console.Error.WriteLine(JsonSerializer.Serialize(new { passed = false, reason = e is BackendArtifactException b ? b.Reason : e.Message, exception = e.GetType().Name, phases })); return 1; }
     }
-    private static async Task<int> RunAsync(string stage, string mode)
+    private static async Task<int> RunAsync(string stage, string mode, Action<string> phase)
     {
+        phase("approval");
         using var signer = RSA.Create(3072); var trust = BackendReleaseTrust.ForIsolatedTests(signer);
         int duration = 10000;
         long expires = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() + duration;
@@ -108,7 +112,7 @@ internal static class NodeBridgeFixture
         VerifiedBackendArtifacts Approval(string root, bool node)
         {
             var files = node ? new[] { Row("node.exe", "runtime", Path.GetDirectoryName(VerifiedNodeFixture.RuntimePath)!),
-                Row("node-launch-driver.cjs", "entry", root), Row("node-owner-bridge.node", "dependency", root),
+                Row("node-launch-driver.cjs", "entry", root), Row("node-launch-entry.cjs", "dependency", root), Row("node-owner-bridge.node", "dependency", root),
                 Row("src/test/support/synthetic_tls_binding.js", "dependency", root), Row("node-launch-review.cjs", "dependency", root),
                 Row("src/test/support/backend_tls_binding.js", "dependency", root), Row("src/server/backend_application.js", "dependency", root),
                 Row("package.json", "dependency", root) } : new[] { Row(Path.GetFileName(Environment.ProcessPath!), "runtime", root),
@@ -132,6 +136,7 @@ internal static class NodeBridgeFixture
         BinaryPrimitives.WriteInt32LittleEndian(material, publicCert.Length); publicCert.CopyTo(material, 4);
         BinaryPrimitives.WriteInt32LittleEndian(material.AsSpan(4 + publicCert.Length), privateKey.Length); privateKey.CopyTo(material, 8 + publicCert.Length);
         string name = WindowsBoundary.NewPipeName(); using var pipe = WindowsBoundary.CreatePipe(name);
+        phase("launch");
         using var foreignOwner = mode == "foreign-owner" ? OwnedChild.StartLauncherPeer(WindowsBoundary.NewPipeName(), "no-connect") : null;
         using var child = OwnedChild.StartIntegratedFixture(stage, name, mode == "foreign-node" ? "no-connect" : mode, approval, foreignOwner?.Process.Id);
         using var observed = Process.GetProcessById(child.Process.Id); _ = observed.Handle;
@@ -146,9 +151,11 @@ internal static class NodeBridgeFixture
         {
             using var startup = CancellationTokenSource.CreateLinkedTokenSource(deadline.Token); startup.CancelAfter(3000);
             var connecting = pipe.WaitForConnectionAsync(startup.Token);
+            phase("pipe-connect");
             var exited = observed.WaitForExitAsync(startup.Token);
             if (await Task.WhenAny(connecting, exited) == exited && observed.HasExited) throw new IOException("child-before-peer");
             await connecting; Live();
+            phase("challenge");
             var hello = await Read(pipe, 1, startup.Token); if (hello.Length != 32) throw new IOException("challenge"); Live();
             byte[] nonce = RandomNumberGenerator.GetBytes(32), session = Guid.NewGuid().ToByteArray();
             try
@@ -166,9 +173,11 @@ internal static class NodeBridgeFixture
                 if (ack.Length != 80 || !CryptographicOperations.FixedTimeEquals(ack.AsSpan(0, 32), hello) ||
                     !CryptographicOperations.FixedTimeEquals(ack.AsSpan(32, 32), nonce) || !CryptographicOperations.FixedTimeEquals(ack.AsSpan(64), session)) throw new IOException("challenge");
                 authenticated = true;
+                phase("tls-transfer");
                 if(mode == "owner-tls-malformed") { byte[] invalid = new byte[8]; BinaryPrimitives.WriteUInt32LittleEndian(invalid, uint.MaxValue); await Send(pipe, 4, invalid, startup.Token); }
                 else { await Send(pipe, 4, material, startup.Token); materialSent = true; }
                 CryptographicOperations.ZeroMemory(material); CryptographicOperations.ZeroMemory(privateKey);
+                phase("endpoint");
                 var endpoint = await Read(pipe, 5, deadline.Token); Live();
                 if (endpoint.Length != 18 || !CryptographicOperations.FixedTimeEquals(endpoint.AsSpan(0, 16), session)) throw new IOException("session");
                 port = BinaryPrimitives.ReadUInt16LittleEndian(endpoint.AsSpan(16)); if (port == 0) throw new IOException("endpoint");
@@ -177,6 +186,7 @@ internal static class NodeBridgeFixture
                 void Check() { deadline.Token.ThrowIfCancellationRequested(); approval.CheckNodeFixtureLifetime();
                     child.VerifyNodePipe(pipe, approval); Listener(child.Process.Id, port); }
                 Live(); // Full remeasurement at the endpoint operation boundary.
+                phase("endpoint-proof");
                 using var handler = new HttpClientHandler { UseProxy = false, AllowAutoRedirect = false, UseCookies = false,
                     ServerCertificateCustomValidationCallback = (_, cert, _, _) => {
                         try { Check(); bool valid = cert is not null && CryptographicOperations.FixedTimeEquals(SHA256.HashData(cert.RawData), expectedPin); Check(); return valid; }
@@ -207,13 +217,27 @@ internal static class NodeBridgeFixture
                 if (!upgradeDenied) throw new IOException("production-ws"); Check(); Live();
                 }
                 await Send(pipe, 6, session, deadline.Token); bound = true;
+                phase("bound");
             }
             finally { CryptographicOperations.ZeroMemory(nonce); CryptographicOperations.ZeroMemory(hello); }
+            if(mode is "pipe-loss" or "composition-pipe-loss") {
+                // Scheduling barrier only, after native peer/session/listener/pin verification.
+                // A diagnostic file never authenticates a peer or grants authority.
+                phase("terminal-ready");
+                while(true){
+                    Live();bool ready=false;
+                    try{using var snapshot=FixtureCompletion.Read(Path.Combine(stage,"node-launch-result.json"));
+                        ready=snapshot.RootElement.TryGetProperty("readyForTerminal",out var flag)&&flag.ValueKind==JsonValueKind.True;}
+                    catch(IOException){}catch(JsonException){}
+                    if(ready)break;
+                    await Task.Delay(10,deadline.Token);
+                }
+            }
             if (mode == "owner-exit")
-            { Console.WriteLine(JsonSerializer.Serialize(new { passed = true, mode, bound, pid = child.Process.Id, port, ownerExit = true, productionAuthority = false })); Console.Out.Flush(); Environment.Exit(0); }
+            { Console.WriteLine(JsonSerializer.Serialize(new { passed = true, mode, bound, pid = child.Process.Id, port, ownerExit = true,controlOnly=true,completionVerified=false,productionAuthority = false })); Console.Out.Flush(); Environment.Exit(0); }
             if (mode is "pipe-loss" or "composition-pipe-loss") pipe.Dispose();
             else if (mode == "cancel") { outcome = "cancelled"; deadline.Cancel(); pipe.Dispose(); child.Dispose(); }
-            else { try { _ = await Read(pipe, 255, deadline.Token); throw new IOException("replay"); }
+            else { try { phase("terminal-channel"); _ = await Read(pipe, 255, deadline.Token); throw new IOException("replay"); }
                 catch (EndOfStreamException) { outcome = "channel-ended"; }
                 catch (OperationCanceledException) when (mode is "expiry" or "composition-expiry") { outcome = "expired"; pipe.Dispose(); if(mode=="expiry")child.Dispose(); } }
         }
@@ -245,13 +269,19 @@ internal static class NodeBridgeFixture
         foreign?.Dispose();
         foreignOwner?.Dispose();
         if (!observed.HasExited) throw new IOException("child-cleanup");
+        bool controlOnly = mode is "node-exit" or "cancel" or "expiry" or "foreign-node";
+        if(!controlOnly){
+            using var completion=FixtureCompletion.Read(Path.Combine(stage,"node-launch-result.json"));
+            bool expectedPassed=bound && !mode.StartsWith("composition-bind-cancel",StringComparison.Ordinal);
+            FixtureCompletion.Require(observed.ExitCode,completion.RootElement,expectedPassed,true);
+        }
         if (mode == "foreign-owner")
         {
             using var result = JsonDocument.Parse(File.ReadAllBytes(Path.Combine(stage, "node-launch-result.json")));
             if (authenticated || materialSent || result.RootElement.GetProperty("denial").GetString() != "owner-peer") throw new IOException("owner-peer-denial");
         }
         Console.WriteLine(JsonSerializer.Serialize(new { passed = true, mode, authenticated, materialSent, bound, port,
-            outcome, elapsedMs = started.ElapsedMilliseconds, residualProcesses = 0, productionAuthority = false, completeClosure = false }));
+            outcome, exitCode=observed.ExitCode,completionVerified=!controlOnly,controlOnly,elapsedMs = started.ElapsedMilliseconds, residualProcesses = 0, productionAuthority = false, completeClosure = false }));
         return 0;
     }
 }

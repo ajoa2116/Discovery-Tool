@@ -5,7 +5,10 @@ import { WebSocket, WebSocketServer } from 'ws';
 import { createServer as createViteServer, loadConfigFromFile } from 'vite';
 import { httpHostAllowed } from '../server/http_host_validation.ts';
 
-test('actual Vite WS proxy forwards approved Host and preserves Origin', async () => {
+test('actual Vite WS proxy forwards approved Host and preserves Origin', { timeout: 15000 }, async () => {
+  const started = performance.now();
+  const phase = (name: string) => console.log(JSON.stringify({ fixture: 'vite-ws-proxy', phase: name, elapsedMs: performance.now() - started }));
+  phase('config-load');
   const loaded = await loadConfigFromFile({ command: 'serve', mode: 'development' });
   assert.ok(loaded);
   const options = loaded.config.server?.proxy?.['/ws'];
@@ -22,17 +25,21 @@ test('actual Vite WS proxy forwards approved Host and preserves Origin', async (
   });
   let vite: Awaited<ReturnType<typeof createViteServer>> | undefined;
   try {
+    phase('backend-listen');
     await new Promise<void>((resolve, reject) => {
       backend.once('error', reject);
       backend.listen(3001, '127.0.0.1', resolve);
     });
+    phase('vite-create');
     vite = await createViteServer({ configFile: false, plugins: [], logLevel: 'silent',
       server: { host: '127.0.0.1', port: 0, proxy: loaded.config.server!.proxy, watch: null },
     });
+    phase('vite-listen');
     await vite.listen();
     const address = vite.httpServer!.address();
     assert.ok(address && typeof address !== 'string');
     for (const name of ['localhost', '127.0.0.1']) {
+      phase('client-connect-' + name);
       const origin = `http://${name}:5173`;
       const client = new WebSocket(`ws://127.0.0.1:${address.port}/ws`, {
         headers: { Host: `${name}:${address.port}`, Origin: origin }, handshakeTimeout: 3000,
@@ -46,14 +53,20 @@ test('actual Vite WS proxy forwards approved Host and preserves Origin', async (
         });
         assert.equal(response, 'proxy fixture');
         assert.deepEqual(observed.at(-1), { host: 'localhost:3001', origin });
+        phase('client-close-' + name);
         await new Promise<void>(resolve => { client.once('close', () => resolve()); client.close(); });
       } finally { client.terminate(); }
     }
     assert.equal(observed.length, 2);
   } finally {
+    phase('teardown-clients');
     for (const client of wss.clients) client.terminate();
+    phase('teardown-vite');
     await vite?.close();
+    phase('teardown-ws');
     await new Promise<void>(resolve => wss.close(() => resolve()));
+    phase('teardown-backend');
     if (backend.listening) await new Promise<void>((resolve, reject) => backend.close(error => error ? reject(error) : resolve()));
+    phase('stopped');
   }
 });
