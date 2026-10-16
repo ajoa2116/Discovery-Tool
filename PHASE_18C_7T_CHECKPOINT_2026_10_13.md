@@ -1,5 +1,7 @@
 # Phase 18C.7T — October 13 daily validation checkpoint and handoff
 
+**Latest checkpoint: October 15, 2026 end-of-day addendum below.** Earlier dates, counts, commits and workflow approvals in this document remain historical. Current branch is codex/post-field-corrections-1 at 4ac7569; no commit/push is authorized by this checkpoint task.
+
 **496 eligible automated runner entries passed. This was not an uninterrupted full-suite pass. Preparation/orchestration failures and interrupted commands remain recorded separately. Phase 18C.7T remains incomplete and non-authorizing.** No production activation, release-policy approval, commit or push occurred.
 
 Baseline: Master Blueprint v1.1 and current 18C.7T contracts. Its standalone blueprint text remains unavailable in the checkout, so full reconciliation is not claimed. Branch `codex/post-field-corrections-1`; HEAD and live remote tip both `a36e404c3b5ff33c94863db8b5e0504ff5b8ab35`, checked before validation and again after cleanup. The working tree contains today's accumulated uncommitted implementation/test/documentation changes. The October 12 handoff's uncommitted checkpoint description is historical and does not describe today's HEAD.
@@ -68,3 +70,71 @@ Retention/digests and captured calls remain fixture observations: `productionAut
 [Daily evidence root](C:/Users/Omar/AppData/Local/Temp/discovery-daily-2026-10-13-625683897f914934a88d599a9cb1eb47) retains build logs, original/corrected runner scripts, invalid/corrected guard, command ledgers, ordered/continuation test lists, interrupted and completed TAP logs, provenance/preflight comparisons, native/fixture journals, staged mode reports, security audit, validation summary and final cleanup snapshot. The final sequence's passing result covers its own remaining checks only; it does not erase the earlier failures.
 
 [Retained-file evidence](C:/Users/Omar/AppData/Local/Temp/discovery-retained-files-hhhSar/retention-results.json). Implementation and this checkpoint remain uncommitted. Stop after reporting.
+
+## October 15, 2026 end-of-day checkpoint
+
+**75 fresh automated tests passed; TypeScript/production build and all three native Release builds passed. This is a bounded end-of-day pass, not a new full-suite pass or production approval.** Selected current focused runtime evidence is reused explicitly below. No feature development, implementation experiment, commit or push occurred in this checkpoint task.
+
+Master Blueprint v1.1 and established 18C.7T contracts remain authoritative; the standalone-blueprint reconciliation limitation remains. Branch and full HEAD verified before/after: codex/post-field-corrections-1 / 4ac75692d18dcf282f4c29d3e6f689215b1a071f. The locally cached origin branch ref equals that commit; no live fetch, remote synchronization or GitHub publication is claimed.
+
+### Preserved accumulated scope since 4ac7569
+
+Seventeen existing dirty paths were copied, hashed and preserved externally before validation: four tracked modifications and thirteen untracked project files. Every one remained byte-for-byte unchanged after builds/tests. Only this checkpoint and the existing PHASE_18C_7T_RESTART_HANDOFF_2026_10_11.md are edited by the end-of-day task. Final expected Git state: six modified tracked files and thirteen untracked files; no staging, reset, deletion or discarded work.
+
+- Tracked pre-existing work: PHASE_18C_7T_MEASURED_INPUT_LIFETIME.md; src/test/measured_input_lifetime.test.cjs; src/test/support/measured_input_lifetime.cs; src/test/support/measured_input_lifetime_fixture.cs.
+- Untracked implementation/tests: src/test/{iconv_lazy_contract.test.cjs,iconv_consolidation.test.cjs}; src/test/support/{iconv_lazy_probe.cjs,owned_input_process.cs,owned_child_link_guards.cs,native_dll_experiment.cs,harmless_loader_primary.c,harmless_loader_dependency.c,harmless_loader_probe.c}.
+- Untracked reports, all preserved: PHASE_18C_7T_BACKEND_DEPENDENCY_REDUCTION.md; PHASE_18C_7T_ICONV_LAZY_ENCODING_CONTRACT.md; PHASE_18C_7T_ICONV_CONSOLIDATION_EXPERIMENT.md; PHASE_18C_7T_ICONV_VARIANT_EQUIVALENCE.md.
+
+Review confirms fixture-only work: exact one-use measured consumption/handoff identity; terminal denial that retains pins until exact consumer completion; birth-specific owned-child exit evidence, Job/pipe/monitor accounting; corrected SafeHandle disposal/reference-release/closure ordering; exact loader-request/dependency/metadata boundaries; harmless native loading/search controls; non-authorizing staging assessment and bounded iconv evidence. None creates a production caller, recovery endpoint or parallel trust authority.
+
+### Isolation decision before runtime checks
+
+Fresh envelope: C:/Users/Omar/AppData/Local/Temp/discovery-eod-2026-10-15-864f798306504bc497e1930b5be110ec. Its parent/ancestor chain rejects observed reparse points; the envelope is independently unique. TEMP/TMP were restricted to it for this pass. Reviewed inventory/staging/catalog fixtures allocate their own roots and delete only those roots; retained-file tests operate only on their own descriptors; authentication fixtures close only their own ephemeral loopback servers/clients. Native capability tests inject harmless probe stubs. Source-order validation uses an exact test-name filter, so the measured-input runtime/ACL owner test is not executed. No process enumeration, PID lookup, global cleanup, process-name kill or listener baseline scan was used.
+
+Builds are compilation only. Native project targets were reviewed and launch no hosts; --no-restore --disable-build-servers avoids package restoration and global build-server shutdown. npm run build runs tsc with the existing noEmit:true configuration, Vite compilation and build-identity generation; no production server is started. Generated dist/native outputs remain ignored. No broad runtime suite is authorized by this isolation assessment: unreviewed native/UI/owner cleanup paths are excluded rather than assumed safe.
+
+### Fresh validation — one serial pass, all commands exit zero
+
+| Check | Actual fresh result |
+| --- | --- |
+| Six-file regression/security command | **74 passed, zero failed/cancelled/skipped**, 9.893 s command time. Files: dependency_inventory.test.ts, backend_staging.test.ts, retained_staged_files.test.cjs, payload_byte_catalog.test.cjs, production_authentication_boundary.test.ts, native_camera_capability.test.ts. Command uses node --import tsx --test --test-concurrency=1 with those explicit paths. |
+| SafeHandle source-only ordering guard | **1 passed, zero failed/skipped**, 0.348 s. Exact test-name selection: source guards enforce exactly-once process reference release ordering. Native/ACL lifetime test excluded by selection, not counted as a fresh pass or a runner-reported skip. |
+| TypeScript and production build | **Passed**, 42.654 s. One npm run build includes tsc (noEmit), Vite and build identity; no separate repeated tsc invocation. Vite transformed 1,621 modules. |
+| ApplicationCompanion Release | **Passed**, 8.808 s command time, zero warnings/errors. |
+| BootstrapTransport Release | **Passed**, 5.872 s, zero warnings/errors. |
+| CameraBrowserHost Release | **Passed**, 5.433 s, zero warnings/errors. |
+| Final whitespace/security/worktree checks | git diff --check passed; untracked project files included in separate no-index whitespace review. No credential-format/private-key/literal-credential matches in the bounded dirty-file scan; no audited production-policy/source or package/lock changes. |
+
+All three native builds use dotnet build <project> -c Release --no-restore --disable-build-servers. No build/test step was retried. Exact arguments, UTC times, exits and logs are in the external commands.json ledger. Recorded UTC times fall on October 16; this is the requested October 15 America/New_York end-of-day checkpoint.
+
+### Reused evidence — not rerun at end of day
+
+| Earlier October 15 evidence | Applicability and limits |
+| --- | --- |
+| Corrected measured-input/owned-process/loader/DLL controls | Latest independent complete runner passed **422 internal scenarios / 42 harmless children**. All **13 recorded fixture/source hashes still match** current files. Accounting records 42 exact reference releases, closed process/observation/Job/pipe evidence, three explicit module loads/frees, 118 restoration owners released, zero measured/restoration/module resources remaining. Includes allowed-directory success, excluded-current-directory error 126, blocked substitution and module reuse. This is retained evidence, not fresh execution or proof of exact mapped-image backing. |
+| Variant-aware iconv equivalence | Latest independent invocation passed **2 tests, 149 checks per variant / 298 child checks**, nine original plus nine prototype cold children and one compiler. All **seven recorded fixture/tool source hashes still match**. All 64 controlled Transform streams confirmed end/finish/close; metadata, registry, identities and all eight table paths matched across reviewed modes, with no unexpected load. Source/output/catalog correspondence passed in that run. This is reused evidence. |
+| Original lazy contract and first consolidation failure | Initial contract passed 106 checks / nine cold processes. Initial prototype compiled but failed the directory/cache-topology assertion (one passed / one failed runner test), then stopped without retry. That failure remains historical and is not erased by the later explicitly authorized variant-aware contract. |
+
+Native evidence: C:/Users/Omar/AppData/Local/Temp/discovery-dll-controls-validation-68b8e9ea673f4aa6acb84ecb7fcbd15f (source-before.json, runner logs, validated-accounting.json). Iconv evidence: C:/Users/Omar/AppData/Local/Temp/discovery-iconv-equivalence-validation-0363ce597f99472fa97b430bd8a47a04 (frozen sources, focused log, independent contract root). The EOD envelope retains fresh source applicability comparisons. Changes to rebuilt owner bytes/paths can invalidate older native addon measurements: revalidate/rebuild fixture bridge provenance before a future integrated bridge run. No old addon preflight is represented as current after today's native builds.
+
+### Cleanup and deliberately unvalidated scope
+
+Fresh owned runner/CLI commands returned successfully. Authentication tests await their own server/WebSocket close paths. Retained-file tests passed 14 cases with 33 recorded scenarios; final cleanup assertions retain zero pending descriptors, and the repeated-failure case confirms 17 acquisitions/17 actual closures using EBADF. Temporary inventory/staging/catalog roots are scoped to the new envelope; retained evidence/tool scratch remains intentionally present. No new measured-input owner, ACL restoration capability, native Job or recovery hold was created. No machine-wide claim of zero processes/listeners is made: global inspection was deliberately avoided to respect the preserved-owner restriction. Successful compiler return does not supply the native fixture's exact birth-specific exit authority.
+
+Not freshly run: unrestricted/full automated suite; measured-input/DLL runtime (reused above); iconv cold controls (reused above); standalone native security modes; actual-composition/addon and relocated-owner runtime tests; UI/WebView2 lifecycle; production startup; real camera/adapter/network-provider operations; stress/exhaustion tests. These exclusions are not reported as passed. Historical October 11–13 suite/build evidence remains historical, including interrupted/failed command ledgers; no aggregate is promoted into a current full-suite pass.
+
+Preserved owner PID 9784 was **not inspected or interacted with**. Last recorded state—not a fresh liveness assertion—retains one process reference and 18 ACL restoration capabilities, with input pins reported closed after child exit. Original-owner continuity is not conclusively authenticated, and no existing authorized in-process recovery control exists. The future-run release correction does not recover that already loaded owner. Its protected objects, files and recovery evidence remain untouched. Do not terminate it, close its console, reconstruct authority or improvise ACL/handle cleanup.
+
+### Security review, blockers and GitHub checkpoint readiness
+
+All pre-existing dirty-file bytes were preserved, including untracked documents. Bounded secret scanning found no matches; this is pattern review, not a mathematical absence guarantee. Audited src/server, src/core, native production implementations, scripts, root package metadata and lockfile have zero diff from HEAD. New code resides under src/test/support and directly related tests. No build binaries, temporary catalogs, keys or toolchains became untracked project inputs. Production API/WebSocket remain default-deny; native authentication, TLS/process/session/listener ownership, camera gates, release-trust absence and the **64-file ceiling** remain unchanged.
+
+Backend selection remains **825 files**, historical reviewed package subset **165**, unresolved records **4,736**. Experimental iconv subset is **33 to 22 files**, including eight external tables, two metadata files and all nine unexercised files. This is not a new 814-file backend, an approved selected bundle or complete dependency closure. Internal wrappers bypass per-file hooks; deep imports, cache manipulation, module graphs, stack filenames, untested encodings/options and alternate runtime versions remain outside the bounded equivalence claim.
+
+Independent release blockers remain: exact measured-object versus real mapped-image backing identity; Node/runtime/provider/upstream provenance; complete JavaScript/native/DLL/CLR/WindowsDesktop/WebView2/helper dependencies and conditional resolution; protected installation/relocation and genuine owner/receipt adoption. Architecture A's approved technical direction does not approve specific runtime/version, signer/key custody, release manifests, installation, updates, expiry or rollback policies. Signing and activation decisions remain unapproved.
+
+Historical unexplained launcher/artifact failures, earlier Node/composition cancellations and original pipe-loss exception loss, Vite proxy stall and desktop construction timeout remain unresolved; later passes do not explain their causes. Physical camera validation, browser/provider validation, busy-pipe saturation, N-API/thread/allocator exhaustion, cancellation/monitor stress and broader OS resource bounds remain pending.
+
+**Commit readiness:** suitable for owner review and an explicitly owner-authorized **non-authorizing checkpoint commit/push**, with these validation exclusions and preserved-owner incident included. No current fresh test/build failure or detected secret/policy regression blocks recording the fixture work. This is not full-suite, production or release readiness; the live-owner incident blocks cleanup/recovery, not recording source history. The current task explicitly forbids commit/push, so none was performed and nothing is claimed published to GitHub. Include all thirteen untracked project files in an eventual reviewed checkpoint; do not include external/ignored evidence or binaries.
+
+**Recommended first bounded next-session task:** read-only design of generated iconv facade/bundle selection and source-to-output/edge provenance within the existing stager, preserving original selection/admission and unresolved diagnostics. Do not implement or run another experiment automatically. Read the measured-input incident restrictions first; never treat a new-session fixture or source correction as recovery authority for the preserved owner.

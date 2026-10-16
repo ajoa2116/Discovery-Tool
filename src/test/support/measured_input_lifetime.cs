@@ -27,7 +27,107 @@ internal sealed class MeasuredInputLifetime : IDisposable
         public IReadOnlyList<string> Unresolved => Array.AsReadOnly(new[] { "framework selection", "RID alternatives", "roll-forward", "additional probing paths", "WebView2/runtime providers", "actual loader mappings" });
     }
     internal sealed class Rejected(string reason) : IOException(reason) { internal string Reason { get; } = reason; }
-    internal enum Phase { PreOpen, Measuring, Measured, HandedOff, SimulatedUse, Released, Denied }
+    internal enum Phase { PreOpen, Measuring, Measured, HandedOff, SimulatedUse, Consuming, ConsumptionEnded, Released, Denied }
+    internal enum ConsumerPhase { None, Active, Terminal, EndObserved, Completed }
+    internal enum StopReason { None, Denied, Cancelled, Failed, ChannelLost }
+    internal enum CleanupPhase { NotStarted, RetainedForConsumer, Pending, Released }
+    // Opaque local identities, not transferable descriptions or execution authority.
+    // Construction/copying cannot register either object with an owner.
+    internal sealed class ConsumerLease { }
+    internal sealed class CompletionEvidence { }
+    internal sealed record DependencyEdge(string From, string Specifier, string To, string Kind, string? Metadata = null);
+    internal sealed class InertLoadRequest { }
+    internal sealed record InertLoadEvidence(Fact Importer, Fact Target, Fact? Metadata)
+    {
+        public bool RetainedFileObjectIdentityChecked => true;
+        public bool NamespaceObservedStable => true; // sequential observations, not atomic loader resolution
+        public bool FixtureRequestAccepted => true;
+        public bool RealLoaderConsumedMeasuredHandle => false;
+        public bool ProductionAuthority => false;
+        public bool CompleteClosure => false;
+        public bool RaceFree => false;
+    }
+    // This models parent-side requests ASSOCIATED with an owned harmless process.
+    // The child does not execute/read these inputs and sends no loader requests.
+    internal sealed class InertLoaderBoundary(MeasuredInputLifetime owner, ConsumerLease boundConsumer, DependencyEdge[] edges)
+    {
+        private sealed class Pending(DependencyEdge edge)
+        { internal readonly DependencyEdge Edge = edge; internal bool Used; }
+        private readonly Dictionary<InertLoadRequest, Pending> requests = [];
+        private readonly HashSet<DependencyEdge> issued = [];
+        private void Check(ConsumerLease candidate)
+        {
+            if (!ReferenceEquals(this, owner.loaderBoundary)) throw new Rejected("foreign-loader-boundary");
+            if (!ReferenceEquals(candidate, boundConsumer)) throw new Rejected("foreign-consumer");
+            owner.CheckConsumption(candidate); // private lease identity, retained birth handle, bytes and namespace
+        }
+        internal InertLoadRequest Issue(ConsumerLease candidate, string importer, string specifier)
+        {
+            lock (owner.sync) try
+            {
+                Check(candidate);
+                var matches = edges.Where(e => e.From == importer && e.Specifier == specifier).ToArray();
+                if (matches.Length != 1) throw new Rejected("unapproved-dependency-edge");
+                var edge = matches[0];
+                owner.CheckEdge(edge);
+                if (!issued.Add(edge)) throw new Rejected("dependency-edge-replay");
+                var request = new InertLoadRequest(); requests.Add(request, new(edge));
+                return request;
+            }
+            catch { owner.Deny(); throw; }
+        }
+        internal InertLoadEvidence Consume(ConsumerLease candidate, InertLoadRequest request, string requestedRelativePath)
+        {
+            lock (owner.sync) try
+            {
+                Check(candidate);
+                if (request is null || !requests.TryGetValue(request, out var pending) || pending.Used)
+                    throw new Rejected("foreign-or-replayed-load-request");
+                pending.Used = true; // one attempt, including failed namespace/identity validation
+                var edge = pending.Edge;
+                if (requestedRelativePath != edge.To || owner.Resolve(requestedRelativePath) != owner.Selected(edge.To).Path)
+                    throw new Rejected("load-target-substitution");
+                owner.CheckEdge(edge);
+                var result = new InertLoadEvidence(owner.MeasureFile(owner.Selected(edge.From)), owner.MeasureFile(owner.Selected(edge.To)),
+                    edge.Metadata is null ? null : owner.MeasureFile(owner.Selected(edge.Metadata)));
+                Check(candidate); // bracket sequential request observations with active birth/lease validation
+                return result;
+            }
+            catch { owner.Deny(); throw; }
+        }
+        // Explicit opt-in test experiment. Derive every path/fact from this
+        // boundary's registered one-use requests, never from a caller Command.
+        internal NativeDllExperiment.Command PrepareNativeExperiment(ConsumerLease candidate, OwnedInputProcess process,
+            InertLoadRequest primaryRequest, InertLoadRequest probeRequest, InertLoadRequest dependencyRequest,
+            InertLoadRequest allowedProbeRequest, InertLoadRequest allowedDependencyRequest)
+        {
+            lock (owner.sync) try
+            {
+                Check(candidate);
+                if (!ReferenceEquals(process, owner.ownedProcess)) throw new Rejected("foreign-process-consumer");
+                Pending Get(InertLoadRequest request) => requests.TryGetValue(request, out var value) && !value.Used
+                    ? value : throw new Rejected("foreign-or-replayed-load-request");
+                var primary = Get(primaryRequest).Edge; var probe = Get(probeRequest).Edge; var dependency = Get(dependencyRequest).Edge;
+                var allowedProbe = Get(allowedProbeRequest).Edge; var allowedDependency = Get(allowedDependencyRequest).Edge;
+                if (primary.From != "backend/main.cjs" || primary.To != "native/bridge.node" || primary.Specifier != "fixture:primary" ||
+                    probe.From != primary.From || probe.To != "native/probe.dll" || probe.Specifier != "fixture:probe" ||
+                    dependency.From != probe.To || dependency.Specifier != "fixture:excluded" ||
+                    !Regex.IsMatch(dependency.To, "^node_modules/inert/experiment_dep_[a-f0-9]{32}\\.dll$") ||
+                    allowedProbe.From != primary.From || allowedProbe.To != "allowed/probe.dll" || allowedProbe.Specifier != "fixture:allowed-probe" ||
+                    allowedDependency.From != allowedProbe.To || allowedDependency.Specifier != "fixture:allowed-dependency" ||
+                    allowedDependency.To != "allowed/" + Path.GetFileName(dependency.To) ||
+                    new[] { primary, probe, dependency, allowedProbe, allowedDependency }.Any(e => e.Kind != "static" || e.Metadata is not null))
+                    throw new Rejected("native-experiment-selection");
+                var a = Consume(candidate, primaryRequest, primary.To); var b = Consume(candidate, probeRequest, probe.To);
+                var c = Consume(candidate, dependencyRequest, dependency.To);
+                var d = Consume(candidate, allowedProbeRequest, allowedProbe.To); var allowedReceipt = Consume(candidate, allowedDependencyRequest, allowedDependency.To);
+                return new(owner.root, owner.Resolve(primary.To), owner.Resolve(probe.To), owner.Resolve(dependency.To), a.Target, b.Target, c.Target,
+                    owner.Resolve(allowedProbe.To), owner.Resolve(allowedDependency.To), d.Target, allowedReceipt.Target);
+            }
+            catch { owner.Deny(); throw; }
+        }
+    }
+    internal sealed record CleanupFailure(string Path, string Operation, string Error);
     private sealed record Pin(string Path, SafeFileHandle Handle, object Identity);
     private sealed record FileInput(Input Input, string Path, FileStream Stream, SafeFileHandle Handle, object Identity);
     private static readonly BindingFlags NativeFlags = BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic;
@@ -45,8 +145,25 @@ internal sealed class MeasuredInputLifetime : IDisposable
     private readonly bool completeAncestry;
     private HandoffEvidence? handoff;
     private Phase phase = Phase.PreOpen;
+    private ConsumerLease? consumer;
+    private CompletionEvidence? completion;
+    private OwnedInputProcess? ownedProcess;
+    private InertLoaderBoundary? loaderBoundary;
+    private ConsumerPhase consumerPhase;
+    private StopReason stopReason;
+    private CleanupPhase cleanupPhase;
+    private readonly List<CleanupFailure> cleanupFailures = [];
+    // Reflection-only deterministic test injection. No callbacks or external policy.
+    private readonly HashSet<string> suppressedCloses = [];
     internal Phase State { get { lock (sync) return phase; } }
-    internal int OutstandingHandles { get { lock (sync) return pins.Count(p => !p.Handle.IsClosed) + files.Count(f => !f.Handle.IsClosed); } }
+    internal ConsumerPhase ConsumptionState { get { lock (sync) return consumerPhase; } }
+    internal StopReason ConsumptionStop { get { lock (sync) return stopReason; } }
+    internal CleanupPhase CleanupState { get { lock (sync) return cleanupPhase; } }
+    internal IReadOnlyList<CleanupFailure> CleanupFailures { get { lock (sync) return Array.AsReadOnly(cleanupFailures.ToArray()); } }
+    internal object? ProcessEvidence { get { lock (sync) return ownedProcess?.Evidence; } }
+    internal bool CompletionPending { get { lock (sync) return consumer is not null && consumerPhase != ConsumerPhase.Completed; } }
+    internal int OutstandingHandles { get { lock (sync) return InputHandles + (ownedProcess?.OutstandingHandles ?? 0); } }
+    private int InputHandles => pins.Count(p => !p.Handle.IsClosed) + files.Count(f => !f.Handle.IsClosed);
     internal IReadOnlyList<Fact> Measurements { get; private set; } = Array.Empty<Fact>();
 
     private static object Native(string name, params object[] args)
@@ -297,30 +414,221 @@ internal sealed class MeasuredInputLifetime : IDisposable
         }
         catch { Deny(); throw; }
     }
+    internal ConsumerLease BeginConsumption(HandoffEvidence evidence, params string[] requestedPaths)
+    {
+        lock (sync) try
+        {
+            if (consumer is not null) throw new Rejected("duplicate-consumer");
+            Require(Phase.HandedOff);
+            if (!ReferenceEquals(evidence, handoff)) throw new Rejected("foreign-handoff");
+            if (requestedPaths.Distinct(StringComparer.OrdinalIgnoreCase).Count() != requestedPaths.Length ||
+                !requestedPaths.Select(Resolve).Order(StringComparer.Ordinal).SequenceEqual(inputs.Select(i => Resolve(i.RelativePath)).Order(StringComparer.Ordinal)))
+                throw new Rejected("unapproved-dependency");
+            Recheck();
+            consumer = new(); consumerPhase = ConsumerPhase.Active;
+            cleanupPhase = CleanupPhase.RetainedForConsumer; phase = Phase.Consuming;
+            return consumer;
+        }
+        catch { Deny(); throw; }
+    }
+    private void ExactConsumer(ConsumerLease candidate)
+    {
+        if (consumer is null || !ReferenceEquals(candidate, consumer)) throw new Rejected("foreign-consumer");
+    }
+    internal ConsumerLease BeginProcessConsumption(HandoffEvidence evidence, OwnedInputProcess process, params string[] requestedPaths)
+    {
+        lock (sync) try
+        {
+            process.RequireUnbound(this);
+            var token = BeginConsumption(evidence, requestedPaths);
+            ownedProcess = process;
+            process.RegisterConsumer(this, token);
+            return token;
+        }
+        catch { Deny(); throw; }
+    }
+    internal void CheckConsumption(ConsumerLease candidate)
+    {
+        lock (sync) try
+        {
+            ExactConsumer(candidate);
+            if (consumerPhase != ConsumerPhase.Active || stopReason != StopReason.None) throw new Rejected("consumer-terminal");
+            Require(Phase.Consuming); ownedProcess?.RequireActive(this, candidate); Recheck();
+        }
+        catch { Deny(); throw; }
+    }
+    private FileInput Selected(string relative)
+    {
+        var matches = files.Where(f => f.Input.RelativePath == relative).ToArray();
+        if (matches.Length != 1) throw new Rejected("unselected-loader-input");
+        if (Resolve(relative) != matches[0].Path) throw new Rejected("load-target-substitution");
+        return matches[0];
+    }
+    private void CheckEdge(DependencyEdge edge)
+    {
+        var importer = Selected(edge.From); var target = Selected(edge.To);
+        if (importer.Input.Role is not ("backend-entry" or "dependency") || target.Input.Role is not ("dependency" or "native-addon"))
+            throw new Rejected("loader-input-role");
+        if (edge.Kind == "static")
+        {
+            if (edge.Metadata is not null) throw new Rejected("unexpected-loader-metadata");
+        }
+        else if (edge.Kind == "package")
+        {
+            if (edge.Metadata is null || Selected(edge.Metadata).Input.Role != "metadata") throw new Rejected("unverified-loader-metadata");
+            using var metadata = Sidecar(edge.Metadata); // bounded bytes from retained, digest-matched stream
+            Shape(metadata.RootElement, "name", "main"); // deliberately NOT Node's package resolver
+            var name = metadata.RootElement.GetProperty("name"); var main = metadata.RootElement.GetProperty("main");
+            if (name.ValueKind != JsonValueKind.String || main.ValueKind != JsonValueKind.String || name.GetString() != edge.Specifier ||
+                !Regex.IsMatch(main.GetString() ?? "", "^[A-Za-z0-9_-][A-Za-z0-9_.-]*\\.cjs$")) throw new Rejected("loader-metadata-resolution");
+            string folder = edge.Metadata[..(edge.Metadata.LastIndexOf('/') + 1)];
+            if (folder + main.GetString() != edge.To) throw new Rejected("loader-metadata-resolution");
+        }
+        else throw new Rejected("unsupported-loader-edge");
+    }
+    internal InertLoaderBoundary OpenInertLoader(ConsumerLease candidate, HandoffEvidence evidence, params DependencyEdge[] requestedEdges)
+    {
+        lock (sync) try
+        {
+            CheckConsumption(candidate);
+            if (ownedProcess is null) throw new Rejected("owned-process-required");
+            if (loaderBoundary is not null) throw new Rejected("loader-boundary-replay");
+            if (!ReferenceEquals(evidence, handoff)) throw new Rejected("foreign-handoff");
+            var edges = requestedEdges.ToArray();
+            if (edges.Length is < 1 or > 64) throw new Rejected("loader-edge-bound");
+            if (edges.Any(e => e is null || string.IsNullOrEmpty(e.Specifier) || e.Specifier.Length > 128 || e.Specifier.Contains('\0')) ||
+                edges.Select(e => (e.From, e.Specifier)).Distinct().Count() != edges.Length) throw new Rejected("ambiguous-loader-edge");
+            foreach (var edge in edges) CheckEdge(edge);
+            loaderBoundary = new(this, candidate, edges);
+            return loaderBoundary;
+        }
+        catch { Deny(); throw; }
+    }
+    internal void CancelConsumption(ConsumerLease candidate) => StopConsumption(candidate, StopReason.Cancelled);
+    internal void FailConsumption(ConsumerLease candidate) => StopConsumption(candidate, StopReason.Failed);
+    internal void ChannelLostConsumption(ConsumerLease candidate) => StopConsumption(candidate, StopReason.ChannelLost);
+    private void StopConsumption(ConsumerLease candidate, StopReason reason)
+    {
+        lock (sync) try
+        {
+            ExactConsumer(candidate);
+            if (consumerPhase != ConsumerPhase.Active) throw new Rejected("consumer-terminal");
+            Deny(reason);
+        }
+        catch { Deny(); throw; }
+    }
+    // Only a simulated end event. No process, callback, timeout or caller boolean
+    // can stand in for this exact local consumer transition. Not real termination proof.
+    internal CompletionEvidence ObserveSimulatedEnd(ConsumerLease candidate)
+    {
+        lock (sync) try
+        {
+            ExactConsumer(candidate);
+            if (ownedProcess is not null) throw new Rejected("process-exit-required");
+            if (consumerPhase is not (ConsumerPhase.Active or ConsumerPhase.Terminal)) throw new Rejected("completion-replay");
+            completion = new(); consumerPhase = ConsumerPhase.EndObserved;
+            if (phase != Phase.Denied) phase = Phase.ConsumptionEnded;
+            return completion;
+        }
+        catch { Deny(); throw; }
+    }
+    internal CompletionEvidence ObserveProcessEnd(ConsumerLease candidate, uint waitMilliseconds = 0)
+    {
+        lock (sync) try
+        {
+            ExactConsumer(candidate);
+            if (ownedProcess is null || waitMilliseconds > 3000) throw new Rejected("process-observation");
+            if (consumerPhase is not (ConsumerPhase.Active or ConsumerPhase.Terminal)) throw new Rejected("completion-replay");
+            if (!ownedProcess.ConfirmExit(this, candidate, waitMilliseconds)) throw new Rejected("process-exit-unconfirmed");
+            completion = new(); consumerPhase = ConsumerPhase.EndObserved;
+            if (phase != Phase.Denied) phase = Phase.ConsumptionEnded;
+            return completion;
+        }
+        catch { Deny(); throw; }
+    }
+    internal void CompleteConsumption(ConsumerLease candidate, CompletionEvidence evidence)
+    {
+        lock (sync) try
+        {
+            ExactConsumer(candidate);
+            if (consumerPhase != ConsumerPhase.EndObserved || completion is null || !ReferenceEquals(completion, evidence))
+                throw new Rejected("foreign-or-replayed-completion");
+            if (ownedProcess is not null && !ownedProcess.ConfirmExit(this, candidate)) throw new Rejected("process-exit-unconfirmed");
+            // Publish completion before cleanup; no revalidation can revive use.
+            consumerPhase = ConsumerPhase.Completed;
+            Cleanup();
+            if (OutstandingHandles != 0) throw new Rejected("release-pending");
+            if (phase != Phase.Denied) phase = Phase.Released;
+        }
+        catch
+        {
+            // Do not implicitly retry a failed close in this same operation.
+            Deny(cleanup: false); throw;
+        }
+    }
     private void Cleanup()
     {
-        foreach (var file in files.AsEnumerable().Reverse()) try { file.Stream.Dispose(); } catch { /* outstanding remains reported */ }
-        foreach (var pin in pins.AsEnumerable().Reverse()) try { pin.Handle.Dispose(); } catch { /* outstanding remains reported */ }
+        if (CompletionPending) { cleanupPhase = CleanupPhase.RetainedForConsumer; return; }
+        void Close(string path, string operation, SafeFileHandle handle, IDisposable resource)
+        {
+            if (handle.IsClosed) return;
+            try
+            {
+                if (suppressedCloses.Contains(operation + ":" + path)) throw new IOException("Injected close suppression");
+                resource.Dispose();
+                if (!handle.IsClosed) throw new IOException("Handle remains open");
+            }
+            catch (Exception error) { cleanupFailures.Add(new(path, operation, error.ToString())); }
+        }
+        foreach (var file in files.AsEnumerable().Reverse()) Close(file.Path, "stream", file.Handle, file.Stream);
+        // Never drop namespace pins ahead of unfinished stream cleanup.
+        if (files.All(f => f.Handle.IsClosed))
+            foreach (var pin in pins.AsEnumerable().Reverse()) Close(pin.Path, "pin", pin.Handle, pin.Handle);
+        if (InputHandles == 0 && ownedProcess is not null && !ownedProcess.ResourcesReleased)
+        {
+            try { ownedProcess.ReleaseEvidence(this, consumer!); }
+            catch (Exception error) { cleanupFailures.Add(new(root, "process-evidence", error.ToString())); }
+        }
+        cleanupPhase = OutstandingHandles == 0 ? CleanupPhase.Released : CleanupPhase.Pending;
         if (OutstandingHandles == 0) lock (OwnershipLock)
         {
             foreach (var claim in claims) if (Owners.TryGetValue(claim, out var holder) && ReferenceEquals(holder, this)) Owners.Remove(claim);
             claims.Clear();
         }
     }
-    private void Deny() { phase = Phase.Denied; Cleanup(); }
+    private void Deny(StopReason reason = StopReason.Denied, bool cleanup = true)
+    {
+        phase = Phase.Denied;
+        if (stopReason == StopReason.None) stopReason = reason;
+        if (consumerPhase == ConsumerPhase.Active) consumerPhase = ConsumerPhase.Terminal;
+        if (CompletionPending) cleanupPhase = CleanupPhase.RetainedForConsumer;
+        if (CompletionPending && ownedProcess is not null)
+        {
+            try { ownedProcess.RequestShutdown(); }
+            catch (Exception error) { cleanupFailures.Add(new(root, "owned-shutdown", error.ToString())); }
+        }
+        if (cleanup) Cleanup();
+    }
     internal void Release()
     {
         lock (sync) try
         {
+            if (CompletionPending) throw new Rejected("consumer-completion-pending");
             if (phase is Phase.Released or Phase.Denied or Phase.Measuring) throw new Rejected("state:" + phase);
             Cleanup();
             if (OutstandingHandles != 0) throw new Rejected("release-pending");
             phase = Phase.Released;
         }
-        catch { Deny(); throw; }
+        catch { Deny(cleanup: false); throw; }
     }
     public void Dispose()
     {
-        lock (sync) { Cleanup(); if (phase != Phase.Denied) phase = OutstandingHandles == 0 ? Phase.Released : Phase.Denied; }
+        lock (sync)
+        {
+            if (CompletionPending) { Deny(); return; }
+            Cleanup();
+            if (OutstandingHandles != 0) Deny(cleanup: false);
+            else if (phase != Phase.Denied) phase = Phase.Released;
+        }
     }
 }
