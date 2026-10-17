@@ -17,5 +17,7 @@ test('native completion denies bad exits, intermediate/missing records and missi
   const owner=path.resolve(__dirname,'../../native/ApplicationCompanion/bin/Release/net10.0-windows/ApplicationCompanion.exe');
   const result=spawnSync(owner,['--fixture-completion-self-test'],{encoding:'utf8',windowsHide:true,shell:false,timeout:5000});
   assert.equal(result.error,undefined);assert.equal(result.status,0,result.stderr);
-  const report=JSON.parse(result.stdout);assert.equal(report.passed,true);assert.equal(report.denials,7);assert.equal(report.productionAuthority,false);
+  const report=JSON.parse(result.stdout);
+  assert.deepEqual(report,{passed:true,denials:59,validReports:5,directDuplicateDenials:26,
+    readDuplicateDenials:26,readHandlesReleased:26,productionAuthority:false});
 });
