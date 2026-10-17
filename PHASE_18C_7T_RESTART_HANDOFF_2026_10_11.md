@@ -1,5 +1,54 @@
 # Discovery Tool restart handoff — 2026-10-11
 
+## Current restart instruction — October 16, 2026 end of day
+
+This section supersedes older current-state pointers, task recommendations and workflow authorizations below; historical evidence remains intact. Phase 18C.7T is incomplete and non-authorizing. Baseline: Master Blueprint v1.1 through existing recorded security contracts where standalone text is unavailable locally. Do not infer fresh blueprint reconciliation or production approval.
+
+**Verified repository:** branch codex/post-field-corrections-1, HEAD 7584c4c38e326beb81bc63bf326b449efd654057. Upstream origin/codex/post-field-corrections-1; local cached relationship zero ahead/zero behind. No fetch/live GitHub check. Final wrap-up inventory: six unstaged tracked modifications, 26 untracked source/test files, zero staged, 32 dirty paths. Preserve all work. Full explicit path list and commit-readiness caveats are in the October 16 addendum to PHASE_18C_7T_CHECKPOINT_2026_10_13.md. No staging, commit or push occurred; each awaits explicit owner authorization. Previous checkpoint-publication permission does not authorize today's Git writes.
+
+**Read first:** that October 16 checkpoint addendum; scripts/BACKEND_STAGING.md (October 16 chronological sections, especially final caller mapping); PHASE_18C_7T_MEASURED_INPUT_LIFETIME.md; installed-root, generated-artifact, Express/iconv and 7Q/7R/7S contracts. This wrap-up ran only documentation consistency and git diff --check, no tests/builds/compiler/runtime probes. All validation below is reused evidence, not a new uninterrupted EOD pass.
+
+### State to carry forward
+
+- Express original 4.22.2 behavior task: 15 passing runner tests (14 static contract tests plus one original-library runner with 14 library checks across four cold children), no sockets. Generated bundle remains unexecuted and unadmitted; expected behavior is distinct from observations.
+- Fresh actual compiler capture: one esbuild 0.28.2 child in that invocation, 651,753 output bytes, SHA-256 3327ef9e74137a5121da2f23bc23d394a42d85a9263286d5196b5c9a026707c5; 135 inputs, 307 transformed occurrences, 347 source occurrences. Five exact conditional occurrences matched actual evidence but remain unadmitted. Four separate nested debug 2.6.9 browser.js identities retain renderer guards; inherits 2.0.4 inherits_browser.js retains its independent util.inherits fallback. Express view require(mod) remains unresolved. Successful output bytes were cleaned; archived measurements do not provide live-file authority.
+- Iconv evidence: 13 incorporated modules, 38 source occurrences, 16 runtime tuples; 22 selected / 13 evidence-only admitted / nine unknown-unadmitted. Eight JSON tables, safer-buffer and two metadata files remain explicit. Historical 33-to-22 consolidation and bounded variant equivalence do not close backend dependencies or approve generated execution.
+- Denial-only execution eligibility final focused result: 85 passes, all outputs blocked with executionAuthority:false and productionReady:false. No launcher/token/receipt, conditional-source admission or exact live consumer integration exists.
+- Whole-plan final focused result: 32 passes. All 825 original files accounted for, with 4,736 staging unresolved and 882 separate inventory records preserved. Twenty-four Express/iconv selection overlaps are counted once; incorporation sets are disjoint. 682 retained originals plus three proposed outputs = hypothetical 685 only. Express estimate 102 and iconv subset 22 overlap the baseline and must not be summed. No confirmed reduced combined runtime payload; 64-file ceiling unmet.
+- Two-file application island: address_validation.js / identity_policy.js, one internal literal JS edge, preserved TypeScript ancestry, shared ESM metadata, zero island-local unresolved records. Prior island task passed 46 focused tests. Conservative proposal remains one bundle plus two facades = three versus two originals, no reduction.
+- Caller mapping: all 39 incoming source occurrences in 34 TS/TSX files retained; 34 emitted imports across 29 backend callers have hypothetical static mappings, five outside-backend callers retain source paths. No actual rewrite. Named/local aliases and declaration order are explicit; live bindings, evaluation order and module/cache/function identity equivalence are unproven. New identities/review would be needed for every rewritten caller and generated island output.
+- Relative-specifier defect was found after the first 22-pass caller run: .consolidation/... was bare, so shared callers now require ./.consolidation/.... Three new path tests plus corrected positive/parent, 17 island tests and 23 planner tests passed: 45 post-correction passes. Twenty unchanged negatives reuse initial evidence; they were omitted by the later filter, not freshly rerun or reported as skips. Across invocations 67 entries include duplicates. Latest caller cleanup accounted for 1,778 inert files, all four new parents empty at validation time. No compiler or consumer children were used by caller work.
+
+These are separate task results with overlapping tests, not one clean full run. Initial iconv metadata external-origin failure (zero passed/one failed/15 skipped), manifest-owner reuse failure (zero/one), Express conditional-incorporation stop (zero/one after compiler), descriptor seeding failure (zero/two/32 skipped), mixed-case capture-root failure (zero/one before compiler), and eligibility setup failure (zero/two/21 skipped) remain historical. Conditional-classification JSON parser helper failure (zero/one/six skipped) also remains recorded. Successful later corrected sessions do not erase, recover or authorize cleanup of failed sessions. October 15 TypeScript/production/native builds and native/iconv runtime evidence remain historical, not freshly rerun October 16 end-of-day checks.
+
+### Preserved-session STOP and release blockers
+
+Never access, inspect, modify, reuse, signal, terminate or clean the five prohibited sessions: original owner PID 9784 and its protected objects/evidence; failed 69-file iconv session/journal; failed 240-file Express compilation; failed 20-file descriptor case; failed 236-file Express capture. Original owner's last reported process reference and 18 ACL restoration capabilities remain unresolved, with no authenticated current continuity/liveness assertion and no existing authorized in-process recovery interface. Future-run release fixes are not recovery authority. No PID/path/journal/copied object authorizes release.
+
+Separately preserve later eligibility setup-failure evidence discovery-eligibility-validation-b0cb8e7409f2483a8067acad7a8b8d63 / eligibility-To1cU0, plus the earlier failed real-metadata case documented in scripts/BACKEND_STAGING.md. These paths were not accessed or checked during wrap-up. Never perform global process enumeration/cleanup or infer machine-wide zero resources from successful fixture cleanup.
+
+Remaining blockers: unchanged 64-file ceiling; incomplete executable/data/metadata/conditional/computed/native/DLL/CLR/WebView2/helper/provider closure; five unadmitted incorporated conditionals; computed engine and other dynamic imports; generated-artifact execution prohibition; missing independent live generated-output review/admission and exact Node/OwnedChild/measured-input consumer bridge; unproven mapped-image backing/atomic measured-handle consumption; compiler/runtime/upstream provenance, version/signing/key/manifest/installation/update/expiry/rollback policy; genuine production owner/receipt adoption; physical camera/browser/provider and stress/exhaustion/busy-pipe/monitor bounds. Historical launcher/artifact, Node/composition/pipe-loss, Vite proxy and desktop-construction failures remain unresolved. Production API/WebSocket default-deny, native authentication, TLS/process ownership, camera gates and release restrictions stay unchanged.
+
+### Separate backlog and exact proposed next task
+
+Owner reports a separate external HiTools-inspired future backlog update: vendor-aware SADP discovery, batch IP allocation, staging audit exports, approved batch provisioning, site configuration profiles, batch NTP and a commissioning workspace. Bulk firmware upgrading is excluded. This external record was not inspected or changed here. It changes neither Master Blueprint nor current implementation/camera scope.
+
+Do not automatically resume development. Begin only with bounded read-only source/frontend build-boundary analysis for these five outside-backend callers:
+
+1. src/shared/device_sort.ts
+2. src/shared/pair_adapter.ts
+3. src/ui/App.tsx
+4. src/ui/components/DeviceRemovalDialog.tsx
+5. src/ui/components/LegacyOnboardModal.tsx
+
+Identify actual build destinations, original path/module identity requirements and backend/frontend overlap; retain uncertainty, with no rewriting, compilation, bundle execution or pruning. Then reassess whether this small island is economically useful after facade and rewritten-caller costs. There is presently no approved one-output reduction. Any implementation or runtime experiment needs a subsequent bounded task.
+
+**Commit readiness:** suitable for owner review of a non-authorizing 32-file development checkpoint, preserving full historical failures, validation exclusions and security blockers. Not a release, bundle-execution or production-readiness recommendation. The checkpoint lists all six tracked plus 26 untracked candidate paths. No unwanted temporary artifact is present in that explicit status inventory; exclude all external/preserved evidence, compiler/generated binaries, credentials, node_modules/dist and native outputs. No new comprehensive secret audit or broad build pass is claimed. Do not stage, commit or push without explicit new authorization and review of the concrete staged diff.
+
+---
+
+The October 15 and older sections below are retained historical instructions/evidence; the October 16 section above controls the current restart.
+
 ## Current restart instruction — October 15, 2026 end of day
 
 This section supersedes historical commit identities, synchronization statements and workflow permissions below. Resume branch codex/post-field-corrections-1 at HEAD **4ac75692d18dcf282f4c29d3e6f689215b1a071f**. The locally cached origin ref matches; no live remote check, commit or push occurred. Preserve **six modified tracked files and thirteen untracked project files**, including all four new phase reports. Read the October 15 addendum in PHASE_18C_7T_CHECKPOINT_2026_10_13.md and the current measured-input, backend-reduction and iconv reports before any action. Master Blueprint v1.1 and existing contracts remain authoritative; standalone blueprint reconciliation remains unavailable.

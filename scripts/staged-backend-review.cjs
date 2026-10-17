@@ -259,7 +259,15 @@ function packageFilePath(name) {
 
 // Intersect a narrow review with actual successful staging records. Never expand
 // a package/directory or derive admission from loadedModules or unresolved edges.
-function buildPackageAdmission(manifest, reviews = reviewedPackageFiles) {
+const generatedSelections = new WeakMap();
+function buildPackageAdmission(manifest, reviews = reviewedPackageFiles, experimentalKey) {
+  const generated=generatedSelections.get(manifest);
+  if(generated){
+    if(experimentalKey!==generated.key)return generated.stop('explicit-generated-selection-required');
+    return generated.verify(reviews);
+  }
+  if(experimentalKey!==undefined||manifest?.generatedArtifact||manifest?.candidates?.some(c=>c.status==='generated-artifact'))
+    throw Object.assign(Error('Generated selection requires its original fixture owner.'),{code:'GENERATED_ARTIFACT_DENIED'});
   if (!Array.isArray(manifest.candidates) || !Array.isArray(manifest.unresolved) || !Array.isArray(reviews))
     throw Error('Missing package selection evidence.');
   const selected = new Map(), reviewed = new Map(), admitted = [], denied = [];
@@ -299,6 +307,178 @@ function buildPackageAdmission(manifest, reviews = reviewedPackageFiles) {
     limitation: 'File admission is not import-edge closure, byte integrity, sandboxing or production trust.' };
 }
 
+// Non-executing evidence only. This private selection is not a production
+// receipt, loader interface, signature verifier or retained measured-input lease.
+function createGeneratedArtifactSelection({roots,payloadRoot,sourceRoot,manifest,inventory,catalog,selection,conditionalGuardProfile}) {
+  const {verifyCatalog,observeCatalogFiles,readCatalogJSON}=require('./payload-byte-catalog.cjs');
+  const {generatedArtifactContentHash:hash}=require('./stage-backend.cjs');
+  const copy=value=>JSON.parse(JSON.stringify(value));
+  let denied=false;
+  const stop=reason=>{denied=true;throw Object.assign(Error('Generated artifact denied: '+reason),{code:'GENERATED_ARTIFACT_DENIED',reason});};
+  const state={key:{},stop,verify:null};
+  if(!manifest||typeof manifest!=='object'||generatedSelections.has(manifest))stop('selection-owner');
+  generatedSelections.set(manifest,state); // reservation survives removed provenance/status downgrade
+  try {
+    roots=copy(roots);inventory=copy(inventory);catalog=copy(catalog);selection=copy(selection);
+    const same=(a,b)=>hash(a)===hash(b);
+    const requireThat=(condition,reason)=>{if(!condition)stop(reason);};
+    const keys=(value,names)=>requireThat(value&&typeof value==='object'&&!Array.isArray(value)&&
+      same(Object.keys(value).sort(),names.split(' ').sort()),'record-shape');
+    const list=(value,max=20000)=>requireThat(Array.isArray(value)&&value.length<=max,'record-list');
+    const ref=value=>{
+      keys(value,'root path');requireThat(typeof value.root==='string'&&roots.some(r=>r.id===value.root)&&
+        typeof value.path==='string'&&value.path===value.path.normalize('NFC')&&!value.path.includes('\\')&&
+        value.path.split('/').every(p=>p&&p!=='.'&&p!=='..'&&!/[\x00-\x1f<>:"|?*]/.test(p)&&!/[. ]$/.test(p)),'path');
+      return value.root+':'+value.path;
+    };
+    const location=v=>({root:v.root,path:v.path});
+    const iconv=selection?.variant==='iconv-esbuild-0.28.2-v1';
+    const measured=(value,role=false,version=false)=>{
+      keys(value,'root path size sha256'+(role?' role':'')+(version?' version':''));ref(location(value));
+      requireThat(Number.isSafeInteger(value.size)&&value.size>=0&&value.size<=134217728&&/^[a-f0-9]{64}$/.test(value.sha256),'measurement-shape');
+      if(role)requireThat(['generated-code','data','metadata','dependency',...(iconv?['retained-unknown']:[])].includes(value.role),'role');
+      if(version)requireThat(typeof value.version==='string'&&value.version.length>0,'generator-version');
+    };
+    keys(selection,'variant contentSha256 reviews externalReviews observations');
+    requireThat(['synthetic-generated-v1','iconv-esbuild-0.28.2-v1'].includes(selection.variant)&&/^[a-f0-9]{64}$/.test(selection.contentSha256),'experimental-variant');
+    list(selection.reviews);list(selection.externalReviews);list(selection.observations);
+    state.verify=reviews=>{
+      if(denied)stop('sticky-denial');
+      try {
+        requireThat(same(reviews,selection.reviews),'independent-output-review');
+        const record=manifest.generatedArtifact;
+        keys(record,'version purpose productionAuthority completeClosure content contentSha256 observations');
+        requireThat(record.version===1&&record.purpose===(iconv?'fixture-generated-artifact':'synthetic-generated-artifact')&&record.productionAuthority===false&&record.completeClosure===false&&
+          manifest.informationalOnly===true&&manifest.productionAuthority===false&&manifest.completeClosure===false&&manifest.runtimeValidated===false,'non-authorizing-record');
+        const c=record.content;
+        if(c?.conditionalGuards!==undefined||conditionalGuardProfile!==undefined){
+          requireThat(conditionalGuardProfile==='express-guards-v1'&&c?.conditionalGuards!==undefined,'conditional-guard-opt-in');
+          requireThat(hash(c)===record.contentSha256&&record.contentSha256===selection.contentSha256&&hash(inventory)===c.inventorySha256,'conditional-guard-provenance');
+          const guardInput={profile:conditionalGuardProfile,roots,catalog,inventory,
+            sourceEdges:c.sourceEdges,observations:record.observations,extension:c.conditionalGuards,sourceRoot};
+          if(c.guardCompilerEvidence!==undefined)require('./stage-backend.cjs').normalizeDependencyGuardCompilerCorrespondence({...guardInput,compilerEvidence:c.guardCompilerEvidence},requireThat);
+          else require('./stage-backend.cjs').normalizeDependencyGuardDescriptors(guardInput,requireThat);
+          // Guard classification is never independent artifact/source admission.
+          return stop('conditional-descriptors-not-admission');
+        }
+        keys(c,'outputs sources derivation inventorySha256 sourceEdges transformedEdges generatedEdges runtimeEdges externals runtimeDependencies unresolved'+(iconv?' compatibility':''));
+        requireThat(hash(c)===record.contentSha256&&record.contentSha256===selection.contentSha256,'provenance-digest');
+        requireThat(hash(inventory)===c.inventorySha256,'inventory-correspondence');
+        for(const name of ['outputs','sources','sourceEdges','transformedEdges','generatedEdges','runtimeEdges','externals','runtimeDependencies','unresolved'])list(c[name]);
+        requireThat(c.outputs.length>0&&c.sources.length>0,'missing-inputs');
+        requireThat(c.outputs.length+c.externals.length<=64,'physical-manifest-ceiling');
+        for(const v of c.outputs){measured(v,true);requireThat(v.root===payloadRoot&&v.role==='generated-code'&&packageFilePath(v.path),'output-role');}
+        for(const v of c.sources){measured(v);requireThat(v.root===sourceRoot,'source-root');}
+        for(const v of c.externals){
+          keys(v,'root path role size sha256 origin');const {origin,...file}=v;measured(file,true);measured(origin);
+          const retained=iconv&&v.role==='retained-unknown'&&require('../src/test/support/iconv_artifact_metadata.cjs').unknown.includes(v.path);
+          requireThat(v.root===payloadRoot&&v.role!=='generated-code'&&(packageFilePath(v.path)||retained)&&origin.root===sourceRoot&&
+            origin.path===v.path&&origin.size===v.size&&origin.sha256===v.sha256,'external-origin');
+        }
+        requireThat(c.externals.some(e=>e.role==='metadata'),'missing-metadata');
+        const d=c.derivation;keys(d,'generator options entrypoint configuration evidence');measured(d.generator,false,true);
+        requireThat(d.options&&typeof d.options==='object'&&!Array.isArray(d.options),'generator-options');
+        ref(d.entrypoint);requireThat(c.sources.some(s=>same(location(s),d.entrypoint)),'entrypoint');
+        list(d.configuration);list(d.evidence);requireThat(d.configuration.length>0&&d.evidence.length>0,'derivation-evidence');
+        for(const v of [...d.configuration,...d.evidence])measured(v);
+        const inputs=[...c.sources,...c.outputs,...c.externals,...c.externals.map(e=>e.origin),d.generator,...d.configuration,...d.evidence];
+        const unique=new Map();
+        for(const v of inputs){const id=ref(location(v)).toLowerCase();requireThat(!unique.has(id),'duplicate-or-case-alias');unique.set(id,v);}
+        verifyCatalog(catalog,roots);
+        for(const v of inputs){const row=catalog.entries.filter(e=>e.root===v.root&&e.path===v.path);
+          requireThat(row.length===1&&row[0].size===v.size&&row[0].sha256===v.sha256,'catalog-correspondence');}
+        requireThat(same(record.observations,selection.observations),'local-observations');
+        const observed=observeCatalogFiles(roots,inputs.map(location));
+        requireThat(same(observed,record.observations),'stale-local-identity');
+        const inventoryRoot=roots.find(r=>r.id===sourceRoot);
+        requireThat(inventoryRoot&&inventory.bounds&&Number.isSafeInteger(inventory.bounds.maxFiles)&&inventory.bounds.maxFiles>0&&inventory.bounds.maxFiles<=20000&&
+          Number.isSafeInteger(inventory.bounds.maxTextBytes)&&inventory.bounds.maxTextBytes>0&&inventory.bounds.maxTextBytes<=2*1024*1024,'inventory-bounds');
+        const rescanned=require('./dependency-inventory.cjs').inventory(inventoryRoot.path,{entrypoints:inventory.entrypoints,
+          maxFiles:inventory.bounds.maxFiles,maxTextBytes:inventory.bounds.maxTextBytes});
+        requireThat(hash(rescanned)===c.inventorySha256,'current-source-inventory');
+        const readJSON=(v,profile='synthetic-generated-v1')=>{
+          const read=readCatalogJSON(roots,location(v),profile);
+          requireThat(read.measurement.sha256===v.sha256&&read.measurement.size===v.size&&
+            same(read.measurement.identity,observed.find(o=>o.root===v.root&&o.path===v.path).identity),'json-correspondence');
+          return read.value;
+        };
+        let auxiliaryEdges=[];
+        if(iconv)auxiliaryEdges=require('../src/test/support/iconv_artifact_metadata.cjs').validateIconvCompatibility({c,inventory,payloadRoot,sourceRoot,readJSON,same,check:requireThat});
+        else for(const metadata of c.externals.filter(e=>e.role==='metadata')){
+          const value=readJSON(metadata);keys(value,'name main');
+          requireThat(typeof value.name==='string'&&value.name.length>0&&typeof value.main==='string'&&/^[A-Za-z0-9_-]+\.cjs$/.test(value.main)&&
+            metadata.path.endsWith('/package.json')&&c.outputs.some(o=>o.path===require('node:path').posix.join(require('node:path').posix.dirname(metadata.path),value.main)),
+            'synthetic-package-metadata');
+        }
+        requireThat(d.evidence.length===(iconv?2:1),'synthetic-derivation-evidence');
+        const derivation=readJSON(d.evidence[0]);keys(derivation,'sourceEdges transformedEdges runtimeEdges');
+        requireThat(same(derivation.sourceEdges,c.sourceEdges)&&same(derivation.transformedEdges,c.transformedEdges)&&
+          same(derivation.runtimeEdges,c.runtimeEdges),'derivation-correspondence');
+        const refs=inventory.references.filter(r=>c.sources.some(s=>s.path===r.source)&&!r.typeOnly);
+        requireThat(refs.every(r=>r.kind==='require'&&typeof r.specifier==='string'&&r.specifier!=='<computed>'),'unsupported-resolution');
+        const targetFor=r=>r.resolution==='node-builtin'?'node:'+r.specifier.replace(/^node:/,''):
+          c.sources.find(s=>s.path===r.resolvedPath)?{root:sourceRoot,path:r.resolvedPath}:
+          c.externals.find(e=>e.path===r.resolvedPath)?{root:payloadRoot,path:r.resolvedPath}:null;
+        const expected=refs.map((r,occurrence)=>({occurrence,source:{root:sourceRoot,path:r.source},line:r.line,kind:r.kind,
+          specifier:r.specifier,target:targetFor(r)}));
+        requireThat(expected.every(e=>e.target!==null)&&same(c.sourceEdges,expected),'source-edge-occurrences');
+        requireThat(c.transformedEdges.length===expected.length,'transformed-edge-count');
+        const consumed=new Set(),runtime=[];
+        for(const edge of c.transformedEdges){
+          keys(edge,'occurrence output disposition target');
+          requireThat(Number.isSafeInteger(edge.occurrence)&&expected[edge.occurrence]&&!consumed.has(edge.occurrence),'edge-occurrence-replay');
+          consumed.add(edge.occurrence);ref(edge.output);
+          requireThat(c.outputs.some(o=>same(location(o),edge.output)),'edge-output');
+          const source=expected[edge.occurrence];requireThat(same(edge.target,source.target),'edge-target');
+          const internal=typeof source.target!=='string'&&source.target.root===sourceRoot;
+          requireThat(edge.disposition===(internal?'internal-wrapper':typeof source.target==='string'?'builtin':'external'),'edge-disposition');
+          if(!internal)runtime.push({from:edge.output,specifier:source.specifier,to:edge.target});
+        }
+        for(const edge of c.generatedEdges){keys(edge,'from specifier to');ref(edge.from);ref(edge.to);
+          requireThat(typeof edge.specifier==='string'&&edge.specifier.length>0&&c.outputs.some(o=>same(location(o),edge.from))&&
+            c.outputs.some(o=>same(location(o),edge.to)),'generated-edge');runtime.push(edge);}
+        runtime.push(...auxiliaryEdges);
+        const tuple=v=>JSON.stringify(v), expectedTuples=[...new Set(runtime.map(tuple))].sort();
+        requireThat(c.runtimeEdges.length===new Set(c.runtimeEdges.map(tuple)).size&&same(c.runtimeEdges.map(tuple).sort(),expectedTuples),'runtime-edge-tuples');
+        const builtins=[...new Set(expected.filter(e=>typeof e.target==='string').map(e=>e.target))].sort();
+        for(const dep of c.runtimeDependencies){keys(dep,'specifier runtime status');requireThat(typeof dep.runtime==='string'&&dep.runtime.length>0&&dep.status==='unresolved','runtime-dependency');}
+        requireThat(same(c.runtimeDependencies.map(d=>d.specifier).sort(),builtins),'runtime-dependency-selection');
+        requireThat(same(manifest.unresolved,c.unresolved)&&same(catalog.unresolved.staging,c.unresolved),'unresolved-records');
+        requireThat(!c.unresolved.some(u=>[...c.outputs,...c.externals].some(f=>u.target===f.path||u.output===f.path)),'unresolved-selection');
+        requireThat(!inventory.unresolved.some(u=>c.sources.some(s=>s.path===u.source)&&/computed|path-not-resolved|outside|unreadable|missing/.test(u.reason)),'unresolved-source');
+        const candidates=manifest.candidates;
+        requireThat(Array.isArray(candidates)&&candidates.length===c.outputs.length+c.externals.length,'physical-selection-count');
+        const names=new Set();
+        for(const candidate of candidates){
+          requireThat(typeof candidate.output==='string'&&!names.has(candidate.output.toLowerCase()),'candidate-collision');names.add(candidate.output.toLowerCase());
+          const out=c.outputs.find(o=>o.path===candidate.output);
+          if(out)requireThat(candidate.source===null&&candidate.status==='generated-artifact'&&candidate.role===out.role&&candidate.provenanceRef===record.contentSha256,'generated-status-downgrade');
+          else requireThat(c.externals.some(e=>e.path===candidate.output)&&candidate.source===candidate.output&&candidate.status==='copied-candidate','external-selection');
+          requireThat(Array.isArray(candidate.selectionReasons)&&candidate.selectionReasons.length>0,'selection-reasons');
+        }
+        requireThat(selection.reviews.length===c.outputs.length,'output-review-count');
+        for(const review of selection.reviews){keys(review,'path role size sha256 provenanceRef reason');
+          const out=c.outputs.filter(o=>o.path===review.path);requireThat(out.length===1&&review.role===out[0].role&&review.size===out[0].size&&
+            review.sha256===out[0].sha256&&review.provenanceRef===record.contentSha256&&typeof review.reason==='string'&&review.reason.length>0,'output-review');}
+        requireThat(new Set(selection.reviews.map(r=>r.path)).size===selection.reviews.length,'review-duplicate');
+        const externalManifest={candidates:candidates.filter(v=>v.status==='copied-candidate'&&!c.externals.some(e=>e.path===v.output&&e.role==='retained-unknown')),unresolved:manifest.unresolved};
+        const external=buildPackageAdmission(externalManifest,selection.externalReviews);
+        requireThat(external.admitted.length===c.externals.filter(e=>e.role!=='retained-unknown').length&&external.denied.length===0,'external-review');
+        requireThat(same(observeCatalogFiles(roots,inputs.map(location)),record.observations),'changed-during-validation');
+        verifyCatalog(catalog,roots);
+        return {informationalOnly:true,productionAuthority:false,completeClosure:false,executionAuthority:false,
+          basis:iconv?'fixture-generated-artifact-evidence-only':'synthetic-generated-artifact-evidence-only',provenanceRef:record.contentSha256,
+          admitted:[...selection.reviews.map(r=>({...r,status:'generated-artifact'})),...external.admitted],
+          denied:[],unresolved:copy(c.unresolved),runtimeDependencies:copy(c.runtimeDependencies),runtimeEdges:copy(c.runtimeEdges),
+          physicalFiles:candidates.length,generatedFiles:c.outputs.length,incorporatedBuildFiles:c.sources.length,
+          retainedUnknown:c.externals.filter(e=>e.role==='retained-unknown').map(e=>e.path),
+          atomicMeasuredHandleBinding:false};
+      } catch(error){if(denied)throw error;return stop(error.code??'validation-failed');}
+    };
+    return Object.freeze({admit:(reviews=selection.reviews)=>buildPackageAdmission(manifest,reviews,state.key),get denied(){return denied;}});
+  } catch(error){denied=true;throw error;}
+}
+
 // Node synchronous hooks cover ESM and CommonJS (including transitive require).
 // Called before any package imports; read data cannot nominate new admitted paths.
 function installPackageAdmissionHooks(root, admission, onLoad = () => {}) {
@@ -327,7 +507,7 @@ function installPackageAdmissionHooks(root, admission, onLoad = () => {}) {
   });
 }
 module.exports = { initialProjects, reviewedProjects, testOnlyProjects, reviewReason, classifyOutputs,
-  buildPackageAdmission, installPackageAdmissionHooks, selectedDependencyRequests, mappedStagePath, createSelectedPathCapture };
+  buildPackageAdmission, createGeneratedArtifactSelection, installPackageAdmissionHooks, selectedDependencyRequests, mappedStagePath, createSelectedPathCapture };
 
 // Exact fixture paths reviewed against current literal imports/requires and top-level definitions.
 // Historical load evidence helped locate candidates; observation never generates admission.

@@ -1,5 +1,7 @@
 # Phase 18C.7T — October 13 daily validation checkpoint and handoff
 
+> Current restart/checkpoint authority for October 16: see the **October 16, 2026 end-of-day addendum** at the end of this file and the October 16 section in PHASE_18C_7T_RESTART_HANDOFF_2026_10_11.md. Branch/HEAD are codex/post-field-corrections-1 / 7584c4c38e326beb81bc63bf326b449efd654057. Older "latest/current" pointers, counts and authorizations below are historical. Phase 18C.7T is incomplete; this documentation task authorizes no staging, commit, push or execution.
+
 **Latest checkpoint: October 15, 2026 end-of-day addendum below.** Earlier dates, counts, commits and workflow approvals in this document remain historical. Current branch is codex/post-field-corrections-1 at 4ac7569; no commit/push is authorized by this checkpoint task.
 
 **496 eligible automated runner entries passed. This was not an uninterrupted full-suite pass. Preparation/orchestration failures and interrupted commands remain recorded separately. Phase 18C.7T remains incomplete and non-authorizing.** No production activation, release-policy approval, commit or push occurred.
@@ -138,3 +140,124 @@ Historical unexplained launcher/artifact failures, earlier Node/composition canc
 **Commit readiness:** suitable for owner review and an explicitly owner-authorized **non-authorizing checkpoint commit/push**, with these validation exclusions and preserved-owner incident included. No current fresh test/build failure or detected secret/policy regression blocks recording the fixture work. This is not full-suite, production or release readiness; the live-owner incident blocks cleanup/recovery, not recording source history. The current task explicitly forbids commit/push, so none was performed and nothing is claimed published to GitHub. Include all thirteen untracked project files in an eventual reviewed checkpoint; do not include external/ignored evidence or binaries.
 
 **Recommended first bounded next-session task:** read-only design of generated iconv facade/bundle selection and source-to-output/edge provenance within the existing stager, preserving original selection/admission and unresolved diagnostics. Do not implement or run another experiment automatically. Read the measured-input incident restrictions first; never treat a new-session fixture or source correction as recovery authority for the preserved owner.
+
+## October 16, 2026 end-of-day addendum — non-authorizing development checkpoint
+
+This addendum supersedes older current-state/restart instructions without replacing their evidence. Baseline remains Master Blueprint v1.1 through the established recorded Phase 18C.7T contracts; the standalone blueprint is unavailable locally and full reconciliation is not claimed. Phase 18C.7T remains incomplete. Production API/WebSocket default-deny, native authentication, exact TLS/process/session/listener ownership, camera gates, release restrictions and the 64-file ceiling are unchanged.
+
+### Verified Git state and wrap-up scope
+
+Branch: codex/post-field-corrections-1. HEAD: 7584c4c38e326beb81bc63bf326b449efd654057 (October 15 checkpoint). Configured upstream: origin/codex/post-field-corrections-1. Local HEAD versus locally cached upstream: zero ahead / zero behind. No fetch/live GitHub query was performed, so current remote-server synchronization is not independently asserted. No staging, commit, push, reset, discard, cleanup or implementation occurred in this wrap-up.
+
+Starting status: four modified tracked files, 26 untracked project source/test files, zero staged files, 30 dirty paths total. Starting tracked diff: 734 insertions, ten deletions across four files; untracked files are not included in Git's diff statistics. The only wrap-up edits are this checkpoint and PHASE_18C_7T_RESTART_HANDOFF_2026_10_11.md. Final expected status: six unstaged tracked modifications plus the same 26 untracked files, 32 dirty paths, zero staged. All 30 starting dirty-file contents were SHA-256 captured before documentation edits and rechecked afterward; they must remain unchanged. Full path inventory is below.
+
+Validation in this wrap-up is documentation consistency and git diff --check only. No test suite, compiler, TypeScript/build, library probe, bundle import, native build, backend/provider startup, process enumeration, listener, camera or network operation ran. All test/build results below are reused recorded observations, not newly executed end-of-day validation. The October 15 TypeScript/production/native Release successes remain dated historical evidence and are not current October 16 build passes.
+
+### Completed October 16 work and precise scope
+
+- Existing generated-artifact provenance/admission/catalog mechanisms gained explicit fixture metadata profiles, independent generated-output review and occurrence-aware source/transformed/runtime correspondence. Generated outputs never inherit source or copied-candidate admission; private one-use owner protection, sticky denial and historical package admission remain intact.
+- iconv-lite 0.4.24 / safer-buffer 2.1.2: independently measured fresh esbuild 0.28.2 output matched archived facade/bundle digests and parsed metafile. Thirteen incorporated modules, 38 source occurrences and 16 runtime tuples are accounted for. Experimental selection remains 22 physical files, 13 evidence-only admissions, nine unknown/unadmitted ancillary files; safer-buffer, eight JSON tables and two package metadata files remain explicit. Previous fixture-scoped behavioral equivalence remains bounded historical evidence, not full backend closure, universal package compatibility or production loading authority.
+- Express 4.22.2 original-package library controls run only harmless in-memory behavior, with no listener. The initial contract observed 135 import-cache modules and 12 checks across four cold children. The extended baseline established 14 library checks across four cold children plus 14 non-executing contract tests (15 runner tests for that task). The package-analysis fixture selected 235 files including four synthetic engine-control files; 228 were fixture-admitted and seven unadmitted. Its 245-file catalog is not a release selection.
+- Fresh actual Express compile-only capture completed exactly one compiler child for that invocation, producing a 651,753-byte CJS bundle, SHA-256 3327ef9e74137a5121da2f23bc23d394a42d85a9263286d5196b5c9a026707c5. It accounted for 135 inputs, 307 transformed source occurrences and 347 original occurrences (39 outside compiler inputs, one computed/unrepresented). The raw actual metafile was measured independently. Prior failed compile/capture attempts remain separate; one successful capture does not mean only one compiler invocation occurred throughout the day.
+- All five conditional source occurrences matched actual compiler evidence: four separately identified node_modules/{body-parser,express,finalhandler,send}/node_modules/debug/src/browser.js targets from debug 2.6.9 renderer guards, and node_modules/inherits/inherits_browser.js from inherits 2.0.4 util.inherits fallback. Equal bytes do not merge four debug file identities. All five remain selected but unadmitted; branch conditions do not make incorporated executable bytes trusted. Express lib/view.js require(mod), derived from extension/default engine, remains computed and unresolved. No real engine is invented or admitted.
+- The generated Express behavioral comparison contract describes app construction, route/middleware/error ordering, request/response behavior and synthetic computed-engine observations. Original-package observations are independent of expected generated behavior. Generated observedBehavior remains null; the generated bundle has never been imported/executed or admitted. Missing review, tampered identity/provenance, unexpected dependency, guard mismatch and copied fallback deny.
+- Denial-only generated execution eligibility returns immutable blocked/advisory results with executionAuthority:false and productionReady:false, including structurally complete synthetic records. It creates no launcher, hooks, token, executable selection or receipt. Fixture execution policy and a live exact owned-consumer binding remain unconditional blockers.
+- Whole-backend consolidation accounting reconciles all 825 authoritative files: 97 application JS outputs, 710 package files, one root metadata file and 17 other assets/helpers/native files. It preserves all 4,736 staging unresolved records and 882 separate inventory records. These are different diagnostic sets, not one combined count. Historical package admission remains 165.
+- Express/iconv selection overlap is 24 package files; incorporation sets do not overlap because Express keeps iconv external. The Express 102-file estimate, iconv 22-file subset and original 825 files overlap and cannot be added as disjoint payloads. Whole-plan arithmetic is 682 retained originals plus three proposed generated outputs = 685 under unapproved replacement assumptions. Neither 685 nor 102 is a verified runtime payload; actual combined runtime count remains unknown and 64 is not met.
+- The application island is exactly src/shared/address_validation.js and src/shared/identity_policy.js, with one literal internal emitted import, preserved source-only TypeScript ancestry/shared ESM metadata and zero island-local unresolved records. All 39 incoming occurrences remain recorded. Conservative island proposal is one internal bundle plus two facades: three physical files versus two originals, no reduction. No artifact was compiled or application import rewritten.
+- Caller mapping covers 39 source occurrences in 34 TS/TSX files: 34 emitted value-import occurrences across 29 backend JS callers, five outside-backend source callers. Named bindings, conflicts-as-conflict alias, declaration slots, metadata and identities are preserved. Five outside callers are src/shared/device_sort.ts, src/shared/pair_adapter.ts, src/ui/App.tsx, src/ui/components/DeviceRemovalDialog.tsx and src/ui/components/LegacyOnboardModal.tsx. Their source/frontend build destinations and required original-path identities remain unestablished. Live bindings, evaluation order and module/cache/function identity equivalence are not proven. The 29 hypothetically rewritten caller outputs would require independent generated-byte provenance/review as well.
+- Review after the first caller test run found a formatter defect: .consolidation/... is a bare ESM specifier, not a relative path. The fixture now requires ./.consolidation/... for shared-directory callers; pure regression tests reject alias/absolute/encoded/noncanonical forms. No real application imports were changed. Final passing checks and reused negatives are distinguished below.
+
+### Validation ledger — separate observations, never one clean full run
+
+Detailed chronological counts, source identities, exact paths, denial reasons and successful scoped cleanup remain in scripts/BACKEND_STAGING.md and the established phase reports. This table reuses that evidence; counts overlap across rows and must not be summed into a distinct-test or full-suite total.
+
+| Work | Recorded passing evidence | Historical failure / reuse limits |
+| --- | --- | --- |
+| Synthetic generated provenance | 80 distinct focused checks accumulated across bounded invocations (47 generated, 33 existing) | Not an uninterrupted 80-test invocation. |
+| Actual iconv metadata profile | 73 passing tests in the corrected fresh sequence plus one positive accounting check | Initial external-origin case: zero passed, one failed, 15 skipped; preserved and not erased. |
+| Fresh iconv provenance | Corrected isolated runner reported 1/1 with one compiler, valid 22/13/9 accounting; subsequent seven-group integrated success is recorded in the prior task result/user-provided context | Earlier manifest-owner reuse stopped zero passed/one failed after four negative groups, retaining 69 files plus journal. Added missing-occurrence/options controls first passed three non-executing tests. Do not count every historical command as a pass or claim a new build today. |
+| Express original resolution | Initial 1/1 runner test, 12 checks/four cold children | Harmless library scope only, no generated bundle. |
+| Conditional static classification | Corrected seven tests passed | Initial helper parsed JSON as JS: zero passed, one failed, six skipped. |
+| Guard descriptors / synthetic compiler projection | Corrected descriptor task: 38 focused passes. Later synthetic correspondence: 62 focused passes | Initial unseeded inventory: zero passed, two failed, 32 skipped, 20-file case preserved. Synthetic correspondence alone did not prove actual compiler observations. |
+| Express failed compile/capture | Precompile regressions passed 12 checks; later corrected root-ID regression passed five tests | First Express compile runner: zero passed, one failed after one successful compiler, 240 files preserved. Capture with invalid mixed-case root: zero passed, one failed, zero compiler invocations, 236 files preserved. Neither failure was relaxed into admission. |
+| Actual Express capture | Five necessary static preflight tests plus 1/1 integrated capture: six passed; integrated test completed 11 assertion groups and one compiler child | 135/307/347 actual correspondence, not loader authority or runtime equivalence. Successful bundle bytes were deleted during scoped cleanup; retained measurement describes a historical object. |
+| Express behavior contract and baseline | 14 static contract tests plus 1/1 original-library runner with 14 checks/four children: 15 passed | Generated bundle unexecuted. Original import-cache count is diagnostic, not a mandatory bundle topology. |
+| Execution eligibility | Final 85 focused passes: 23 eligibility, three provenance/admission, 59 descriptor/correspondence | First setup failed zero passed/two failed/21 skipped; preserved. Earlier successful pre-replay run had 23 passes. Task ledger including it: 108 passed, two failed, 21 skipped. No execution authority issued. |
+| Whole-backend planner | Final 32 focused passes, including 23 planner tests; initial planner also passed 23 | Across the two necessary planner passes and targeted regressions: 55 passes with duplicated coverage, not 55 distinct tests. |
+| Application island | 46 focused passes (17 island, 23 planner, three provenance, three inventory) | Unbuilt model only; no module execution/equivalence proof. |
+| Caller mapping | Initial full run: 22 passes including 20 negative cases. Post-formatter correction: three path tests, corrected positive plus parent (two), 17 island and 23 planner = 45 passes, zero failures/skips | The initial positives did not prove correct relative ESM syntax. The 20 unchanged negatives were reused, not freshly rerun after correction. Filter omitted those cases, not 20 runner-reported skips. Across invocations 67 passing entries include repeated positives/parents. |
+
+There is no new October 16 broad TypeScript/production/native build or full-suite claim. Historical unexplained launcher/artifact failures, Node/composition cancellations, original pipe-loss exception loss, Vite proxy stall and desktop-construction timeout remain unresolved. Subsequent successes do not establish their causes. Actual-composition/UI/WebView2, physical camera/provider and stress/exhaustion checks remain pending or excluded as previously recorded.
+
+### Cleanup evidence and protected sessions
+
+Successful scoped records report owned fixture cleanup, not global machine cleanup: original Express contract and extended behavior cases each removed their 245 catalog files; actual compiler capture verified its 243-file catalog and removed its whole successful case, retaining only its diagnostic parent summary; final eligibility cases removed 306 files plus 45 provenance files, with the independent 22-file descriptor case cleaned. Latest caller work removed 1,778 inert files across four independent parents, all confirmed empty at that time. Compiler completions are recorded spawnSync exits, not newly established Windows birth-handle/Job proofs. Successful static tasks created no native consumer/Job/ACL authority. These cleanup observations are reused, not rechecked against Temp today. No claim of zero machine-wide processes/listeners is made.
+
+Never access, inspect, signal, reuse, alter or clean these five prohibited sessions:
+
+1. Original owner PID 9784 and protected objects/evidence. Last recorded state: one process reference and 18 ACL restoration capabilities retained, input pins reported closed after child exit. Current liveness and authenticated original-owner continuity are not established here; no authorized in-process recovery interface exists. Future-run SafeHandle corrections do not recover this owner.
+2. Failed 69-file iconv fresh-build session and parent accounting journal.
+3. Failed 240-file Express compile session.
+4. Failed 20-file descriptor session.
+5. Failed 236-file Express capture session.
+
+Also separately preserve the later eligibility setup failure: discovery-eligibility-validation-b0cb8e7409f2483a8067acad7a8b8d63 / eligibility-To1cU0, and the earlier real-metadata external-origin failed case already recorded in scripts/BACKEND_STAGING.md. Neither is recovery/admission authority. No preserved path was accessed or tested for existence in this wrap-up; no process was inspected. Do not infer release authority from PID, journal, pathname, copied object or later fixture success.
+
+### Unresolved security and release blockers
+
+The 64-file ceiling remains unmet. Full executable dependency closure is absent, including conditional/computed/package data, native/DLL/CLR/WindowsDesktop/WebView2/helper/provider inputs. Five incorporated Express conditional modules remain unadmitted; computed view engines and other dynamic paths remain unresolved. Generated-artifact execution is prohibited under current contracts even if provenance matches. Independent live generated-byte review/admission, strict resolution enforcement and an exact Node/OwnedChild/measured-input lifetime bridge remain missing; simulated receipts and PID-only exit reports cannot substitute.
+
+Exact native mapped-image backing identity/atomic consumption of a measured handle remains unproven. MEM_IMAGE, matching post-load path/file identity/hash and blocked substitutions are corroboration, not atomic mapping proof. Compiler/runtime/upstream authenticity, version approval, genuine owner/receipt adoption, protected installation/relocation, production signing/key custody, manifests, updates, expiry and offline rollback remain unapproved or unresolved. Architecture A's technical direction does not approve those policies. Physical camera/browser/provider validation and stress/resource exhaustion, busy-pipe/cancellation/monitor bounds remain pending. None blocks preserving source history by itself, but all block production/release readiness.
+
+### Separate future backlog — owner-reported, outside repository
+
+The owner reports the separate HiTools-inspired backlog has been updated outside this repository with vendor-aware SADP discovery, batch IP allocation, staging audit exports, approved batch provisioning, site configuration profiles, batch NTP and a commissioning workspace. Bulk firmware upgrading is excluded. This checkpoint records that report; the external backlog was not accessed or independently verified here. It does not change Master Blueprint v1.1, implementation scope, camera permissions or Phase 18C.7T priorities.
+
+### Proposed commit contents and readiness (authorization still required)
+
+Six tracked modifications proposed for an eventual reviewed non-authorizing checkpoint:
+
+- PHASE_18C_7T_CHECKPOINT_2026_10_13.md (this October 16 addendum and current pointer).
+- PHASE_18C_7T_RESTART_HANDOFF_2026_10_11.md (October 16 restart section).
+- scripts/BACKEND_STAGING.md (chronological implementation, validation and incident evidence).
+- scripts/payload-byte-catalog.cjs (explicit bounded reviewed metadata profiles).
+- scripts/stage-backend.cjs (opt-in provenance/descriptor normalization).
+- scripts/staged-backend-review.cjs (explicit independent generated-artifact evidence/admission validation).
+
+All 26 currently untracked project files are source/test candidates, not disposable scratch:
+
+- src/test/application_caller_mapping.test.cjs
+- src/test/application_caller_specifier.test.cjs
+- src/test/application_island_model.test.cjs
+- src/test/backend_consolidation_plan.test.cjs
+- src/test/dependency_guard_descriptors.test.cjs
+- src/test/express_behavior_contract.test.cjs
+- src/test/express_compiler_root_preflight.test.cjs
+- src/test/express_conditional_classification.test.cjs
+- src/test/express_consolidation.test.cjs
+- src/test/express_resolution_contract.test.cjs
+- src/test/generated_artifact_provenance.test.cjs
+- src/test/generated_execution_eligibility.test.cjs
+- src/test/iconv_artifact_metadata.test.cjs
+- src/test/iconv_fresh_artifact.test.cjs
+- src/test/support/application_caller_mapping.cjs
+- src/test/support/application_island_model.cjs
+- src/test/support/backend_consolidation_plan.cjs
+- src/test/support/dependency_guard_descriptors.cjs
+- src/test/support/express_behavior_contract.cjs
+- src/test/support/express_compiler_capture.cjs
+- src/test/support/express_resolution_probe.cjs
+- src/test/support/generated_execution_eligibility.cjs
+- src/test/support/iconv_artifact_fixture.cjs
+- src/test/support/iconv_artifact_metadata.cjs
+- src/test/support/iconv_artifact_negative_controls.cjs
+- src/test/support/reviewed_backend_plan_fixture.cjs
+
+Full Git status lists no untracked compiled binary, fixture output, credential, recovery journal or unrelated document. This is a path/status assessment, not a new comprehensive secret/security audit. Do not commit external Temp archives, preserved recovery/evidence sessions, accounting logs/catalogs, compiler copies or generated bundles, .env/keys/credentials, node_modules, dist, native bin/obj or .native-test-artifacts. Existing ignores remain unchanged; do not force-add outputs. Tests intentionally reference external successful archives; those references do not make archives repository inputs. No newly unwanted temporary path is identified among the 32 proposed files.
+
+Recommendation: ready for owner review of a non-authorizing development checkpoint using these explicit 32 paths and recorded validation caveats. Not ready for production, release or generated-bundle execution. No fresh broad validation or new comprehensive secret audit is claimed, and a concrete staged diff must be reviewed after separate authorization before committing. Historical failed attempts and preserved incidents must stay included. This task authorizes documentation edits only: staging, commit and push explicitly await the user's authorization, with no Git writes performed.
+
+### Exact next-session starting point — do not resume implementation automatically
+
+Start on codex/post-field-corrections-1 at 7584c4c38e326beb81bc63bf326b449efd654057, preserving the dirty paths above unless a later authorized checkpoint changes HEAD. Read this addendum, the October 16 restart section, and the final application caller-mapping section in scripts/BACKEND_STAGING.md. First proposed task is bounded read-only analysis of the source/frontend build boundaries of device_sort.ts, pair_adapter.ts, App.tsx, DeviceRemovalDialog.tsx and LegacyOnboardModal.tsx. Establish actual build destinations, original-path/module identity requirements and overlap with backend callers; do not rewrite, compile or execute them. Then reassess whether this two-module island offers worthwhile reduction after facade and rewritten-caller costs. Abandoning an uneconomic candidate must preserve its evidence and must not silently prune dependencies. No automatic continuation into implementation, bundling or execution is authorized.

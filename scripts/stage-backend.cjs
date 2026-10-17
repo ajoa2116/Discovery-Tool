@@ -274,7 +274,53 @@ function stageBackend(root, out, options = {}) {
   fs.writeFileSync(path.join(out, 'stage-manifest.json'), JSON.stringify(manifest, null, 2) + '\n', { flag: 'wx' });
   return manifest;
 }
-module.exports = { stageBackend };
+// Pure, opt-in fixture descriptions. No compiler invocation, copying, default
+// selection change or authority follows from constructing these records.
+function generatedArtifactContentHash(content) {
+  const json=JSON.stringify(content);
+  if(!json||Buffer.byteLength(json)>32*1024*1024)throw Error('Generated metadata limit.');
+  const canonical=value=>Array.isArray(value)?value.map(canonical):value&&typeof value==='object'?
+    Object.fromEntries(Object.keys(value).sort().map(k=>[k,canonical(value[k])])):value;
+  return require('node:crypto').createHash('sha256').update(JSON.stringify(canonical(JSON.parse(json)))).digest('hex');
+}
+function createGeneratedArtifactRecord(content, observations,variant='synthetic-generated-v1') {
+  if(!['synthetic-generated-v1','iconv-esbuild-0.28.2-v1'].includes(variant))throw Error('Unknown generated-artifact profile.');
+  return JSON.parse(JSON.stringify({version:1,purpose:variant==='synthetic-generated-v1'?'synthetic-generated-artifact':'fixture-generated-artifact',productionAuthority:false,completeClosure:false,
+    content,contentSha256:generatedArtifactContentHash(content),observations}));
+}
+function createGeneratedArtifactManifest(base, record) {
+  if(base.generatedArtifact||!Array.isArray(base.candidates)||!Array.isArray(base.unresolved)||!Array.isArray(record?.content?.outputs))
+    throw Error('Generated manifest shape.');
+  const result=JSON.parse(JSON.stringify(base)), destinations=new Set();
+  for(const c of result.candidates)if(c.output){const key=c.output.normalize('NFC').toLowerCase();if(destinations.has(key))throw Error('Output collision.');destinations.add(key);}
+  for(const output of record.content.outputs){
+    if(typeof output.path!=='string')throw Error('Generated output path.');
+    const key=output.path.normalize('NFC').toLowerCase();if(destinations.has(key))throw Error('Output collision.');destinations.add(key);
+    result.candidates.push({source:null,output:output.path,status:'generated-artifact',role:output.role,
+      provenanceRef:record.contentSha256,selectionReasons:['explicit-synthetic-generated-output']});
+  }
+  result.generatedArtifact=JSON.parse(JSON.stringify(record));
+  result.informationalOnly=true;result.productionAuthority=false;result.completeClosure=false;result.runtimeValidated=false;
+  return result;
+}
+// Explicit fixture-only metadata entry. Default staging never calls this.
+function normalizeDependencyGuardDescriptors(input,check) {
+  try{return require('../src/test/support/dependency_guard_descriptors.cjs').normalize(input,check);}
+  catch(error){
+    if(error.code==='GENERATED_ARTIFACT_DENIED')throw error;
+    if(check)return check(false,'guard-invalid-metadata');
+    throw Object.assign(Error('guard-invalid-metadata'),{code:'GENERATED_ARTIFACT_DENIED',reason:'guard-invalid-metadata'});
+  }
+}
+function normalizeDependencyGuardCompilerCorrespondence(input,check) {
+  try{return require('../src/test/support/dependency_guard_descriptors.cjs').normalizeCompilerCorrespondence(input,check);}
+  catch(error){
+    if(error.code==='GENERATED_ARTIFACT_DENIED')throw error;
+    if(check)return check(false,'compiler-guard-invalid-metadata');
+    throw Object.assign(Error('compiler-guard-invalid-metadata'),{code:'GENERATED_ARTIFACT_DENIED',reason:'compiler-guard-invalid-metadata'});
+  }
+}
+module.exports = { stageBackend, generatedArtifactContentHash, createGeneratedArtifactRecord, createGeneratedArtifactManifest, normalizeDependencyGuardDescriptors, normalizeDependencyGuardCompilerCorrespondence };
 if (require.main === module) {
   try {
     const args = process.argv.slice(2); let root = path.resolve(__dirname, '..'), out; const entrypoints = [];

@@ -56,17 +56,17 @@ function scan(roots){
   }
   return files;
 }
-function measure(root,name){
+function measure(root,name,observe=false,collect=false,collectLimit=65536){
   const target=full(root,name);checked(target);const fd=fs.openSync(target,'r');
   try{
-    const before=fs.fstatSync(fd,{bigint:true});if(!before.isFile()||before.size>BigInt(LIMITS.fileBytes))deny('file-size');
+    const before=fs.fstatSync(fd,{bigint:true});if(!before.isFile()||before.size>BigInt(collect?collectLimit:LIMITS.fileBytes))deny('file-size');
     // Hard-link aliases are not independent payload inputs.
     if(before.nlink!==1n)deny('hardlink');
-    const hash=crypto.createHash('sha256'),buffer=Buffer.alloc(65536);let size=0,count;
-    while((count=fs.readSync(fd,buffer,0,buffer.length,null))!==0){size+=count;if(size>LIMITS.fileBytes)deny('file-size');hash.update(buffer.subarray(0,count));}
+    const hash=crypto.createHash('sha256'),buffer=Buffer.alloc(65536),chunks=[];let size=0,count;
+    while((count=fs.readSync(fd,buffer,0,buffer.length,null))!==0){size+=count;if(size>(collect?collectLimit:LIMITS.fileBytes))deny('file-size');hash.update(buffer.subarray(0,count));if(collect)chunks.push(Buffer.from(buffer.subarray(0,count)));}
     const after=fs.fstatSync(fd,{bigint:true});checked(target);const current=fs.lstatSync(target,{bigint:true});
     if([after,current].some(s=>s.dev!==before.dev||s.ino!==before.ino||s.size!==before.size||s.mtimeNs!==before.mtimeNs||s.ctimeNs!==before.ctimeNs)||BigInt(size)!==before.size)deny('changed-during-read');
-    return {size,sha256:hash.digest('hex')};
+    return {size,sha256:hash.digest('hex'),...(observe?{identity:Object.fromEntries(['dev','ino','size','mtimeNs','ctimeNs'].map(k=>[k,String(before[k])]))}:{}),...(collect?{bytes:Buffer.concat(chunks)}:{})};
   }finally{fs.closeSync(fd);}
 }
 function sameSet(expected,observed){for(const [id,row] of expected){if(!observed.has(id))deny('missing');if(observed.get(id).path!==row.path)deny('path-spelling');}
@@ -78,7 +78,14 @@ function createCatalog(options){
   function add(root,name,evidence,replace=false){if(!roots.has(root))deny('root');relative(name);const id=root+':'+key(name),prior=expected.get(id);
     if(prior){if(!replace||prior.overlay)deny('duplicate-path');if(prior.path!==name)deny('duplicate-path');prior.evidence.push(evidence);prior.overlay=true;}
     else {if(replace)deny('overlay-target');expected.set(id,{root,path:name,evidence:[evidence],overlay:evidence.kind==='explicit-overlay'});}}
+  const generated=input.experimentalGenerated===true;
+  if(input.staging.manifest.generatedArtifact&&!generated)deny('generated-opt-in-required');
   for(const candidate of input.staging.manifest.candidates){
+    if(candidate.status==='generated-artifact'){
+      if(!generated||input.staging.manifest.generatedArtifact?.version!==1||candidate.source!==null||
+        candidate.provenanceRef!==input.staging.manifest.generatedArtifact.contentSha256)deny('generated-catalog-selection');
+      add(input.staging.root,candidate.output,{kind:'experimental-generated-selection',provenanceRef:candidate.provenanceRef});
+    }
     if(['transpiled','copied-candidate','generated-metadata'].includes(candidate.status))add(input.staging.root,candidate.output,
       {kind:'staging-selection',source:candidate.source??null,status:candidate.status,selectionReasons:candidate.selectionReasons??[]});
   }
@@ -93,7 +100,7 @@ function createCatalog(options){
   sameSet(expected,scan(roots));
   return boundedJSON({v:1,purpose:'non-authorizing-staged-payload-bytes',productionAuthority:false,completeClosure:false,runtimeVerified:false,
     roots:[...roots.values()].map(r=>({id:r.id,kind:r.kind})),entries,totalBytes:total,
-    unresolved:{staging:input.staging.manifest.unresolved,candidates:input.staging.manifest.candidates.filter(c=>!['transpiled','copied-candidate','generated-metadata'].includes(c.status)),external:input.externalUnresolved??[]},
+    unresolved:{staging:input.staging.manifest.unresolved,candidates:input.staging.manifest.candidates.filter(c=>!['transpiled','copied-candidate','generated-metadata',...(generated?['generated-artifact']:[])].includes(c.status)),external:input.externalUnresolved??[]},
     limits:LIMITS,analysisLimits:['Byte correspondence only; catalog/evidence authenticity is not established.','Uncataloged external inputs, executable/provider/runtime loading and complete closure remain unverified.',
       'Filesystem checks reject observed links/escapes and mutation during reads; no protected-installation or mapped-code/ancestor-race attestation.',
       'Same-length future changes, restored timestamps and Windows reparse/provider behavior are not exhaustively race tested.']});
@@ -111,7 +118,45 @@ function verifyCatalog(catalog,specs){
   sameSet(expected,scan(roots));
   return {matchedBytes:true,files:expected.size,totalBytes:total,productionAuthority:false,completeClosure:false,runtimeVerified:false,unresolved:input.unresolved,analysisLimits:input.analysisLimits};
 }
-module.exports={createCatalog,verifyCatalog,LIMITS};
+function observeCatalogFiles(specs,references){
+  const roots=rootsFor(specs),seen=new Set();
+  if(!Array.isArray(references)||references.length>LIMITS.files)deny('observation-limit');
+  return references.map(ref=>{
+    if(!roots.has(ref.root))deny('root');relative(ref.path);
+    const id=ref.root+':'+key(ref.path);if(seen.has(id))deny('duplicate-path');seen.add(id);
+    return {root:ref.root,path:ref.path,...measure(roots.get(ref.root),ref.path,true)};
+  });
+}
+function readCatalogJSON(specs,reference,profile='synthetic-generated-v1'){
+  const roots=rootsFor(specs);if(!roots.has(reference.root))deny('root');
+  const {bytes,...measurement}=measure(roots.get(reference.root),reference.path,true,true,profile==='express-esbuild-0.28.2-v1'?262144:65536);
+  const text=bytes.toString('utf8');
+  if(!['synthetic-generated-v1','iconv-esbuild-0.28.2-v1','express-esbuild-0.28.2-v1'].includes(profile))deny('json-profile');
+  if(!Buffer.from(text,'utf8').equals(bytes))deny(profile==='synthetic-generated-v1'?'synthetic-json-format':'json-encoding');
+  // Bound parser recursion before parsing either format; strings do not count.
+  let depth=0,quoted=false,escaped=false;
+  for(const ch of text){if(quoted){if(escaped)escaped=false;else if(ch==='\\')escaped=true;else if(ch==='"')quoted=false;}
+    else if(ch==='"')quoted=true;else if(ch==='{'||ch==='['){if(++depth>64)deny('json-depth');}else if(ch==='}'||ch===']')depth--;}
+  const value=JSON.parse(text);
+  // Narrow canonical synthetic JSON only: no duplicate keys, alternate encodings
+  // or general package/Node metadata interpretation is approved by this helper.
+  if(profile==='synthetic-generated-v1'){
+    if(!Buffer.from(JSON.stringify(value),'utf8').equals(bytes))deny('synthetic-json-format');
+  }else{
+    // JSON.parse rejects comments/trailing commas. The existing TypeScript JSON
+    // AST retains duplicate properties that JSON.parse alone would erase.
+    const ts=require('typescript'),tree=ts.parseJsonText('reviewed-metadata.json',text),pending=[tree];let nodes=0;
+    if(tree.parseDiagnostics.length)deny('json-syntax');
+    while(pending.length){const node=pending.pop();if(++nodes>20000)deny('json-node-limit');
+      if(ts.isObjectLiteralExpression(node)){const names=new Set();for(const prop of node.properties){
+        const name=prop.name?.text;if(typeof name!=='string'||names.has(name.normalize('NFC').toLowerCase()))deny('json-duplicate-key');
+        names.add(name.normalize('NFC').toLowerCase());}}
+      ts.forEachChild(node,child=>{pending.push(child);});
+    }
+  }
+  return {value,measurement};
+}
+module.exports={createCatalog,verifyCatalog,observeCatalogFiles,readCatalogJSON,LIMITS};
 if(require.main===module){
   try{
     const [command,configFile,catalogFile,...extra]=process.argv.slice(2);
