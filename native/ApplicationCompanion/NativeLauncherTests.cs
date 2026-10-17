@@ -1,6 +1,9 @@
 using System.Diagnostics;
 using System.IO.Pipes;
 using System.Security.AccessControl;
+using System.Reflection;
+using System.Text;
+using Microsoft.Win32.SafeHandles;
 
 namespace ApplicationCompanion;
 
@@ -25,6 +28,7 @@ internal static class NativeLauncherTests
     {
         int checks = 0, cases = 0;
         void Check(bool value, [System.Runtime.CompilerServices.CallerLineNumber] int line = 0) { trace.Check(value, line); checks++; }
+        void RecordDenial(string expected, string actual, [System.Runtime.CompilerServices.CallerLineNumber] int line = 0) => trace.Denial(expected, actual, line);
         bool Alive(int pid) { try { using var p = Process.GetProcessById(pid); return !p.HasExited; } catch (ArgumentException) { return false; } }
         async Task Deny(string reason, Func<Task<NativeLauncherLease>> create, [System.Runtime.CompilerServices.CallerLineNumber] int line = 0)
         {
@@ -32,6 +36,125 @@ internal static class NativeLauncherTests
             try { using var unexpected = await create(); }
             catch (NativeLauncherException failure) { actual = failure.Reason; denied = actual == reason; }
             trace.Denial(reason, actual, line); Check(denied, line); cases++;
+        }
+        // Exercise the real private suspended-creation seam, never arbitrary images or Node.
+        const BindingFlags hidden = BindingFlags.Instance | BindingFlags.Static | BindingFlags.NonPublic;
+        var startOwned = typeof(OwnedChild).GetMethod("StartOwned", hidden)!;
+        var recheck = typeof(OwnedChild).GetMethod("RequirePreResumeOwnership", hidden)!;
+        var construct = typeof(OwnedChild).GetConstructors(hidden).Single();
+        T Field<T>(OwnedChild owned, string field) => (T)typeof(OwnedChild).GetField(field, hidden)!.GetValue(owned)!;
+        uint Wait(SafeFileHandle handle, uint milliseconds) => (uint)typeof(OwnedChild)
+            .GetMethod("WaitForSingleObject", hidden)!.Invoke(null, [handle, milliseconds])!;
+        foreach (string scenario in new[] { "positive", "disposed", "callback-exception", "exited", "job-query", "job-membership", "closed-job", "invalid-process" })
+        {
+            OwnedChild? observed = null, launched = null;
+            SafeFileHandle? birth = null, originalJob = null, extraJob = null, invalid = null;
+            bool retained = false, callbackReached = false;
+            string actual = "accepted";
+            string expected = scenario switch {
+                "positive" => "accepted", "callback-exception" => "callback-denied",
+                "exited" => "resume-process-not-live", "job-query" => "resume-job-query",
+                "job-membership" => "resume-job-membership", _ => "resume-owner-unavailable"
+            };
+            try
+            {
+                Action<OwnedChild> callback = owned => {
+                    callbackReached = true; observed = owned;
+                    birth = Field<SafeFileHandle>(owned, "processHandle"); originalJob = Field<SafeFileHandle>(owned, "job");
+                    // Retain the ORIGINAL SafeHandle, never reopen a PID or duplicate a raw value.
+                    birth.DangerousAddRef(ref retained);
+                    Check(owned.Alive && Wait(birth, 0) == 0x102);
+                    if (scenario == "disposed") owned.Dispose();
+                    else if (scenario == "callback-exception") throw new IOException("callback-denied");
+                    else if (scenario == "exited") {
+                        Check((bool)typeof(OwnedChild).GetMethod("TerminateProcess", hidden)!.Invoke(null, [birth, 3u])!);
+                        Check(Wait(birth, 2000) == 0); // A timeout is failure, never exit evidence.
+                    }
+                    else if (scenario is "job-query" or "job-membership" or "closed-job" or "invalid-process") {
+                        // Negative owner objects reuse the exact process SafeHandle reference.
+                        // They are never resumed, disposed as owners or returned as launch results.
+                        extraJob = WindowsBoundary.CreateOwnedJob();
+                        invalid = new SafeFileHandle(IntPtr.Zero, false);
+                        if (scenario == "closed-job") extraJob.Dispose();
+                        var negative = (OwnedChild)construct.Invoke([
+                            scenario == "invalid-process" ? invalid : birth,
+                            scenario == "job-query" ? birth : extraJob, owned.Process]);
+                        recheck.Invoke(negative, null);
+                        throw new IOException("unexpected-recheck-success");
+                    }
+                };
+                string image = Environment.ProcessPath!;
+                string pipeName = WindowsBoundary.NewPipeName();
+                try {
+                    launched = (OwnedChild)startOwned.Invoke(null, [image,
+                        new StringBuilder($"\"{image}\" --launcher-peer {pipeName} {Environment.ProcessId} no-connect"),
+                        false, IntPtr.Zero, AppContext.BaseDirectory, callback, false, null])!;
+                }
+                catch (TargetInvocationException error) {
+                    Exception cause = error;
+                    while (cause is TargetInvocationException wrapped && wrapped.InnerException is not null) cause = wrapped.InnerException;
+                    actual = cause is IOException ? cause.Message : cause.GetType().Name;
+                }
+                RecordDenial(expected, actual);
+                Check(callbackReached && actual == expected);
+                if (scenario == "positive") Check(ReferenceEquals(launched, observed) && launched!.Alive);
+                else Check(launched is null);
+            }
+            finally
+            {
+                // Exact child only. Keep its birth reference until signaled exit is observed.
+                if (observed is not null && birth is not null) {
+                    observed.Dispose();
+                    Check(Wait(birth, 2000) == 0);
+                    Check(originalJob!.IsClosed);
+                }
+                extraJob?.Dispose(); invalid?.Dispose();
+                if (retained) { birth!.DangerousRelease(); retained = false; }
+            }
+            Check(birth is { IsClosed: true } && originalJob is { IsClosed: true });
+            Check(extraJob is null || extraJob.IsClosed);
+            cases++;
+        }
+        // Closed-handle regression: deliberately NO DangerousAddRef, duplicate or reopened process.
+        // Atomic Job membership was checked by StartOwned before this callback. Disposing
+        // the kill-on-close Job requests containment; closed handles do NOT prove observed exit.
+        {
+            OwnedChild? observed = null, launched = null;
+            SafeFileHandle? birth = null, originalJob = null;
+            bool callbackReached = false;
+            string actual = "accepted";
+            trace.Step("callback-disposed-without-extra-reference");
+            try
+            {
+                Action<OwnedChild> callback = owned => {
+                    observed = owned; callbackReached = true;
+                    birth = Field<SafeFileHandle>(owned, "processHandle");
+                    originalJob = Field<SafeFileHandle>(owned, "job");
+                    Check(owned.Alive && !birth.IsClosed && !originalJob.IsClosed);
+                    owned.Dispose();
+                    Check(birth.IsClosed && originalJob.IsClosed);
+                    // No native wait/termination call is valid through birth after disposal.
+                };
+                string image = Environment.ProcessPath!;
+                string pipeName = WindowsBoundary.NewPipeName();
+                try {
+                    launched = (OwnedChild)startOwned.Invoke(null, [image,
+                        new StringBuilder($"\"{image}\" --launcher-peer {pipeName} {Environment.ProcessId} no-connect"),
+                        false, IntPtr.Zero, AppContext.BaseDirectory, callback, false, null])!;
+                }
+                catch (TargetInvocationException error) {
+                    Exception cause = error;
+                    while (cause is TargetInvocationException wrapped && wrapped.InnerException is not null) cause = wrapped.InnerException;
+                    actual = cause is IOException ? cause.Message : cause.GetType().Name;
+                }
+                RecordDenial("resume-owner-unavailable", actual);
+                Check(callbackReached && actual == "resume-owner-unavailable");
+                Check(launched is null);
+                Check(birth is { IsClosed: true } && originalJob is { IsClosed: true });
+                // Exact exit is deliberately unobserved once the birth handle is closed.
+                cases++;
+            }
+            finally { observed?.Dispose(); } // Existing idempotent disposal; no closed-handle probing.
         }
         using var owner = new CancellationTokenSource();
         Guid instance = Guid.NewGuid(), receipt = Guid.NewGuid();

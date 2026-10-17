@@ -114,13 +114,14 @@ internal sealed class OwnedChild : IDisposable
             var owned = new OwnedChild(handle, ownedJob, child);
             beforeResume?.Invoke(owned);
             using var invalidThread = new SafeFileHandle(IntPtr.Zero, false);
+            owned.RequirePreResumeOwnership();
             if (ResumeThread(resumeFailure ? invalidThread : thread) != 1)
                 throw new IOException(resumeFailure ? "fixture-resume-failure:" + Marshal.GetLastWin32Error() : "resume-thread:" + Marshal.GetLastWin32Error());
             return owned;
         }
         catch
         {
-            if (handle is not null) { TerminateProcess(handle, 3); WaitForSingleObject(handle, 2000); }
+            if (handle is { IsClosed: false, IsInvalid: false }) { TerminateProcess(handle, 3); WaitForSingleObject(handle, 2000); }
             ownedJob.Dispose(); child?.Dispose(); handle?.Dispose(); throw;
         }
         finally
@@ -132,6 +133,18 @@ internal sealed class OwnedChild : IDisposable
             GC.KeepAlive(ownedJob);
             GC.KeepAlive(inheritedOwner);
         }
+    }
+    // Recheck the retained birth/Job objects after potentially fallible registration.
+    // Sequential kernel observations, not an atomic check-and-resume guarantee.
+    private void RequirePreResumeOwnership()
+    {
+        if (Volatile.Read(ref disposed) != 0 || processHandle.IsClosed || processHandle.IsInvalid || job.IsClosed || job.IsInvalid)
+            throw new IOException("resume-owner-unavailable");
+        if (WaitForSingleObject(processHandle, 0) != 0x102) // Only WAIT_TIMEOUT demonstrates current liveness.
+            throw new IOException("resume-process-not-live");
+        if (!IsProcessInJob(processHandle, job, out bool member)) throw new IOException("resume-job-query");
+        if (!member) throw new IOException("resume-job-membership");
+        if (!Alive || job.IsClosed || job.IsInvalid) throw new IOException("resume-owner-unavailable");
     }
     internal static OwnedChild StartIntegratedFixture(string stage, string pipe, string mode, VerifiedBackendArtifacts artifacts, int? foreignOwnerFixturePid = null)
     {
