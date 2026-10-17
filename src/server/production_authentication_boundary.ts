@@ -2,7 +2,7 @@ import type { IncomingMessage } from 'node:http';
 import type { RequestHandler, Response } from 'express';
 import { WebSocket } from 'ws';
 import { httpHostAllowed } from './http_host_validation.ts';
-import type { CompanionBootstrapAuthority } from './companion_bootstrap_authority.ts';
+import { CompanionBootstrapAuthority } from './companion_bootstrap_authority.ts';
 import type { AuthorityReceipt } from './application_session_authority.ts';
 
 const unavailable = () => new Error('Application authentication unavailable.');
@@ -37,14 +37,14 @@ export class ProductionAuthenticationBoundary {
     if (this.#ended || !this.#owner || this.#owner.boundaryEnded.aborted) throw unavailable();
     // The owner checks server activation, receipt identity, elapsed/absolute expiry,
     // logout and process/IPC loss. Native IsActive alone confers no authority.
-    this.#owner.authorizeFixtureReceipt(receipt);
+    CompanionBootstrapAuthority.prototype.authorizeFixtureReceipt.call(this.#owner, receipt);
   }
   #authenticate(req: IncomingMessage) {
     if (this.#ended || !this.#owner || !httpHostAllowed(req.rawHeaders) ||
       !this.#origins.has(this.#header(req, 'origin')) || req.headers.cookie !== undefined) throw unavailable();
     const header = this.#header(req, 'authorization');
     if (!/^Bearer session_[A-Za-z0-9_-]{43}$/.test(header)) throw unavailable();
-    const receipt = this.#owner.validateSession(header.slice(7));
+    const receipt = CompanionBootstrapAuthority.prototype.validateSession.call(this.#owner, header.slice(7));
     this.#authorize(receipt);
     return receipt; // Retain metadata only, never the bearer string.
   }

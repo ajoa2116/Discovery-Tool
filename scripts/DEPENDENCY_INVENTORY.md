@@ -6,6 +6,8 @@ The report lists project and installed non-development lockfile package candidat
 
 This is a broad candidate scan, not a proven reachable backend graph. Type-only references are marked where declaration syntax identifies them. CommonJS package resolution is an inspection hint and may differ from ESM/custom-loader behavior. C#/PowerShell analysis is heuristic, and wrappers/aliases, DLL search, generated code, WASM selection, subprocess arguments and external system runtimes need manual review. Default bounds are 20,000 files and 2 MiB per analyzed text file; hitting a bound explicitly reports partial analysis. Symlinks/junctions are not followed.
 
+`typeOnly` records explicit declaration-level type-only syntax, not complete semantic usage. Ordinary imports inside `.d.ts` files may remain `typeOnly:false`; inline type specifiers, type-only use, `typeof` queries and `ReturnType` do not automatically reclassify those records. Neither a resolved CommonJS target nor `typeOnly:false` proves JavaScript emission, runtime execution or cross-loader equivalence.
+
 Every report declares `informationalOnly: true`, `productionAuthority: false`, `completeVerification: false` and an unapproved diagnostic runtime. No report can establish provenance, grant trust, authorize a release or enable an operation. No hashes/signatures are produced. Inspection is not protected against concurrent file mutation. Production composition and safety gates do not consume the report.
 
 Focused tests: `node --import tsx --test src/test/dependency_inventory.test.ts`.

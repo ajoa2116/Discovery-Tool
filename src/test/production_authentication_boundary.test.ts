@@ -1,7 +1,7 @@
 import { productionBackendSource } from './support/backend_source.ts';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { getEventListeners } from 'node:events';
+import { EventEmitter, getEventListeners } from 'node:events';
 import { createServer, request, type IncomingMessage } from 'node:http';
 import { connect } from 'node:net';
 import { readFile } from 'node:fs/promises';
@@ -280,4 +280,163 @@ test('production registration closes all API prefixes before every side-effect m
     'reportSet.snapshot();next();', 'app.use(taskIntegration.middleware)', "app.get('/api/project'"])
     assert.ok(gate < source.indexOf(downstream), downstream);
   assert.doesNotMatch(source, /new ProductionAuthenticationBoundary\(\{.*owner/);
+});
+
+
+// Pure in-memory trust-seam checks. Never calls serverFixture or opens a socket.
+class CanonicalMemoryResponse extends EventEmitter {
+  statusCode = 200;
+  headers: Record<string, unknown> = {};
+  body: unknown;
+  destroyed = false;
+  outputCalls = 0;
+  setHeader(name: string, value: unknown) { this.headers[name.toLowerCase()] = value; return this; }
+  status(value: number) { this.statusCode = value; return this; }
+  json(value: unknown) { this.body = value; return this; }
+  write(..._args: unknown[]) { this.outputCalls++; return true; }
+  end(..._args: unknown[]) { this.outputCalls++; this.emit('finish'); return this; }
+  writeHead(..._args: unknown[]) { this.outputCalls++; return this; }
+  flushHeaders() { this.outputCalls++; }
+  destroy() { if (!this.destroyed) { this.destroyed = true; this.emit('close'); } return this; }
+}
+class CanonicalMemorySocket extends EventEmitter {
+  readyState: number = WebSocket.OPEN;
+  bufferedAmount = 0;
+  terminated = 0;
+  sent: string[] = [];
+  send(value: string, done: (error?: Error) => void) { this.sent.push(value); done(); }
+  terminate() { this.terminated++; this.readyState = WebSocket.CLOSED; this.emit('close'); }
+}
+function canonicalRequest(token = 'session_' + 'a'.repeat(43)) {
+  return {
+    method: 'GET', url: '/ws',
+    headers: { host: 'localhost:3001', origin: 'http://localhost:3001', authorization: 'Bearer ' + token },
+    rawHeaders: ['Host', 'localhost:3001', 'Origin', 'http://localhost:3001', 'Authorization', 'Bearer ' + token],
+  } as Parameters<ProductionAuthenticationBoundary['http']>[0];
+}
+function canonicalHttp(boundary: ProductionAuthenticationBoundary, token?: string) {
+  const response = new CanonicalMemoryResponse(); let nextCalls = 0;
+  boundary.http(canonicalRequest(token), response as unknown as Parameters<typeof boundary.http>[1], () => { nextCalls++; });
+  return { response, nextCalls };
+}
+function canonicalDenied(result: ReturnType<typeof canonicalHttp>) {
+  assert.equal(result.nextCalls, 0);
+  assert.equal(result.response.statusCode, 401);
+  assert.equal(result.response.headers['cache-control'], 'no-store');
+  assert.deepEqual(result.response.body, { error: 'Application authentication unavailable.' });
+  assert.equal(result.response.outputCalls, 0);
+  assert.equal(result.response.listenerCount('finish'), 0);
+  assert.equal(result.response.listenerCount('close'), 0);
+}
+function canonicalLookalike() {
+  const ended = new AbortController(), calls = { validate: 0, authorize: 0 };
+  const owner = {
+    boundaryEnded: ended.signal,
+    validateSession() { calls.validate++; return { id: 'forged-fixture-receipt', expiresAt: Date.now() + 60_000 }; },
+    authorizeFixtureReceipt() { calls.authorize++; },
+  };
+  return { owner: owner as unknown as CompanionBootstrapAuthority, ended, calls };
+}
+
+test('canonical owner in-memory: ownerless HTTP and upgrades remain denied', () => {
+  const boundary = new ProductionAuthenticationBoundary(), socket = new CanonicalMemorySocket();
+  try {
+    canonicalDenied(canonicalHttp(boundary));
+    const req = canonicalRequest();
+    assert.equal(boundary.verifyUpgrade(req), false);
+    assert.equal(boundary.accept(socket as unknown as WebSocket, req), false);
+    assert.equal(socket.terminated, 1); assert.equal(socket.listenerCount('close'), 0);
+  } finally { boundary.dispose(); socket.removeAllListeners(); }
+});
+test('canonical owner in-memory: lookalike HTTP validators are never invoked', () => {
+  const f = canonicalLookalike(), boundary = new ProductionAuthenticationBoundary({ owner: f.owner });
+  try { canonicalDenied(canonicalHttp(boundary)); assert.deepEqual(f.calls, { validate: 0, authorize: 0 }); }
+  finally { boundary.dispose(); }
+  assert.equal(getEventListeners(f.ended.signal, 'abort').length, 0);
+});
+test('canonical owner in-memory: lookalike upgrade cannot admit a subscription', () => {
+  const f = canonicalLookalike(), boundary = new ProductionAuthenticationBoundary({ owner: f.owner }), socket = new CanonicalMemorySocket();
+  try {
+    const req = canonicalRequest();
+    assert.equal(boundary.verifyUpgrade(req), false);
+    assert.equal(boundary.accept(socket as unknown as WebSocket, req), false);
+    assert.equal(socket.terminated, 1); assert.equal(socket.listenerCount('close'), 0);
+    assert.deepEqual(f.calls, { validate: 0, authorize: 0 });
+  } finally { boundary.dispose(); socket.removeAllListeners(); }
+  assert.equal(getEventListeners(f.ended.signal, 'abort').length, 0);
+});
+test('canonical owner in-memory: genuine modeled owner accepts HTTP and receive-only events', async () => {
+  const f = await activeOwner(), boundary = new ProductionAuthenticationBoundary({ owner: f.owner }), socket = new CanonicalMemorySocket();
+  let replacedAuthorizeCalls = 0;
+  f.owner.authorizeFixtureReceipt = () => { replacedAuthorizeCalls++; throw Error('Instance method must not dispatch'); };
+  try {
+    const result = canonicalHttp(boundary, f.token());
+    assert.equal(result.nextCalls, 1); assert.equal(result.response.statusCode, 200);
+    result.response.end();
+    assert.equal(result.response.outputCalls, 1);
+    assert.equal(result.response.listenerCount('finish'), 0); assert.equal(result.response.listenerCount('close'), 0);
+    const req = canonicalRequest(f.token());
+    assert.equal(boundary.verifyUpgrade(req), true);
+    assert.equal(boundary.accept(socket as unknown as WebSocket, req), true);
+    assert.equal(boundary.send(socket as unknown as WebSocket, '{"fixture":true}'), true);
+    assert.deepEqual(socket.sent, ['{"fixture":true}']); assert.equal(replacedAuthorizeCalls, 0);
+  } finally { boundary.dispose(); socket.removeAllListeners(); await f.owner.dispose(); }
+  assert.equal(socket.readyState, WebSocket.CLOSED);
+  assert.equal(getEventListeners(f.owner.boundaryEnded, 'abort').length, 0);
+});
+test('canonical owner in-memory: replaced session validator cannot accept a foreign token', async () => {
+  const f = await activeOwner(), boundary = new ProductionAuthenticationBoundary({ owner: f.owner });
+  const receipt = f.owner.validateSession(f.token()); let calls = 0;
+  f.owner.validateSession = () => { calls++; return receipt; };
+  try { canonicalDenied(canonicalHttp(boundary)); assert.equal(calls, 0); }
+  finally { boundary.dispose(); await f.owner.dispose(); }
+  assert.equal(getEventListeners(f.owner.boundaryEnded, 'abort').length, 0);
+});
+for (const ending of ['expiry', 'process-loss', 'revocation'] as const) {
+  test('canonical owner in-memory: replaced validators cannot revive ' + ending, async () => {
+    const f = await activeOwner(), boundary = new ProductionAuthenticationBoundary({ owner: f.owner });
+    const receipt = f.owner.validateSession(f.token()), calls = { validate: 0, authorize: 0 };
+    try {
+      const positive = canonicalHttp(boundary, f.token()); assert.equal(positive.nextCalls, 1); positive.response.end();
+      f.owner.validateSession = () => { calls.validate++; return receipt; };
+      f.owner.authorizeFixtureReceipt = () => { calls.authorize++; };
+      if (ending === 'expiry') f.expire();
+      else if (ending === 'process-loss') f.lose();
+      else await f.owner.dispose();
+      canonicalDenied(canonicalHttp(boundary, f.token()));
+      assert.deepEqual(calls, { validate: 0, authorize: 0 });
+    } finally { boundary.dispose(); await f.owner.dispose(); }
+    assert.equal(getEventListeners(f.owner.boundaryEnded, 'abort').length, 0);
+  });
+}
+for (const ending of ['expiry', 'process-loss'] as const) {
+  test('canonical owner in-memory: final upgrade acceptance denies ' + ending + ' despite replaced authorizer', async () => {
+    const f = await activeOwner(), boundary = new ProductionAuthenticationBoundary({ owner: f.owner }), socket = new CanonicalMemorySocket();
+    let calls = 0;
+    try {
+      const req = canonicalRequest(f.token()); assert.equal(boundary.verifyUpgrade(req), true);
+      f.owner.authorizeFixtureReceipt = () => { calls++; };
+      if (ending === 'expiry') f.expire(); else f.lose();
+      assert.equal(boundary.accept(socket as unknown as WebSocket, req), false);
+      assert.equal(socket.terminated, 1); assert.equal(socket.listenerCount('close'), 0); assert.equal(calls, 0);
+    } finally { boundary.dispose(); socket.removeAllListeners(); await f.owner.dispose(); }
+    assert.equal(getEventListeners(f.owner.boundaryEnded, 'abort').length, 0);
+  });
+}
+test('canonical owner in-memory: HTTP output and WS sends recheck canonical expiry', async () => {
+  const f = await activeOwner(), boundary = new ProductionAuthenticationBoundary({ owner: f.owner }), socket = new CanonicalMemorySocket();
+  let calls = 0;
+  try {
+    const response = canonicalHttp(boundary, f.token()); assert.equal(response.nextCalls, 1);
+    const req = canonicalRequest(f.token()); assert.equal(boundary.verifyUpgrade(req), true);
+    assert.equal(boundary.accept(socket as unknown as WebSocket, req), true);
+    f.owner.authorizeFixtureReceipt = () => { calls++; };
+    f.expire();
+    response.response.end();
+    assert.equal(response.response.destroyed, true); assert.equal(response.response.outputCalls, 0);
+    assert.equal(response.response.listenerCount('finish'), 0); assert.equal(response.response.listenerCount('close'), 0);
+    assert.equal(boundary.send(socket as unknown as WebSocket, '{"fixture":true}'), false);
+    assert.deepEqual(socket.sent, []); assert.equal(socket.readyState, WebSocket.CLOSED); assert.equal(calls, 0);
+  } finally { boundary.dispose(); socket.removeAllListeners(); await f.owner.dispose(); }
+  assert.equal(getEventListeners(f.owner.boundaryEnded, 'abort').length, 0);
 });
