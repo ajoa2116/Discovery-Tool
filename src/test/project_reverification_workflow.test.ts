@@ -45,6 +45,45 @@ async function run(){
   assert(app.includes('onClick={handleScanNetwork}')&&server.includes("'/api/discovery', createForegroundDiscoveryRouter") && readFileSync('src/server/foreground_discovery_routes.ts','utf8').includes("router.post('/start'")&&pipeline.includes('runDiscoveryScan'),'T ordinary Quick Scan remains independently wired');
   assert(server.includes('incrementalMonitor.yieldToTechnician()')&&server.includes('reverifyWorkflow?.isRunning()')&&monitor.includes('runNow'),'U incremental monitoring yields and does not conflict with Reverify');
   const saveJson=replacementDb.exportProjectJsonForSave();assert(JSON.parse(saveJson).project.devices[0].anchor.macAddress===replacement.anchor.macAddress&&!replacementDb.getSession().dirty,'V confirmed replacement saves normally without auto-save');
+  // Ownership must be resolved across the whole Project before address-based replacement review.
+  for(const order of ['A-first','B-first'] as const)for(const anchorKind of ['MAC','UUID','SERIAL'] as const){
+    const owner=device('project-B','192.168.1.30',anchorKind==='MAC'?'00:11:22:33:44:66':null,{
+      anchor:{macAddress:anchorKind==='MAC'?'00:11:22:33:44:66':null,onvifEndpointUuid:anchorKind==='UUID'?'owned-uuid':undefined,serialNumber:anchorKind==='SERIAL'?'owned-serial':undefined,vendor:'Fixture'},
+      technician:{name:'Back Door',location:'South',notes:'Retain owner notes'},configuredState:{inferred:false,manualOverride:true,updatedAt:'2026-01-01T00:00:00Z'},
+    });
+    const found=device('runtime-B',saved.network.ipAddress,null,{anchor:structuredClone(owner.anchor),technician:{name:'Incoming name',notes:'Incoming notes'},configuredState:{inferred:false,manualOverride:false}});
+    const records=order==='A-first'?[structuredClone(saved),owner]:[owner,structuredClone(saved)];
+    const proposal=ProjectReverificationEngine.plan(records,[found]);
+    assert(proposal.recognizedCount===1&&proposal.notVerifiedCount===1&&proposal.newDevicesCount===0,'OWNED '+order+' '+anchorKind+': unique ownership recognized before replacement eligibility');
+    assert(proposal.possibleReplacements.length===0,'OWNED '+order+' '+anchorKind+': recognized camera is never another Project camera replacement');
+    const db=cleanProject(records),flow=workflow(db,[found]),summary=await flow.run();
+    const retained=db.getProjectMemberDevices().find(item=>item.id==='project-B')!,missing=db.getProjectMemberDevices().find(item=>item.id===saved.id)!;
+    assert(summary.possibleReplacements.length===0,'OWNED '+order+' '+anchorKind+': workflow exposes no unusable replacement action');
+    assert(retained.sessionVerification==='VERIFIED'&&JSON.stringify(retained.anchor)===JSON.stringify(owner.anchor)&&db.getProjectMemberDevices().length===2&&!db.getDeviceById('runtime-B'),'OWNED '+order+' '+anchorKind+': B retains original Project identity and membership');
+    assert(JSON.stringify(retained.technician)===JSON.stringify(owner.technician)&&JSON.stringify(retained.configuredState)===JSON.stringify(owner.configuredState),'OWNED '+order+' '+anchorKind+': technician name/location/notes and configured override retained');
+    assert(retained.network.ipAddress===saved.network.ipAddress&&retained.network.ipAddressHistory?.includes('192.168.1.30')&&summary.changedIpCount===1,'OWNED '+order+' '+anchorKind+': B address change and history retained');
+    assert(missing.sessionVerification==='NOT_FOUND'&&missing.anchor.macAddress===saved.anchor.macAddress,'OWNED '+order+' '+anchorKind+': missing A remains Not Verified with original identity');
+    assert(!db.listProjectHistory().some(event=>event.type==='REPLACEMENT_CANDIDATE'),'OWNED '+order+' '+anchorKind+': no false replacement-candidate history');
+  }
+  for(const order of ['A-first','B-first'] as const){
+    const owner=device('project-B','192.168.1.30','00:11:22:33:44:66'),found=device('runtime-B','192.168.1.40','00:11:22:33:44:66');
+    const db=cleanProject(order==='A-first'?[structuredClone(saved),owner]:[owner,structuredClone(saved)]),flow=workflow(db,[found,replacement]);
+    const summary=await flow.run(),candidate=summary.possibleReplacements[0];
+    assert(summary.recognizedCount===1&&summary.possibleReplacements.length===1&&candidate.originalDeviceId===saved.id,'OWNED '+order+': genuinely unmatched camera remains a replacement proposal');
+    const accepted=flow.decide(candidate.candidateId!,'CONFIRMED');
+    assert(accepted.device?.id===saved.id&&accepted.device.anchor.macAddress===replacement.anchor.macAddress&&accepted.device.technician?.notes==='Retain'&&db.getDeviceById('project-B')?.network.ipAddress==='192.168.1.40','OWNED '+order+': explicit genuine replacement remains confirmable without changing B');
+  }
+  {
+    const owner=device('project-B','192.168.1.30','00:11:22:33:44:66'),found=device('runtime-B',saved.network.ipAddress,'00:11:22:33:44:66');
+    const collision=ProjectReverificationEngine.plan([saved,owner],[found,replacement]);
+    assert(collision.recognizedCount===1&&collision.collisionCount===1&&collision.newDevicesCount===1&&collision.possibleReplacements.length===0,'OWNED duplicate-IP conflict is not hidden by filtering out the recognized occupant');
+    const unknown=device('unknown',saved.network.ipAddress,null);
+    assert(ProjectReverificationEngine.plan([saved,owner],[unknown]).possibleReplacements.length===0,'OWNED observation without physical anchors does not become a replacement');
+    const sharedA=structuredClone(saved),sharedB=structuredClone(owner);sharedA.anchor.serialNumber='shared';sharedB.anchor.serialNumber='shared';
+    const weak=device('weak',saved.network.ipAddress,null,{anchor:{macAddress:null,serialNumber:'shared',vendor:'Fixture'}});
+    const ambiguous=ProjectReverificationEngine.plan([sharedA,sharedB],[weak]);
+    assert(ambiguous.recognizedCount===0&&ambiguous.possibleReplacements.length===0,'OWNED ambiguous shared serial does not acquire Project ownership or replacement authority');
+  }
   // Session-lifetime regressions: all discovery and file-open data is injected in memory.
   const deferred = <T,>() => { let resolve!: (value:T)=>void, reject!: (reason:Error)=>void; const promise=new Promise<T>((yes,no)=>{resolve=yes;reject=no});return{promise,resolve,reject}; };
   const settled = <T,>(promise:Promise<T>) => promise.then(result=>({result,error:null as Error|null}),error=>({result:null,error:error as Error}));

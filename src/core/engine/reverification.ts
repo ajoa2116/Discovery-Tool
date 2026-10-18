@@ -12,15 +12,18 @@ export class ProjectReverificationEngine {
   public static plan(knownProjectDevices: Device[], liveDiscoveredDevices: Device[], localHost = LocalHostIdentity.fromAddresses([])): ReverificationPlan {
     const known = structuredClone(knownProjectDevices).map(d=>({...d,anchor:canonicalAnchor(d.anchor)}));
     const live = structuredClone(liveDiscoveredDevices).map(d=>({...d,anchor:canonicalAnchor(d.anchor)})).filter(device => localHost.isRemoteDevice(device));
-    const matchedLiveIds = new Set<string>();
+    // Establish unique canonical ownership before any address-based replacement proposal.
+    const ownership = known.map(saved => {
+      const matches = live.filter(found => sameIdentity(saved, found));
+      const found = matches.length === 1 && known.filter(other=>sameIdentity(other,matches[0])).length === 1 ? matches[0] : undefined;
+      return { saved, found };
+    });
+    const matchedLiveIds = new Set(ownership.flatMap(({ found }) => found ? [found.id] : []));
     const verifiedDevices: Device[] = [], notVerifiedDevices: Device[] = [];
     const possibleReplacements: ReverificationResult['possibleReplacements'] = [];
     let changedIpCount = 0, persistentChanged = false;
-    for (const saved of known) {
-      const matches = live.filter(found => sameIdentity(saved, found));
-      const found = matches.length === 1 && known.filter(other=>sameIdentity(other,matches[0])).length === 1 ? matches[0] : undefined;
+    for (const { saved, found } of ownership) {
       if (found) {
-        matchedLiveIds.add(found.id);
         const previousIp = saved.network.ipAddress;
         if (found.network.ipAddress !== previousIp) { changedIpCount++; persistentChanged = true; }
         const mergedAnchor = mergeAnchors(saved.anchor, found.anchor);
@@ -34,7 +37,7 @@ export class ProjectReverificationEngine {
         saved.sessionVerification = 'NOT_FOUND'; saved.status = 'UNKNOWN'; saved.statusMessage = 'Not verified during the latest Project reverification.'; delete saved.reachability;
         notVerifiedDevices.push(saved);
         const atSavedIp = live.filter(candidate => candidate.network.ipAddress === saved.network.ipAddress && !sameIdentity(saved, candidate));
-        if (hasIdentity(saved) && atSavedIp.length === 1 && hasIdentity(atSavedIp[0])) {
+        if (hasIdentity(saved) && atSavedIp.length === 1 && hasIdentity(atSavedIp[0]) && !matchedLiveIds.has(atSavedIp[0].id)) {
           const candidate = atSavedIp[0];
           possibleReplacements.push({ candidateId: crypto.randomUUID(), originalDeviceId: saved.id, expectedName: saved.technician?.name || saved.anchor.model || saved.anchor.vendor, expectedMac: saved.anchor.macAddress, expectedIp: saved.network.ipAddress, expectedSerial: saved.anchor.serialNumber, expectedVendor: saved.anchor.vendor, expectedModel: saved.anchor.model, foundMac: candidate.anchor.macAddress, foundIp: candidate.network.ipAddress, foundSerial: candidate.anchor.serialNumber, foundVendor: candidate.anchor.vendor, model: candidate.anchor.model || candidate.anchor.vendor, evidence: ['Different stable physical identity discovered at the saved Project address.'], decision: 'PENDING' });
         }

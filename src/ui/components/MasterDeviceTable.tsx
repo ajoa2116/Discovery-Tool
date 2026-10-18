@@ -1,3 +1,4 @@
+import { allVisibleSelected } from '../../shared/device_selection.ts';
 import React, { useState, useRef } from 'react';
 import { Device, DeviceStatus } from '../../types/index.ts';
 import {
@@ -188,7 +189,7 @@ export const MasterDeviceTable: React.FC<MasterDeviceTableProps> = ({
     }
   };
 
-  const isAllSelected = devices.length > 0 && selectedDeviceIds.size === devices.length;
+  const isAllSelected = allVisibleSelected(selectedDeviceIds, new Set(devices.map(device => device.id)));
   const lastSix = (device: Device) => { const value = device.anchor.macAddress?.replace(/[^0-9a-f]/gi, '').toUpperCase(); return value && value.length === 12 ? value.slice(-6) : null; };
   const configured = (device: Device) => device.configuredState?.manualOverride ?? device.configuredState?.inferred ?? null;
   const visible = (column: TableColumnId) => visibleColumns.includes(column);

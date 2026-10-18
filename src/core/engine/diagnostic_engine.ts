@@ -77,7 +77,13 @@ export class WindowsPingProvider implements PingProvider {
 export class NodeHttpDiagnosticProvider implements HttpDiagnosticProvider {
   public async check(ipAddress: string, options: { protocol: 'http' | 'https'; port: number; timeoutMs: number; signal?: AbortSignal }): Promise<DiagnosticCheckEvidence> {
     const head = await this.request(ipAddress, options, 'HEAD');
-    if (head.httpStatus === 405 || head.httpStatus === 501) return this.request(ipAddress, options, 'GET');
+    if (head.httpStatus === 405 || head.httpStatus === 501) {
+      const get = await this.request(ipAddress, options, 'GET');
+      if (get.errorCategory === 'CANCELLED') return get;
+      if (options.signal?.aborted) return { ...get, success: false, transportReachable: false, httpStatus: undefined, timeout: false, errorCategory: 'CANCELLED', errorMessage: safeErrorMessage('CANCELLED') };
+      // A failed fallback cannot erase the HTTP response already received in this run.
+      return get.success ? get : head;
+    }
     return head;
   }
 

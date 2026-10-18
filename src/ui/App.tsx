@@ -1,3 +1,4 @@
+import { toggleVisibleSelection } from '../shared/device_selection.ts';
 import {SelectedDeviceActions} from './components/SelectedDeviceActions.tsx';
 import { isActiveCollision } from '../shared/collision_state.ts';
 import { isAdapterCollection } from '../shared/advanced_scan_contract.ts';
@@ -432,11 +433,7 @@ export default function App() {
   };
 
   const handleToggleSelectAll = () => {
-    if (selectedDeviceIds.size === filteredDevices.length) {
-      setSelectedDeviceIds(new Set());
-    } else {
-      setSelectedDeviceIds(new Set(filteredDevices.map((d) => d.id)));
-    }
+    setSelectedDeviceIds(current => toggleVisibleSelection(current, new Set(filteredDevices.map(device => device.id))));
   };
 
   const handleOpenDuplicateAssistant = (device: Device, blockedIp?: string) => {
