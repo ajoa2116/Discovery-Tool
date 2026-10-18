@@ -136,6 +136,25 @@ export class SiteProjectDatabase {
     const devices = this.session.project.devices;
     device.anchor = canonicalAnchor(device.anchor);
     const selection = selectIdentity(devices,device);
+    // Scope only record continuity to provenance; ordinary storage selection remains unchanged.
+    const continuityEligible = devices.filter(existing => (existing.evidenceProvenance || 'PHYSICAL_NETWORK') === (device.evidenceProvenance || 'PHYSICAL_NETWORK'));
+    const continuitySelection = selectIdentity(continuityEligible, device);
+    if (continuitySelection.index < 0 && continuitySelection.ambiguous) {
+      const typedAnchors = (value: Device) => {
+        const anchor = canonicalAnchor(value.anchor);
+        return JSON.stringify([anchor.macAddress, anchor.onvifEndpointUuid ?? null, anchor.serialNumber ?? null]);
+      };
+      const repeated = continuityEligible.filter(existing => existing.id === device.id
+        && existing.network.ipAddress === device.network.ipAddress
+        && (existing.evidenceProvenance || 'PHYSICAL_NETWORK') === (device.evidenceProvenance || 'PHYSICAL_NETWORK')
+        && typedAnchors(existing) === typedAnchors(device)
+        && existing.identityConflicts?.some(conflict => conflict.reason === 'Ambiguous physical identity matches'));
+      if (repeated.length === 1) {
+        // Do not consume incoming status, anchors, conflict diagnostics or technician metadata.
+        repeated[0].lastSeenAt = device.lastSeenAt;
+        return repeated[0];
+      }
+    }
     const existingIndex = selection.index;
     if (existingIndex < 0 && selection.related.length) {
       const conflict = { detectedAt:new Date().toISOString(), reason:selection.ambiguous ? 'Ambiguous physical identity matches' : 'Conflicting physical identity evidence', existingMac:selection.related[0].anchor.macAddress, incomingMac:device.anchor.macAddress, existingUuid:selection.related[0].anchor.onvifEndpointUuid, incomingUuid:device.anchor.onvifEndpointUuid };

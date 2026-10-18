@@ -1,3 +1,4 @@
+import { selectIdentity } from '../shared/identity_policy.ts';
 import { Device } from '../types/index.ts';
 import { SiteProjectDatabase } from '../core/storage/project_db.ts';
 import { ProjectReverificationEngine, ProjectReverificationWorkflow } from '../core/engine/reverification.ts';
@@ -82,6 +83,99 @@ async function run(){
   const d=dbFor([camera('invalid',mac,'uuid-a')]);check(d.getDevices()[0].anchor.macAddress===null,'invalid storage anchor '+mac);
   const xml=`<Envelope><ProbeMatch><EndpointReference><Address>urn:uuid:11111111-2222-3333-4444-555555555555</Address></EndpointReference><XAddrs>http://192.168.1.100/onvif/device_service</XAddrs><Scopes>onvif://www.onvif.org/MAC/${mac}</Scopes></ProbeMatch></Envelope>`;
   check(OnvifDriver.parseProbeMatch(xml,'192.168.1.100')?.anchor?.macAddress===null,'invalid discovery anchor '+mac);
+ }
+ // Repeated unresolved observations: continuity is not physical identity resolution.
+ for(const reverse of [false,true])for(const mode of ['storage','transport'] as const){
+  const established=[camera('A',a,'uuid-a',undefined,'shared'),camera('B',b,'uuid-b',undefined,'shared')];if(reverse)established.reverse();
+  const database=dbFor(mode==='storage'?established:[]),rows=structuredClone(established);
+  const inventory=()=>mode==='storage'?database.getDevices():rows;
+  const ingest=(value:Device)=>mode==='storage'?database.upsertDevice(value):mergeDiscoveredDevice(rows,value).device;
+  const weak=camera('weak',null,undefined,'192.168.1.200','shared');weak.status='UNKNOWN';weak.sessionVerification='NOT_VERIFIED';
+  const first=ingest(structuredClone(weak));
+  const strongBefore=JSON.stringify(inventory().filter(d=>d.id==='A'||d.id==='B'));
+  const conflictBefore=JSON.stringify(first.identityConflicts),projectId=database.getProject().id;
+  check(inventory().length===3&&Boolean(first.identityConflicts?.some(c=>c.reason==='Ambiguous physical identity matches')),mode+' first weak observation is unresolved order='+reverse);
+  for(let repeat=0;repeat<3;repeat++){
+   const incoming=structuredClone(weak);incoming.technician={name:'Incoming name',notes:'Overwrite attempt'};incoming.identityConflicts=[];incoming.status='ONLINE';incoming.sessionVerification='VERIFIED';
+   const repeated=ingest(incoming);
+   check(inventory().length===3&&repeated.id===first.id,mode+' repeated weak observation retains exactly three rows repeat='+repeat+' order='+reverse);
+   check(repeated.technician?.name==='Same name'&&repeated.technician.notes==='Keep notes',mode+' repeated weak observation preserves technician fields repeat='+repeat);
+   check(JSON.stringify(repeated.identityConflicts)===conflictBefore&&repeated.status==='UNKNOWN'&&repeated.sessionVerification==='NOT_VERIFIED',mode+' repetition preserves conflict evidence and unresolved confidence repeat='+repeat);
+  }
+  check(JSON.stringify(inventory().filter(d=>d.id==='A'||d.id==='B'))===strongBefore,mode+' repetition does not modify either established camera');
+  check(database.getProject().id===projectId,mode+' Project identity unchanged');
+  const unresolved=selectIdentity(inventory(),weak);
+  check(unresolved.ambiguous&&unresolved.index===-1,mode+' canonical physical identity remains ambiguous');
+ }
+ for(const mode of ['storage','transport'] as const)for(const change of ['id','address','serial-present','serial-absent','serial-value'] as const){
+  // A shared UUID keeps changed serial presence/value ambiguous under the unchanged selector.
+  const established=[camera('A',a,'shared-uuid',undefined,'serial-a'),camera('B',b,'shared-uuid',undefined,'serial-b')];
+  const database=dbFor(mode==='storage'?established:[]),rows=structuredClone(established);
+  const inventory=()=>mode==='storage'?database.getDevices():rows;
+  const ingest=(value:Device)=>mode==='storage'?database.upsertDevice(value):mergeDiscoveredDevice(rows,value).device;
+  const weak=camera('weak',null,'shared-uuid','192.168.1.200',change==='serial-present'?undefined:'weak-serial');
+  weak.status='UNKNOWN';weak.sessionVerification='NOT_VERIFIED';const first=ingest(structuredClone(weak));const snapshot=JSON.stringify(first);
+  const changed=structuredClone(weak);
+  if(change==='id')changed.id='other-weak';
+  if(change==='address')changed.network.ipAddress='192.168.1.201';
+  if(change==='serial-present')changed.anchor.serialNumber='weak-serial';
+  if(change==='serial-absent')delete changed.anchor.serialNumber;
+  if(change==='serial-value')changed.anchor.serialNumber='different-serial';
+  const selection=selectIdentity(inventory(),changed);
+  check(selection.ambiguous&&selection.index===-1,mode+' negative '+change+' fixture remains canonically ambiguous');
+  const next=ingest(changed);
+  check(inventory().length===4&&next.id!==first.id,mode+' changed '+change+' is not collapsed by continuity');
+  // Conflict diagnostics may be appended by normal insertion; identity and technician bindings must remain.
+  check(inventory().find(d=>d.id===first.id)?.anchor.onvifEndpointUuid==='shared-uuid'&&inventory().find(d=>d.id===first.id)?.technician?.notes==='Keep notes',mode+' negative '+change+' preserves original unresolved binding');
+ }
+ for(const mode of ['storage','transport'] as const){
+  const established=[camera('A',a,'uuid-a',undefined,'shared'),camera('B',b,'uuid-b',undefined,'shared')];
+  const database=dbFor(mode==='storage'?established:[]),rows=structuredClone(established);
+  const ingest=(value:Device)=>mode==='storage'?database.upsertDevice(value):mergeDiscoveredDevice(rows,value).device;
+  const weak=camera('weak',null,undefined,'192.168.1.200','shared');weak.status='UNKNOWN';const first=ingest(structuredClone(weak));
+  const strengthened=structuredClone(weak);strengthened.anchor.macAddress=a;strengthened.anchor.onvifEndpointUuid='uuid-a';
+  const inventory=mode==='storage'?database.getDevices():rows,selection=selectIdentity(inventory,strengthened);
+  const resolved=ingest(strengthened);
+  check(!selection.ambiguous&&selection.index>=0&&resolved.id==='weak'&&resolved.anchor.macAddress===a,mode+' strengthened anchors follow existing authoritative matching, not unresolved continuity');
+  check(resolved.id===first.id,mode+' existing exact-row continuity remains available under canonical matching');
+ }
+ // Continuity parity uses provenance-scoped ambiguity, not ordinary matching parity.
+ for(const sameProvenanceConflict of [false,true]){
+  const decisions:boolean[]=[];
+  for(const mode of ['storage','transport'] as const){
+   const database=new SiteProjectDatabase('ISOLATED_TEST');database.createNewProject('Mixed provenance');
+   const left=camera('physical-A',a,'uuid-a',undefined,'shared');left.evidenceProvenance='PHYSICAL_NETWORK';
+   const right=camera('other-B',b,'uuid-b',undefined,'shared');right.evidenceProvenance=sameProvenanceConflict?'PHYSICAL_NETWORK':'SYNTHETIC_TEST';
+   database.upsertDevice(left);database.upsertDevice(right);
+   if(sameProvenanceConflict){const extra=camera('synthetic-C','00:11:22:33:44:70','uuid-c',undefined,'shared');extra.evidenceProvenance='SYNTHETIC_TEST';database.upsertDevice(extra);}
+   const weak=camera('mixed-weak',null,undefined,'192.168.1.200','shared');weak.evidenceProvenance='PHYSICAL_NETWORK';weak.status='UNKNOWN';weak.sessionVerification='NOT_VERIFIED';database.upsertDevice(structuredClone(weak));
+   const rows=structuredClone(database.getDevices()),inventory=mode==='storage'?database.getDevices():rows;
+   const original=inventory.find(d=>d.id===weak.id)!,before=structuredClone(original),count=inventory.length;
+   const repeat=structuredClone(weak);repeat.lastSeenAt='2026-10-17T15:00:00.000Z';repeat.status='ONLINE';repeat.sessionVerification='VERIFIED';repeat.identityConflicts=[];repeat.technician={name:'Do not overwrite',notes:'Do not overwrite'};
+   const eligible=inventory.filter(d=>(d.evidenceProvenance||'PHYSICAL_NETWORK')===(repeat.evidenceProvenance||'PHYSICAL_NETWORK'));
+   const ordinary=selectIdentity(inventory,repeat),scoped=selectIdentity(eligible,repeat);
+   check(ordinary.ambiguous&&scoped.ambiguous===sameProvenanceConflict,mode+' mixed fixture distinguishes all-row and scoped ambiguity conflict='+sameProvenanceConflict);
+   const result=mode==='storage'?database.upsertDevice(repeat):mergeDiscoveredDevice(rows,repeat).device;
+   // Only the continuity path returns the retained object; ordinary paths construct a new object.
+   const continued=result===original;decisions.push(continued);
+   check(continued===sameProvenanceConflict,mode+' foreign-provenance conflict cannot enable continuity conflict='+sameProvenanceConflict);
+   if(sameProvenanceConflict){
+    check(inventory.length===count&&result.id===weak.id,mode+' scoped unresolved repeat retains one stable row');
+    check(JSON.stringify(result)===JSON.stringify({...before,lastSeenAt:repeat.lastSeenAt}),mode+' mixed continuity updates only lastSeenAt and retains technician/conflict/confidence fields');
+   }else{
+    check(inventory.length===(mode==='storage'?count+1:count)&&result.status==='ONLINE',mode+' ordinary consumer behavior outside continuity remains unchanged');
+   }
+  }
+  check(decisions[0]===decisions[1],'mixed provenance consumers agree on continuity conflict='+sameProvenanceConflict);
+ }
+ for(const mode of ['storage','transport'] as const){
+  const database=new SiteProjectDatabase('ISOLATED_TEST');database.createNewProject('Provenance mismatch');
+  for(const row of [camera('A',a,'uuid-a',undefined,'shared'),camera('B',b,'uuid-b',undefined,'shared')])database.upsertDevice(row);
+  const weak=camera('weak',null,undefined,'192.168.1.200','shared');weak.status='UNKNOWN';weak.sessionVerification='NOT_VERIFIED';database.upsertDevice(structuredClone(weak));
+  const rows=structuredClone(database.getDevices()),inventory=mode==='storage'?database.getDevices():rows,original=inventory.find(d=>d.id==='weak')!;
+  const repeat=structuredClone(weak);repeat.evidenceProvenance='SYNTHETIC_TEST';repeat.lastSeenAt='2026-10-17T16:00:00.000Z';
+  const result=mode==='storage'?database.upsertDevice(repeat):mergeDiscoveredDevice(rows,repeat).device;
+  check(result!==original&&original.lastSeenAt==='now'&&original.status==='UNKNOWN'&&original.sessionVerification==='NOT_VERIFIED',mode+' changed provenance cannot reuse or verify the physical unresolved row');
  }
  console.log(`Canonical identity: ${passed} passed, ${failed} failed, 0 skipped`);if(failed)process.exitCode=1;
 }

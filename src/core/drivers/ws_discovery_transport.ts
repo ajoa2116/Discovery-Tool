@@ -68,6 +68,22 @@ export function mergeDiscoveredDevice(
   incoming={...incoming,anchor:canonicalAnchor(incoming.anchor)};
   const eligible=devices.filter(d=>(d.evidenceProvenance||'PHYSICAL_NETWORK')===(incoming.evidenceProvenance||'PHYSICAL_NETWORK'));
   const selection=selectIdentity(eligible,incoming);
+  // The same unresolved observation may recur without resolving its physical identity.
+  if (selection.index < 0 && selection.ambiguous) {
+    const typedAnchors = (value: Device) => {
+      const anchor = canonicalAnchor(value.anchor);
+      return JSON.stringify([anchor.macAddress, anchor.onvifEndpointUuid ?? null, anchor.serialNumber ?? null]);
+    };
+    const repeated = eligible.filter(existing => existing.id === incoming.id
+      && existing.network.ipAddress === incoming.network.ipAddress
+      && typedAnchors(existing) === typedAnchors(incoming)
+      && existing.identityConflicts?.some(conflict => conflict.reason === 'Ambiguous physical identity matches'));
+    if (repeated.length === 1) {
+      // Keep uncertainty and annotations; lastSeenAt records repetition, not verification.
+      repeated[0].lastSeenAt = incoming.lastSeenAt;
+      return { device: repeated[0], isNew: false };
+    }
+  }
   if(selection.index<0){
     if(selection.related.length){
       const conflict={detectedAt:new Date().toISOString(),reason:selection.ambiguous?'Ambiguous physical identity matches':'Conflicting MAC/UUID identity evidence',existingMac:selection.related[0].anchor.macAddress,incomingMac:incoming.anchor.macAddress,existingUuid:selection.related[0].anchor.onvifEndpointUuid,incomingUuid:incoming.anchor.onvifEndpointUuid};
