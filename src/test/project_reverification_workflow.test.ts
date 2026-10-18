@@ -1,9 +1,10 @@
 import { productionBackendSource } from './support/backend_source.ts';
-import { readFileSync } from 'node:fs';
+import { readFileSync, promises as fs } from 'node:fs';
 import { Device } from '../types/index.ts';
 import { ProjectReverificationEngine, ProjectReverificationWorkflow } from '../core/engine/reverification.ts';
-import { SiteProjectDatabase } from '../core/storage/project_db.ts';
+import { ProjectValidationError, SiteProjectDatabase } from '../core/storage/project_db.ts';
 import { LocalHostIdentity } from '../core/network/local_host_identity.ts';
+import { technicianErrorResponse } from '../shared/error_presentation.ts';
 
 let passed=0,failed=0;const assert=(value:unknown,name:string)=>{if(value){console.log(`  PASS: ${name}`);passed++}else{console.error(`  FAIL: ${name}`);failed++}};
 const device=(id:string,ip:string,mac:string|null,extra:Partial<Device>={}):Device=>({id,anchor:{macAddress:mac,vendor:'Fixture',model:'Camera'},network:{ipAddress:ip,subnetMask:'255.255.255.0',port:80,protocol:'ONVIF',ipAddressHistory:[ip]},status:'ONLINE',discoveredPhase:3,firstSeenAt:'2026-01-01T00:00:00.000Z',lastSeenAt:'2026-01-02T00:00:00.000Z',...extra});
@@ -44,5 +45,105 @@ async function run(){
   assert(app.includes('onClick={handleScanNetwork}')&&server.includes("'/api/discovery', createForegroundDiscoveryRouter") && readFileSync('src/server/foreground_discovery_routes.ts','utf8').includes("router.post('/start'")&&pipeline.includes('runDiscoveryScan'),'T ordinary Quick Scan remains independently wired');
   assert(server.includes('incrementalMonitor.yieldToTechnician()')&&server.includes('reverifyWorkflow?.isRunning()')&&monitor.includes('runNow'),'U incremental monitoring yields and does not conflict with Reverify');
   const saveJson=replacementDb.exportProjectJsonForSave();assert(JSON.parse(saveJson).project.devices[0].anchor.macAddress===replacement.anchor.macAddress&&!replacementDb.getSession().dirty,'V confirmed replacement saves normally without auto-save');
+  // Session-lifetime regressions: all discovery and file-open data is injected in memory.
+  const deferred = <T,>() => { let resolve!: (value:T)=>void, reject!: (reason:Error)=>void; const promise=new Promise<T>((yes,no)=>{resolve=yes;reject=no});return{promise,resolve,reject}; };
+  const settled = <T,>(promise:Promise<T>) => promise.then(result=>({result,error:null as Error|null}),error=>({result:null,error:error as Error}));
+  const snapshot = (db:SiteProjectDatabase) => JSON.stringify(db.getSession());
+  const stale = (error:Error|null) => error instanceof ProjectValidationError && /Project session changed/.test(error.message) && /Reverify/.test(error.message);
+  const projectB=cleanProject([device('saved','10.9.8.7','12:34:56:78:90:ab',{technician:{name:'Project B',notes:'Keep B metadata'}})]).exportProjectJson();
+  const openInMemory = async (db:SiteProjectDatabase,json:string) => {
+    const original=fs.readFile;
+    fs.readFile=(async (_path:unknown,encoding?:unknown)=>encoding==='utf8'?json:Buffer.from(json)) as typeof fs.readFile;
+    try { await db.openProject('C:\\in-memory-reverify-test\\project.cctvproj'); }
+    finally { fs.readFile=original; }
+  };
+  const transitions: Array<{name:string;change:(db:SiteProjectDatabase,original:string)=>void|Promise<void>}> = [
+    {name:'import another Project',change:db=>{db.importProjectJson(projectB)}},
+    {name:'reopen same Project ID',change:(db,json)=>{db.importProjectJson(json)}},
+    {name:'Quick Work',change:db=>{db.startQuickWork()}},
+    {name:'create Project',change:db=>{db.createNewProject('New session','New site','Keep description')}},
+    {name:'create from current results',change:db=>{db.createProjectFromCurrentResults('Derived session')}},
+    {name:'open Project through async read',change:db=>openInMemory(db,projectB)},
+  ];
+  for(const transition of transitions){
+    const db=cleanProject([saved]),original=db.exportProjectJson(),gate=deferred<'COMPLETED'>();let cancelCalls=0;
+    const flow=new ProjectReverificationWorkflow(db,async staging=>{staging.upsertDevice(structuredClone(moved));return gate.promise},()=>{cancelCalls++;return true});
+    const pending=settled(flow.run());await transition.change(db,original);const before=snapshot(db);
+    assert(flow.isRunning()&&flow.cancel()&&cancelCalls===1,'SESSION '+transition.name+': pending discovery retains its slot and cancellation ownership');
+    gate.resolve('COMPLETED');const outcome=await pending;
+    assert(stale(outcome.error),'SESSION '+transition.name+': stale completion has a clear Project validation error');
+    const response=technicianErrorResponse(outcome.error,{operation:'PROJECT_REVERIFY',fallbackCode:'OPERATION_FAILED'});
+    assert(response.code==='OPERATION_FAILED'&&response.presentation.title==='Project session changed'&&response.presentation.message==='The Project session changed before Reverify could finish.'&&response.presentation.action==='Run Reverify again for the current Project.','SESSION '+transition.name+': actual presentation explains the session change and retry');
+    assert(response.error==='The Project session changed before Reverify could finish. Run Reverify again for the current Project. Reference: '+response.presentation.reference&&!/invalid|corrupt/i.test(response.error)&&response.presentation.context?.operation==='PROJECT_REVERIFY','SESSION '+transition.name+': formatted API response does not blame the Project file');
+    assert(!flow.isRunning(),'SESSION '+transition.name+': settlement releases the discovery slot');
+    assert(snapshot(db)===before,'SESSION '+transition.name+': devices, metadata, history and dirty state remain unchanged');
+  }
+  for(const transition of transitions)for(const decision of ['CONFIRMED','REJECTED','DEFERRED'] as const){
+    const db=cleanProject([saved]),original=db.exportProjectJson(),flow=workflow(db,[replacement]);
+    const summary=await flow.run(),candidateId=summary.possibleReplacements[0].candidateId!;
+    await transition.change(db,original);const before=snapshot(db);let error:Error|null=null;
+    try{flow.decide(candidateId,decision)}catch(caught){error=caught as Error}
+    assert(stale(error),'CANDIDATE '+transition.name+' / '+decision+': old session decision denied');
+    assert(snapshot(db)===before,'CANDIDATE '+transition.name+' / '+decision+': current session unchanged');
+  }
+  {
+    const db=cleanProject([saved]),gate=deferred<'COMPLETED'>();
+    const flow=new ProjectReverificationWorkflow(db,async()=>gate.promise),pending=settled(flow.run());
+    db.importProjectJson(projectB);const before=snapshot(db);gate.reject(new Error('Injected discovery failure'));
+    const outcome=await pending;
+    assert(stale(outcome.error)&&snapshot(db)===before&&!flow.isRunning(),'SESSION rejected discovery: stale session takes precedence without mutation');
+  }
+  {
+    const db=cleanProject([saved]),gate=deferred<'COMPLETED'|'CANCELLED'>();let attempts=0;
+    const flow=new ProjectReverificationWorkflow(db,async staging=>{staging.upsertDevice(structuredClone(same));return ++attempts===1?gate.promise:'COMPLETED'},()=>{gate.resolve('CANCELLED');return true});
+    const before=snapshot(db),pending=settled(flow.run());assert(flow.cancel(),'SESSION same-session cancellation reaches current discovery');
+    const cancelled=await pending;
+    assert(cancelled.error instanceof ProjectValidationError&&/cancelled/.test(cancelled.error.message)&&snapshot(db)===before&&!flow.isRunning(),'SESSION cancellation preserves the current Project and clears its run');
+    const retry=await settled(flow.run());assert(retry.result?.recognizedCount===1&&attempts===2&&!flow.isRunning(),'SESSION cancelled workflow retries normally in the same session');
+  }
+  // Model the backend adapter's single cancellation ID, including its BUSY/finally behavior.
+  // Cancellation requests deliberately do not settle discovery until the test releases its gate.
+  {
+    const db=cleanProject([saved]),gates=[deferred<'COMPLETED'|'CANCELLED'>(),deferred<'COMPLETED'|'CANCELLED'>()];
+    let calls=0,busy=0,cancellationId:string|null=null,activeId:string|null=null;
+    const cancelledIds:string[]=[];
+    const flow=new ProjectReverificationWorkflow(db,async staging=>{
+      const index=calls++,id='scan-'+index;cancellationId=id;
+      try {
+        if(activeId!==null){busy++;return 'BUSY';}
+        activeId=id;staging.upsertDevice(structuredClone(db.getProjectMemberDevices()[0]));
+        return await gates[index].promise;
+      } finally { if(activeId===id)activeId=null;cancellationId=null; }
+    },()=>{if(!cancellationId||cancellationId!==activeId)return false;cancelledIds.push(cancellationId);return true});
+    const old=settled(flow.run());const originalId=cancellationId;
+    db.importProjectJson(projectB);const before=snapshot(db);
+    assert(flow.isRunning(),'OWNER Project switch invalidates commits but keeps pending discovery running');
+    const blocked=await settled(flow.run());
+    assert(blocked.error instanceof ProjectValidationError&&/already running/.test(blocked.error.message),'OWNER retry is rejected while the old discovery is pending');
+    assert(calls===1&&busy===0&&cancellationId===originalId&&activeId===originalId,'OWNER rejection occurs before adapter invocation and preserves its cancellation ID');
+    assert(flow.cancel()&&cancelledIds.length===1&&cancelledIds[0]===originalId,'OWNER cancellation still targets the original discovery after Project switch');
+    const afterCancel=await settled(flow.run());
+    assert(afterCancel.error instanceof ProjectValidationError&&flow.isRunning()&&calls===1&&cancellationId===originalId,'OWNER cancellation request does not release the slot before actual settlement');
+    assert(snapshot(db)===before,'OWNER blocked retries and cancellation do not mutate Project B');
+    gates[0].resolve('CANCELLED');const obsolete=await old;
+    assert(stale(obsolete.error)&&snapshot(db)===before&&!flow.isRunning()&&cancellationId===null&&activeId===null,'OWNER stale settlement denies commit and releases only its discovery slot');
+    const newer=settled(flow.run());
+    assert(calls===2&&flow.isRunning()&&cancellationId==='scan-1'&&activeId==='scan-1','OWNER new discovery starts normally after old settlement');
+    const blockedNew=await settled(flow.run());
+    assert(blockedNew.error instanceof ProjectValidationError&&calls===2&&busy===0&&flow.isRunning()&&cancellationId==='scan-1','OWNER rejected attempts cannot clear the newer run or overwrite its ID');
+    gates[1].resolve('COMPLETED');const current=await newer;
+    assert(current.result?.recognizedCount===1&&!current.error&&!flow.isRunning()&&cancellationId===null&&activeId===null,'OWNER subsequent same-session completion succeeds and cleans up');
+  }
+  {
+    const invalid=technicianErrorResponse(new ProjectValidationError('Project file contains invalid JSON.'),{operation:'PROJECT_OPEN'});
+    assert(invalid.code==='PROJECT_FILE_INVALID'&&invalid.presentation.title==='Project file could not be opened','ERROR real Project-file errors retain their existing classification');
+    const cancelled=technicianErrorResponse(new ProjectValidationError('Project reverification was cancelled.'),{operation:'PROJECT_REVERIFY'});
+    assert(cancelled.code==='CANCELLED','ERROR cancellation retains its existing presentation');
+  }
+  {
+    const db=cleanProject([saved]),before=JSON.parse(db.exportProjectJson());await workflow(db,[same]).run();
+    const after=JSON.parse(db.exportProjectJsonForSave());
+    assert(after.schemaVersion===before.schemaVersion&&Object.keys(after).sort().join()===Object.keys(before).sort().join()&&!/sessionGeneration|activeRun/.test(JSON.stringify(after))&&!/sessionGeneration/.test(JSON.stringify(db.getSession())),'SESSION generation is absent from exported schema and session snapshots');
+  }
   console.log(`\nProject Reverify workflow summary: ${passed} passed, ${failed} failed`);if(failed)process.exit(1)
 }run().catch(error=>{console.error(error);process.exit(1)});

@@ -57,26 +57,32 @@ export class ProjectReverificationEngine {
 
 export type ReverificationDiscovery = (database: SiteProjectDatabase) => Promise<'COMPLETED'|'CANCELLED'|'BUSY'>;
 export class ProjectReverificationWorkflow {
-  private running = false;
-  private candidates = new Map<string, { originalDeviceId: string; replacement: Device }>();
+  private activeRun?: { generation: symbol };
+  private candidates = new Map<string, { originalDeviceId: string; replacement: Device; generation: symbol }>();
   constructor(private db: SiteProjectDatabase, private discover: ReverificationDiscovery, private cancelDiscovery: () => boolean = () => false, private localHost = LocalHostIdentity.fromAddresses([])) {}
-  public isRunning(): boolean { return this.running; }
-  public cancel(): boolean { return this.running && this.cancelDiscovery(); }
+  // Discovery owns the slot until settlement, even after its Project commit permission expires.
+  public isRunning(): boolean { return this.activeRun !== undefined; }
+  public cancel(): boolean { return this.isRunning() && this.cancelDiscovery(); }
+  private staleSessionError(): ProjectValidationError { return Object.assign(new ProjectValidationError('Project session changed. Run Reverify again for the current Project.'), { code: 'PROJECT_SESSION_CHANGED' }); }
+  private isCurrentRun(run: { generation: symbol }): boolean { return this.activeRun === run && run.generation === this.db.getSessionGeneration(); }
   public async run(): Promise<ReverificationResult> {
-    if (this.running) throw new ProjectValidationError('Project reverification is already running.');
+    if (this.isRunning()) throw new ProjectValidationError('Project reverification is already running.');
     const session = this.db.getSession(); if (session.mode !== 'PROJECT') throw new ProjectValidationError('Open or create a Project before reverifying.');
-    const baseline = structuredClone(this.db.getProjectMemberDevices()), staging = new SiteProjectDatabase(); staging.startQuickWork(); this.running = true; this.candidates.clear();
+    const run = { generation: this.db.getSessionGeneration() };
+    const baseline = structuredClone(this.db.getProjectMemberDevices()), staging = new SiteProjectDatabase(); staging.startQuickWork(); this.activeRun = run; this.candidates.clear();
     try {
       const outcome = await this.discover(staging);
+      if (!this.isCurrentRun(run)) throw this.staleSessionError();
       if (outcome === 'BUSY') throw new ProjectValidationError('Project reverification could not start because discovery is already running.');
       if (outcome === 'CANCELLED') throw new ProjectValidationError('Project reverification was cancelled.');
       const plan = ProjectReverificationEngine.plan(baseline, staging.getDevices(), this.localHost);
+      if (!this.isCurrentRun(run)) throw this.staleSessionError();
       for (const candidate of plan.possibleReplacements) {
         // The plan already established exactly one different identity at this address.
         // This locates the technician-review candidate; it does not authorize an identity merge.
         const candidates = plan.newDevices?.filter(device => device.network.ipAddress === candidate.foundIp) || [];
         const replacement = candidates.length === 1 ? candidates[0] : undefined;
-        if (candidate.candidateId && candidate.originalDeviceId && replacement) this.candidates.set(candidate.candidateId, { originalDeviceId: candidate.originalDeviceId, replacement });
+        if (candidate.candidateId && candidate.originalDeviceId && replacement) this.candidates.set(candidate.candidateId, { originalDeviceId: candidate.originalDeviceId, replacement, generation: run.generation });
       }
       this.db.applyReverification(plan.projectDevices, plan.newDevices || [], plan.persistentChanged, session.dirty);
       const result = ProjectReverificationEngine.toResult(plan);
@@ -93,12 +99,14 @@ export class ProjectReverificationWorkflow {
       appStateDb.logAudit({ id: crypto.randomUUID(), timestamp: new Date().toISOString(), category: 'EDGE_CASE', level: result.possibleReplacements.length ? 'WARNING' : 'INFO', message: `Project reverification completed: ${result.recognizedCount} verified, ${result.notVerifiedCount} not verified, ${result.newDevicesCount} new, ${result.possibleReplacements.length} replacement candidate(s).` });
       return result;
     } catch (error) {
+      if (!this.isCurrentRun(run)) throw this.staleSessionError();
       if (error instanceof ProjectValidationError) throw error;
       throw new ProjectValidationError('Project reverification could not complete because discovery stopped unexpectedly.');
-    } finally { this.running = false; }
+    } finally { if (this.activeRun === run) this.activeRun = undefined; }
   }
   public decide(candidateId: string, decision: 'CONFIRMED'|'REJECTED'|'DEFERRED'): { device?: Device } {
     const candidate = this.candidates.get(candidateId); if (!candidate) throw new ProjectValidationError('This replacement candidate is no longer available. Run Reverify again.');
+    if (candidate.generation !== this.db.getSessionGeneration()) throw this.staleSessionError();
     const device = decision === 'CONFIRMED' ? this.db.confirmProjectReplacement(candidate.originalDeviceId, candidate.replacement) : undefined;
     if (decision === 'REJECTED') this.db.appendHistory({type:'REPLACEMENT_REJECTED',title:'Kept Original Device',summary:'Technician reviewed the candidate and kept the original Project identity.',deviceId:candidate.originalDeviceId,source:'PROJECT_REVERIFY'});
     if (decision === 'DEFERRED') this.db.appendHistory({type:'REPLACEMENT_DEFERRED',title:'Replacement Decision Deferred',summary:'Technician chose to decide on this replacement candidate later.',deviceId:candidate.originalDeviceId,source:'PROJECT_REVERIFY'});

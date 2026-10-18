@@ -80,6 +80,9 @@ export class SiteProjectDatabase {
   public acceptsEvidence(device: Device): boolean {
     return device.evidenceProvenance === undefined || device.evidenceProvenance === 'PHYSICAL_NETWORK' || this.isolation === 'ISOLATED_TEST';
   }
+  // Process-local lifetime only; never part of ProjectSession or saved bundles.
+  private sessionGeneration = Symbol();
+  public getSessionGeneration(): symbol { return this.sessionGeneration; }
   private session: ProjectSession = { mode: 'QUICK_WORK', project: makeProject('Quick Work'), dirty: false };
   private hiddenCurrentDeviceIds = new Set<string>(); // Weak identity: row-only hiding, no physical suppression claim.
   private suppression = new SessionSuppression();
@@ -96,6 +99,7 @@ export class SiteProjectDatabase {
   }
 
   private resetTransientDeviceState(): void {
+    this.sessionGeneration = Symbol();
     this.hiddenCurrentDeviceIds.clear(); this.currentOnlyDeviceIds.clear(); this.removedProjectIdentities = [];
   }
 
