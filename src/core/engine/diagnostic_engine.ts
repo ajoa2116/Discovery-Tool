@@ -163,9 +163,8 @@ export class DeviceDiagnosticEngine {
       options.onEvidence?.(evidence, device);
     };
 
-    if (!options.isRefresh && device.reachability?.wsDiscoveryRespondedAt) {
-      record({ type: 'ONVIF_WS_DISCOVERY', targetIp: device.network.ipAddress, protocol: 'WS-DISCOVERY', success: true, transportReachable: true, timestamp: device.reachability.wsDiscoveryRespondedAt });
-    }
+    // Retained discovery timestamps are history, not observations made by this diagnostic run.
+    // Only results from the current probes enter runEvidence and its callbacks.
 
     const advertisedPort = device.network.port > 0 ? device.network.port : undefined;
     const tcpPorts = Array.from(new Set([advertisedPort, 554].filter((port): port is number => Boolean(port) && port !== 80 && port !== 443)));

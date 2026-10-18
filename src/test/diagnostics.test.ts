@@ -92,7 +92,7 @@ async function run() {
   const onvifDevice = makeDevice();
   onvifDevice.reachability = { wsDiscoveryRespondedAt: new Date().toISOString() };
   await failedEngine.diagnose(onvifDevice);
-  assert(onvifDevice.status === 'ONLINE' && onvifDevice.diagnostics?.checks.some(check => check.type === 'ONVIF_WS_DISCOVERY' && check.success), 'WS-Discovery evidence contributes to Online');
+  assert(onvifDevice.status === 'UNKNOWN' && Boolean(onvifDevice.reachability.wsDiscoveryRespondedAt) && !onvifDevice.diagnostics?.checks.some(check => check.type === 'ONVIF_WS_DISCOVERY'), 'retained WS-Discovery history does not manufacture current Online evidence');
 
   const different = makeDevice('different', '192.168.2.50');
   different.reachability = { subnetClassification: 'DIFFERENT_SUBNET' };
