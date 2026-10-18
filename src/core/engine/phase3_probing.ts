@@ -1,3 +1,4 @@
+import { conflicts, selectIdentity } from '../../shared/identity_policy.ts';
 import { DiscoveryContext } from '../../shared/discovery_session.ts';
 import { wsDiscoveryEvidence } from '../drivers/ws_discovery_evidence.ts';
 import { Device, NICInfo } from '../../types/index.ts';
@@ -34,7 +35,9 @@ export class Phase3ActiveProbing {
     const logs = [`[Phase 3] Sending ONVIF WS-Discovery probes on ${eligible.length} eligible IPv4 adapter(s) via 239.255.255.250:3702.`];
     const reconciliation: Array<{stage:string;ip:string;status:string;verification?:string}> = [];
     const record=(stage:string,device:Device)=>{if(reconciliation.length<32)reconciliation.push({stage,ip:device.network.ipAddress,status:device.status,verification:device.sessionVerification})};
-    const enrichmentTasks = new Map<string, Promise<void>>();
+    const enrichmentTasks = new Map<symbol, Promise<void>>();
+    // Local observation generations distinguish A -> B -> A without persisted identity or new authority.
+    const observations = new Map<string, { token: symbol; signature: string; session: symbol }>();
 
     let windowId: string | undefined;
     const traceStage=(stage:string,device:Device,reason?:string)=>{if(windowId)wsDiscoveryEvidence.parser(windowId,stage,{address:device.network.ipAddress,verification:device.sessionVerification,provenance:device.evidenceProvenance,reason});};
@@ -43,6 +46,7 @@ export class Phase3ActiveProbing {
       signal: options.signal,
       timeoutMs: options.timeoutMs,
       onDevice: (device) => {
+        if (options.signal?.aborted) return;
         if (!database.acceptsEvidence(device)) { traceStage('INVENTORY_REJECTED',device,'NONPHYSICAL_EVIDENCE'); return; }
         if (!localHost.isRemoteDevice(device)) {
           traceStage('INVENTORY_REJECTED',device,'LOCAL_HOST');
@@ -56,25 +60,48 @@ export class Phase3ActiveProbing {
         ));
         if (isNew && options.acceptDevice && !options.acceptDevice(device)) { traceStage('INVENTORY_REJECTED',device,'ADVANCED_FILTER'); logs.push('[Phase 3] ONVIF observation excluded by explicit Advanced Scan filters.'); return; }
         const stored = database.upsertDevice(device,'DEVICE_ADDED',options.context?.origin==='MONITORING');
+        const source = structuredClone(stored);
+        const session = database.getSessionGeneration();
+        const signature = JSON.stringify([source.network.ipAddress, source.anchor.macAddress, source.anchor.onvifEndpointUuid, source.anchor.serialNumber]);
+        const previous = observations.get(source.id);
+        const observation = previous?.signature === signature && previous.session === session
+          ? previous : { token: Symbol(), signature, session };
+        observations.set(source.id, observation);
         record('INVENTORY_RECONCILED',stored); traceStage('RECONCILED',stored);
         options.onDevice?.(stored, isNew);
         traceStage(database.getProject().devices.some(d=>d.id===stored.id)?'INVENTORY_PROMOTION':'INVENTORY_NOT_VISIBLE',stored);
-        const enrichmentKey = stored.anchor.onvifEndpointUuid || stored.anchor.macAddress || stored.id;
-        if (!enrichmentTasks.has(enrichmentKey)) {
-          const task = enricher.enrich(stored, {
+        if (!enrichmentTasks.has(observation.token)) {
+          let rejectionRecorded = false;
+          const task = enricher.enrich(structuredClone(source), {
             signal: options.signal,
-            onEvidence: stage => record(stage,stored),
+            onEvidence: stage => record(stage,source),
             onUpdate: (updated, changedFields) => {
-              const enriched = database.upsertDevice({...updated,evidenceProvenance:stored.evidenceProvenance},'DEVICE_ADDED',options.context?.origin==='MONITORING');
+              const current = database.getDeviceById(source.id);
+              const devices = database.getDevices();
+              const selection = selectIdentity(devices, updated);
+              if (options.signal?.aborted || database.getSessionGeneration() !== session
+                || observations.get(source.id) !== observation || !current
+                || current.network.ipAddress !== source.network.ipAddress
+                || updated.id !== source.id || updated.network.ipAddress !== source.network.ipAddress
+                || conflicts(source, updated) || selection.ambiguous || devices[selection.index]?.id !== source.id) {
+                if (!rejectionRecorded) {
+                  rejectionRecorded = true;
+                  record('ENRICHMENT_REJECTED',source); traceStage('ENRICHMENT_REJECTED',source,'SUPERSEDED_OR_CANCELLED_OBSERVATION');
+                  logs.push('[Phase 3] [ENRICHMENT REJECTED] Superseded or cancelled observation; current inventory retained.');
+                }
+                return;
+              }
+              // No await or external callback between validation and this synchronous upsert.
+              const enriched = database.upsertDevice({...updated,evidenceProvenance:source.evidenceProvenance},'DEVICE_ADDED',options.context?.origin==='MONITORING');
               record('ENRICHMENT_RECONCILED',enriched);
               options.onEnrichment?.(enriched, changedFields);
             },
           }).then(() => undefined).catch(error => {
             if (!options.signal?.aborted) {
-              logs.push(`[Phase 3] [ENRICHMENT WARNING] ${stored.network.ipAddress}: enrichment could not complete; discovery evidence retained.`);
+              logs.push('[Phase 3] [ENRICHMENT WARNING] '+source.network.ipAddress+': enrichment could not complete; discovery evidence retained.');
             }
           });
-          enrichmentTasks.set(enrichmentKey, task);
+          enrichmentTasks.set(observation.token, task);
         }
       },
     });
