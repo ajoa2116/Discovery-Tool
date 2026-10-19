@@ -155,4 +155,21 @@ Task detail visibility on a laptop, Save/Save As and clean no-change Reverify.
 Confirm shared-IP Open stays blocked and retained Ethernet 192.168.1.205 is unchanged.
 No physical validation claim is made by the automated tests.
 
+### UI-TEST-001 — Inert React interaction testing
+
+Status: **Deferred**. Priority: **Before field-readiness signoff**.
+Recorded 2026-10-18; this limitation does not replace the historical validation above.
+
+Static React rendering and pure logic tests are available, but no installed inert
+DOM harness supports React click/effect/state-transition testing. Existing
+Playwright suites require an isolated UI listener, and some reporting tests require
+isolated HTTP routes; these were not authorized during the no-listener task.
+Affected verification: Device Details interaction, report preview/export controls,
+stale asynchronous preview response handling, and other technician UI workflows.
+
+Future options: (A) explicitly authorize a test-only DOM library with stubbed fetch
+and no listeners; or (B) explicitly authorize isolated Playwright testing with
+bounded test-only listeners. Acceptance: demonstrate actual interaction-level tests
+and report their scope accurately, preserving production default-deny and all
+security gates. Neither option is authorized by this entry.
 Commit message: `Foreground technician attention and diagnostic results`.

@@ -411,7 +411,7 @@ export default function App() {
   };
 
   // Local technician fields share the same acknowledged, stable-ID update path.
-  const updateTechnicianField = async (id:string,field:'name'|'notes',value:string) => {
+  const updateTechnicianField = async (id:string,field:'name'|'notes'|'location',value:string) => {
     if(!project?.devices.some(d=>d.id===id))throw Error('Device is no longer available.');
     const {response,body}=await requestJson(`http://localhost:3001/api/device/${encodeURIComponent(id)}/config`, {
       method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({technician:{[field]:value}})
@@ -421,6 +421,7 @@ export default function App() {
   };
   const handleUpdateDeviceName = (id:string,name:string) => updateTechnicianField(id,'name',name);
   const handleUpdateDeviceNotes = (id:string,notes:string) => updateTechnicianField(id,'notes',notes);
+  const handleUpdateDeviceLocation = (id:string,location:string) => updateTechnicianField(id,'location',location);
 
   // Section 39: Bulk Selection Handlers
   const handleToggleSelect = (id: string) => {
@@ -761,6 +762,7 @@ export default function App() {
         isOpen={selectedDeviceForInspector !== null}
         onClose={() => setSelectedDeviceForInspector(null)}
         device={project?.devices.find(d=>d.id===selectedDeviceForInspector?.id)||selectedDeviceForInspector}
+        onUpdateDeviceLocation={handleUpdateDeviceLocation}
         diagnosticsFocus={diagnosticsFocus}
         diagnostic={selectedDeviceForInspector?diagnosticPresentation(project?.devices.find(d=>d.id===selectedDeviceForInspector.id)||selectedDeviceForInspector,taskSnapshot,diagnosticRequests[selectedDeviceForInspector.id]):undefined}
         onOpenConfigureModal={(dev) => {

@@ -5,6 +5,7 @@ import {readFileSync} from 'node:fs';
 import {SiteProjectDatabase} from '../core/storage/project_db.ts';
 import {TaskManager} from '../core/tasks/task_manager.ts';
 import {DeviceInspectorDrawer} from '../ui/components/DeviceInspectorDrawer.tsx';
+import {MasterDeviceTable} from '../ui/components/MasterDeviceTable.tsx';
 import * as policy from '../shared/technician_attention.ts';
 import {Device} from '../types/index.ts';
 import {decideCameraAccess} from '../shared/camera_access.ts';
@@ -12,6 +13,28 @@ let passed=0,failed=0;const check=(v:unknown,n:string)=>{if(v){passed++;console.
 const now=new Date().toISOString();
 const device:Device={id:'camera-a',anchor:{macAddress:'00:50:f9:63:fb:0f',vendor:'Fixture',onvifEndpointUuid:'uuid-a'},network:{ipAddress:'192.168.1.100',subnetMask:'255.255.255.0',port:80,protocol:'ONVIF'},status:'ONLINE',sessionVerification:'VERIFIED',discoveredPhase:3,firstSeenAt:now,lastSeenAt:now};
 async function run(){
+ // Render both real components inertly: effects, event handlers and transports are not run.
+ const statusCases:Array<[Device['status'],string]>=[['CONFIGURED','Online'],['AUTHENTICATED','Online'],['COLLISION','Duplicate IP'],['ERROR','Verification Required'],['UNRESPONSIVE','Unreachable'],['PROVISIONING','Working'],['ONLINE','Online'],['OFFLINE','Offline'],['UNKNOWN','Unknown'],['DIFFERENT_SUBNET','Different Subnet'],['UNREACHABLE','Unreachable'],['DISCOVERED','New Device']];
+ const currentLabel=(html:string)=>html.match(/Current status<\/span><p[^>]*>([^<]*)<\/p>/)?.[1];
+ let invoked=0;const noAction=()=>{invoked++;};
+ for(const [status,label] of statusCases){
+  const row:Device={...structuredClone(device),status,technician:{name:'Entrance',location:'Lobby',notes:'Retain technician notes'},configuredState:{inferred:true,manualOverride:false}};
+  const snapshot=JSON.stringify(row);
+  const details=renderToStaticMarkup(React.createElement(DeviceInspectorDrawer,{isOpen:true,onClose:noAction,device:row,onOpenConfigureModal:noAction,onOpenBrowserModal:noAction,onDiagnose:noAction}));
+  const table=renderToStaticMarkup(React.createElement(MasterDeviceTable,{devices:[row],selectedDeviceIds:new Set<string>(),onToggleSelect:noAction,onToggleSelectAll:noAction,onUpdateDeviceName:noAction,onUpdateDeviceNotes:noAction,onOpenDuplicateAssistant:noAction,onConfigureDevice:noAction,onInspectDevice:noAction,onOpenBrowser:noAction,onDiagnose:noAction,onPair:noAction,projectMode:false,onRemoveCurrent:async()=>{invoked++;},onRemoveProject:async()=>{invoked++;},visibleColumns:['STATUS']}));
+  const cells=[...(table.match(/<tbody\b[^>]*>[\s\S]*?<\/tbody>/)?.[0]||'').matchAll(/<td\b[^>]*>([\s\S]*?)<\/td>/g)];
+  const tableLabel=cells[1]?.[1].replace(/<[^>]*>/g,'').replace(/\s+/g,' ').trim();
+  check(currentLabel(details)===label,status+': exact technician-facing Details status');
+  check(tableLabel===label&&currentLabel(details)===tableLabel,status+': Details wording agrees with real table render');
+  check(details.includes('Network responses on this shared IP may be identity-ambiguous.')===(status==='COLLISION'),status+': collision warning remains specific and intact');
+  check(JSON.stringify(row)===snapshot&&row.status===status&&row.configuredState?.manualOverride===false,status+': rendering preserves raw status, identity, technician fields and configured override');
+ }
+ for(const manualOverride of [true,false,null])for(const status of ['ONLINE','UNKNOWN'] as const){
+  const row={...structuredClone(device),status,configuredState:{inferred:null,manualOverride}},snapshot=JSON.stringify(row);
+  const details=renderToStaticMarkup(React.createElement(DeviceInspectorDrawer,{isOpen:true,onClose:noAction,device:row,onOpenConfigureModal:noAction,onOpenBrowserModal:noAction,onDiagnose:noAction}));
+  check(currentLabel(details)===(status==='ONLINE'?'Online':'Unknown')&&JSON.stringify(row)===snapshot,`${status}, override ${manualOverride}: configured value neither determines nor mutates operational status`);
+ }
+ check(invoked===0,'static rendering invokes no device actions, diagnostics or configuration');
  const db=new SiteProjectDatabase();db.createNewProject('Attention');db.upsertDevice(structuredClone(device));db.exportProjectJsonForSave();
  const tasks=new TaskManager(),id=tasks.begin('DIAGNOSTICS');
  tasks.diagnosticTargets(id,[device.id,'camera-b']);tasks.update(id,{state:'RUNNING',phase:'WORKING',progress:{completed:0,total:2}});

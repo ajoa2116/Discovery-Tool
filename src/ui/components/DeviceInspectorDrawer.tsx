@@ -12,17 +12,78 @@ interface DeviceInspectorDrawerProps {
   onOpenConfigureModal: (dev: Device) => void;
   onOpenBrowserModal: (dev: Device) => void;
   onDiagnose: (dev: Device) => void;
+  onUpdateDeviceLocation?: (id:string,location:string) => Promise<void>;
   projectMode?: boolean;
   diagnosticsFocus?:number;
   diagnostic?:DiagnosticPresentation;
 }
 
+/** Local edit state only; persistence remains the acknowledged App metadata callback. */
+export class CameraLocationEdit {
+ private state={deviceId:null as string|null,confirmed:'',draft:'',editing:false,saving:false,error:''};
+ private observed='';
+ private generation=0;
+ private pending:object|null=null;
+ view(){return {...this.state};}
+ sync(id:string|undefined,location:string,open:boolean){
+  if(!open||!id){this.close();return;}
+  if(this.state.deviceId!==id){
+   this.generation++;this.pending=null;this.observed=location;
+   this.state={deviceId:id,confirmed:location,draft:location,editing:false,saving:false,error:''};
+  }else if(this.observed!==location){
+   this.observed=location;this.state.confirmed=location;
+   if(!this.state.editing)this.state.draft=location;
+  }
+ }
+ close(){
+  if(this.state.deviceId!==null){this.generation++;this.pending=null;this.state={deviceId:null,confirmed:'',draft:'',editing:false,saving:false,error:''};}
+ }
+ begin(){if(this.state.deviceId&&!this.state.saving){this.state.draft=this.state.confirmed;this.state.editing=true;this.state.error='';}}
+ change(value:string){if(this.state.editing&&!this.state.saving)this.state.draft=value;}
+ cancel(){if(!this.state.saving){this.state.editing=false;this.state.draft=this.state.confirmed;this.state.error='';}}
+ async save(update:(id:string,value:string)=>Promise<void>){
+  if(!this.state.deviceId||!this.state.editing||this.state.saving)return 'idle';
+  if(this.state.draft===this.state.confirmed){this.cancel();return 'unchanged';}
+  const id=this.state.deviceId,value=this.state.draft,generation=this.generation,token={};
+  this.pending=token;this.state.saving=true;this.state.error='';
+  const current=()=>this.pending===token&&this.generation===generation&&this.state.deviceId===id;
+  try{
+   await update(id,value);
+   if(!current())return 'stale';
+   this.state.confirmed=value;this.state.editing=false;return 'saved';
+  }catch{
+   if(!current())return 'stale';
+   this.state.error='Camera Location was not saved. The last confirmed value is shown. Try again.';return 'failed';
+  }finally{if(current()){this.pending=null;this.state.saving=false;}}
+ }
+}
+// Presentation aliases match MasterDeviceTable; raw state and evidence remain unchanged.
+const statusLabels:Record<Device['status'],string>={
+  ONLINE:'Online',OFFLINE:'Offline',UNKNOWN:'Unknown',DIFFERENT_SUBNET:'Different Subnet',
+  CONFIGURED:'Online',AUTHENTICATED:'Online',COLLISION:'Duplicate IP',ERROR:'Verification Required',
+  UNRESPONSIVE:'Unreachable',UNREACHABLE:'Unreachable',PROVISIONING:'Working',DISCOVERED:'New Device',
+};
 const checkLabel = (check: DiagnosticCheckEvidence) => check.type === 'TCP' ? `TCP ${check.port}` : check.type.replaceAll('_', ' ');
 
-export const DeviceInspectorDrawer: React.FC<DeviceInspectorDrawerProps> = ({ isOpen, onClose, device, onOpenConfigureModal, onOpenBrowserModal, onDiagnose, projectMode, diagnosticsFocus, diagnostic }) => {
+export const DeviceInspectorDrawer: React.FC<DeviceInspectorDrawerProps> = ({ isOpen, onClose, device, onOpenConfigureModal, onOpenBrowserModal, onDiagnose, onUpdateDeviceLocation, projectMode, diagnosticsFocus, diagnostic }) => {
   const [activeTab, setActiveTab] = useState<'DIAGNOSTICS' | 'IDENTITY' | 'HISTORY'>('DIAGNOSTICS');
   const diagnosticsTab=useRef<HTMLButtonElement>(null);
   useEffect(()=>{if(isOpen&&diagnosticsFocus){setActiveTab('DIAGNOSTICS');diagnosticsTab.current?.focus();}},[isOpen,device?.id,diagnosticsFocus]);
+  const locationEdit=useRef(new CameraLocationEdit()).current;
+  const [,renderLocation]=useState(0);
+  const refreshLocation=()=>renderLocation(value=>value+1);
+  locationEdit.sync(device?.id,device?.technician?.location||'',isOpen);
+  useEffect(()=>{
+    // Rebind after effect setup as well as render, including StrictMode cleanup/setup replay.
+    locationEdit.sync(device?.id,device?.technician?.location||'',isOpen);
+    return ()=>locationEdit.close();
+  },[locationEdit,isOpen,device?.id]);
+  const location=locationEdit.view();
+  const saveLocation=()=>{
+    if(!onUpdateDeviceLocation)return;
+    const saving=locationEdit.save(onUpdateDeviceLocation);refreshLocation();
+    void saving.then(result=>{if(result!=='stale')refreshLocation();});
+  };
   if (!isOpen || !device) return null;
   const checks = [...(diagnostic?.checks||device.diagnostics?.checks||[])].filter(c=>c.targetIp===device.network.ipAddress).reverse();
   const adapter = checks[0]?.originatingAdapter||device.reachability?.relationshipAdapter||device.reachability?.discoveryInterface;
@@ -48,6 +109,16 @@ export const DeviceInspectorDrawer: React.FC<DeviceInspectorDrawerProps> = ({ is
       </div>
 
       <div className="p-4 overflow-y-auto flex-1 space-y-3 text-xs">
+        <section aria-label="Local Camera Location" className="rounded border border-slate-200 bg-slate-50 p-3 space-y-2">
+          <div className="flex items-center justify-between gap-2"><strong>Camera Location</strong>{onUpdateDeviceLocation&&!location.editing&&<button type="button" onClick={()=>{locationEdit.begin();refreshLocation();}} className="text-sky-700 underline">Edit Camera Location</button>}</div>
+          <p className="whitespace-pre-wrap break-words text-slate-800">{location.confirmed||'Not set'}</p>
+          <p className="text-[10px] text-slate-500">Local technician information only; this does not change the camera.</p>
+          {location.editing&&<form onSubmit={event=>{event.preventDefault();saveLocation();}} className="space-y-2">
+            <label className="block">Camera Location<input aria-label="Camera Location" value={location.draft} disabled={location.saving} onChange={event=>{locationEdit.change(event.target.value);refreshLocation();}} onKeyDown={event=>{if(event.key==='Escape'&&!event.nativeEvent.isComposing){event.preventDefault();locationEdit.cancel();refreshLocation();}}} className="mt-1 block w-full rounded border border-slate-300 bg-white p-2"/></label>
+            <div className="flex gap-2"><button type="submit" disabled={location.saving} className="rounded bg-sky-600 px-3 py-1 text-white disabled:opacity-50">{location.saving?'Saving…':'Save Location'}</button><button type="button" disabled={location.saving} onClick={()=>{locationEdit.cancel();refreshLocation();}} className="rounded border border-slate-300 px-3 py-1">Cancel</button></div>
+          </form>}
+          {location.error&&<p role="alert" className="text-rose-700">{location.error}</p>}
+        </section>
         {activeTab === 'DIAGNOSTICS' && <>
           {diagnostic&&<div role="status" className="rounded border border-slate-300 bg-slate-50 p-3 text-slate-800"><strong>Diagnostics: {diagnostic.state}</strong><p>{diagnostic.message}</p></div>}
           <p className="text-slate-700">Current IP: {device.network.ipAddress} · Subnet: {device.reachability?.subnetClassification||'Unknown'}</p>
@@ -55,7 +126,7 @@ export const DeviceInspectorDrawer: React.FC<DeviceInspectorDrawerProps> = ({ is
           <p className="text-slate-600">Network reachability does not establish browser, login, or selected-camera ownership.</p>
           {device.reachability?.subnetClassification === 'DIFFERENT_SUBNET' && <p className="rounded border border-purple-700/40 bg-purple-50 p-3 text-purple-900">{DIFFERENT_NETWORK_MESSAGE} Verification: {device.sessionVerification === 'VERIFIED' ? 'Verified evidence recorded' : 'Not Verified'}.</p>}
           <div className="grid grid-cols-2 gap-2">
-            <div className="p-3 bg-slate-50 rounded-lg border border-slate-200"><span className="text-slate-500">Current status</span><p className="font-bold text-sky-800 mt-1">{device.status.replaceAll('_', ' ')}</p></div>
+            <div className="p-3 bg-slate-50 rounded-lg border border-slate-200"><span className="text-slate-500">Current status</span><p className="font-bold text-sky-800 mt-1">{statusLabels[device.status]}</p></div>
             <div className="p-3 bg-slate-50 rounded-lg border border-slate-200"><span className="text-slate-500">Last successful contact</span><p className="font-mono text-slate-700 mt-1 text-[10px]">{device.diagnostics?.lastSuccessfulContactAt || device.reachability?.lastSuccessfulResponseAt || 'Unknown'}</p></div>
           </div>
           {device.status === 'COLLISION' && <div className="p-3 rounded-lg border border-amber-500/40 bg-amber-50 text-amber-900 flex gap-2"><AlertTriangle className="w-4 h-4 shrink-0" />Network responses on this shared IP may be identity-ambiguous.</div>}
