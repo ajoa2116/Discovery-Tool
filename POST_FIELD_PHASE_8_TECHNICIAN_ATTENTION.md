@@ -173,3 +173,23 @@ bounded test-only listeners. Acceptance: demonstrate actual interaction-level te
 and report their scope accurately, preserving production default-deny and all
 security gates. Neither option is authorized by this entry.
 Commit message: `Foreground technician attention and diagnostic results`.
+
+#### 2026-10-19 mounted-component coverage addendum
+
+The historical deferred entry above is preserved. Owner-authorized inert Edge
+testing now provides passing mounted React 18 StrictMode evidence for all twelve
+requested groups (23 parameterized cases): Device Details location edits,
+cancel/save/error/stale acknowledgment behavior, report preview invalidation and
+inert export initiation, and filtered selection including zero rows.
+
+This is combined evidence, not one clean run: initial setup was blocked, a full
+run passed 14 cases and failed nine harness selectors, and a corrected I/J/K-only
+run passed those nine. No production component was modified. Owned listeners,
+browser contexts and fixture roots were cleaned after every invocation.
+
+UI-TEST-001 remains partial for field readiness: App transport wiring, backend
+persistence/report generation and physical camera/stress behavior remain
+unverified. Exact commands, failures, per-group results, cleanup and limits are
+recorded in `UI_TEST_001_COMPONENT_INTERACTIONS_2026_10_19.md`. The pinned
+`playwright-core@1.56.1` dependency is test-only; no browser download, production
+activation or Phase 18C.7T admission change occurred.
