@@ -18,7 +18,16 @@ interface DeviceInspectorDrawerProps {
   diagnostic?:DiagnosticPresentation;
 }
 
-/** Local edit state only; persistence remains the acknowledged App metadata callback. */
+/** Acknowledgment is known, but the active Project has not reverified this value. */
+export class CameraLocationRefreshError extends Error {
+ constructor(readonly refreshState:'failed'|'stale'|'unverified'){
+  const detail=refreshState==='failed'?'the active Project refresh failed':refreshState==='stale'?'the active Project refresh was superseded':'the refreshed Project did not confirm the submitted value';
+  super(`The server acknowledged this Camera Location update, but ${detail}. The last confirmed Project value is shown; persistence has not been reverified. Try again to resend the update and refresh.`);
+  this.name='CameraLocationRefreshError';
+ }
+}
+
+/** Local edit state only; success requires the App callback's reconciled metadata. */
 export class CameraLocationEdit {
  private state={deviceId:null as string|null,confirmed:'',draft:'',editing:false,saving:false,error:''};
  private observed='';
@@ -51,9 +60,9 @@ export class CameraLocationEdit {
    await update(id,value);
    if(!current())return 'stale';
    this.state.confirmed=value;this.state.editing=false;return 'saved';
-  }catch{
+  }catch(reason){
    if(!current())return 'stale';
-   this.state.error='Camera Location was not saved. The last confirmed value is shown. Try again.';return 'failed';
+   this.state.error=reason instanceof CameraLocationRefreshError?reason.message:'Camera Location was not saved. The last confirmed value is shown. Try again.';return 'failed';
   }finally{if(current()){this.pending=null;this.state.saving=false;}}
  }
 }

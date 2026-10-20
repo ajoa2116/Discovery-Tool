@@ -33,7 +33,7 @@ import { LegacyOnboardModal } from './components/LegacyOnboardModal.tsx';
 import { NetworkConfigModal } from './components/NetworkConfigModal.tsx';
 import { CameraBrowserWorkspace } from './components/CameraBrowserWorkspace.tsx';
 import { NewDeviceNotification } from './components/NewDeviceNotification.tsx';
-import { DeviceInspectorDrawer } from './components/DeviceInspectorDrawer.tsx';
+import { CameraLocationRefreshError, DeviceInspectorDrawer } from './components/DeviceInspectorDrawer.tsx';
 import { BulkReIpModal } from './components/BulkReIpModal.tsx';
 import { BulkDeviceConfigurationModal } from './components/BulkDeviceConfigurationModal.tsx';
 import { SiteSurveyReportModal } from './components/SiteSurveyReportModal.tsx';
@@ -74,6 +74,21 @@ export default function App() {
   // Appearance retains ['LIGHT','DARK','SYSTEM'] through SettingsMenu; persistence remains browser-local.
   const [project, setProject] = useState<SiteProject | null>(null);
   const [projectSession, setProjectSession] = useState<ProjectSession | null>(null);
+  // Only the latest session read may apply, while this subscription lifetime owns it.
+  // Explicit project updates/transitions supersede reads even when device IDs match.
+  const sessionReads = useRef({ revision: 0, active: false });
+  const [locationProjectOwner, setLocationProjectOwner] = useState({projectId:null as string|null,mode:null as ProjectSession['mode']|null,generation:0});
+  const locationProjectOwnerRef = useRef(locationProjectOwner);
+  const locationProjectTransitions = useRef(0);
+  // Match the existing active-project context (mode + project.id), not device IDs.
+  // New/open actions also rotate ownership when reopening the same saved project.
+  const ownLocationProject = (projectId:string|null,mode:ProjectSession['mode']|null,replace=false) => {
+    const current=locationProjectOwnerRef.current;
+    if(replace||current.projectId!==projectId||current.mode!==mode){
+      const next={projectId,mode,generation:current.generation+1};
+      locationProjectOwnerRef.current=next;setLocationProjectOwner(next);
+    }
+  };
   const [projectFilename, setProjectFilename] = useState('');
   const openProjectInput = useRef<HTMLInputElement>(null);
   const addExistingProjectInput = useRef<HTMLInputElement>(null);
@@ -174,7 +189,13 @@ export default function App() {
   const [newDeviceDetected, setNewDeviceDetected] = useState<ReturnType<typeof discoveryNotification>>(null);
 
   // Fetch initial data
-  const fetchData = async () => {
+  type SessionRefresh = {state:'failed'|'stale'}|{state:'applied';owner:typeof locationProjectOwner;project:SiteProject;revision:number};
+  async function fetchData():Promise<void>;
+  async function fetchData(trackSession:true):Promise<SessionRefresh>;
+  async function fetchData(trackSession?:true):Promise<void|SessionRefresh> {
+    let reconciliation:SessionRefresh={state:'failed'};
+    const readRevision = ++sessionReads.current.revision;
+    const locationOwnerAtRead = locationProjectOwnerRef.current;
     const pairAtRequest = currentPairRef.current;
     try {
       const [sessionRes, refreshRes, pairRes] = await Promise.all([
@@ -185,7 +206,10 @@ export default function App() {
 
       if (sessionRes.ok) {
         const session = await sessionRes.json() as ProjectSession;
-        if(pairAtRequest===currentPairRef.current){setProjectSession(session);setProject(session.project);}
+        if(sessionReads.current.active && readRevision===sessionReads.current.revision && locationOwnerAtRead===locationProjectOwnerRef.current && pairAtRequest===currentPairRef.current){
+          ownLocationProject(session.project.id,session.mode);setProjectSession(session);setProject(session.project);
+          reconciliation={state:'applied',owner:locationProjectOwnerRef.current,project:session.project,revision:readRevision};
+        }else reconciliation={state:'stale'};
       }
       if (refreshRes.ok) setDiagnosticRefresh(await refreshRes.json());
       if (pairRes.ok) { const pair=await pairRes.json();if(pairAtRequest===currentPairRef.current)acceptPair(pair); }
@@ -196,7 +220,8 @@ export default function App() {
     } catch (err) {
       console.error('Failed to fetch backend data:', err);
     }
-  };
+    return trackSession===true?reconciliation:undefined;
+  }
 
   useEffect(()=>{
     const controller=new AbortController(),pairAtRequest=currentPairRef.current;
@@ -219,17 +244,20 @@ export default function App() {
   };
 
   useEffect(() => {
+    sessionReads.current.active = true;
     fetchData();
 
     // WebSocket real-time updates
-    return connectProgress((event) => {
+    const disconnect = connectProgress((event) => {
       try {
         const data = JSON.parse(event.data);
-        if(data.data?.currentListSuppression)setProjectSession(current=>current?{...current,currentListSuppression:data.data.currentListSuppression}:current);
+        if(data.data?.currentListSuppression){sessionReads.current.revision++;setProjectSession(current=>current?{...current,currentListSuppression:data.data.currentListSuppression}:current);}
         if (data.type === 'PHASE_COMPLETE' && data.phaseNumber === 1 && data.data?.interfaces) {
           setInterfaces(pairAdapterInterfaces(data.data.interfaces,currentPairRef.current?.state==='RESTORED'?null:currentPairRef.current));
         }
         if ((data.type === 'DEVICE_DISCOVERED' || data.type === 'DEVICE_ENRICHED') && data.data?.project) {
+          sessionReads.current.revision++;
+          ownLocationProject(data.data.project.id,locationProjectOwnerRef.current.mode);
           setProject(data.data.project);
         }
         if (data.type === 'DEVICE_DISCOVERED' && data.data?.isNew === true && data.data?.project?.devices?.some((d:Device)=>d.id===data.data.device?.id) && shouldNotifyForDiscovery(preferencesRef.current,true) && data.data?.device) {
@@ -237,18 +265,23 @@ export default function App() {
           if (notification) setNewDeviceDetected(notification);
         }
         if(data.type==='DIAGNOSTIC_EVIDENCE'&&data.data?.device){
+          sessionReads.current.revision++;
           setProject(current=>current?{...current,devices:current.devices.map(d=>d.id===data.data.device.id&&d.network.ipAddress===data.data.device.network.ipAddress?{...d,diagnostics:data.data.device.diagnostics}:d)}:current);
         }
         if (data.type === 'DEVICE_DIAGNOSTICS_UPDATED' && data.data?.project) {
+          sessionReads.current.revision++;
+          ownLocationProject(data.data.project.id,locationProjectOwnerRef.current.mode);
           setProject(data.data.project);
           setSelectedDeviceForInspector(current => current?.id === data.data.device?.id ? data.data.device : current);
           if (data.data.refresh) setDiagnosticRefresh(data.data.refresh);
         }
         if (data.type === 'PAIR_STATE_CHANGED') {
           acceptPair(data.data?.pair || null);
-          if (data.data?.project) setProject(data.data.project);
+          if (data.data?.project) {sessionReads.current.revision++;ownLocationProject(data.data.project.id,locationProjectOwnerRef.current.mode);setProject(data.data.project);}
         }
         if ((data.type === 'PROJECT_SESSION_CHANGED' || data.type === 'PROJECT_SAVED') && data.data?.session) {
+          sessionReads.current.revision++;
+          ownLocationProject(data.data.session.project.id,data.data.session.mode);
           setProjectSession(data.data.session);
           setProject(data.data.session.project);
         }
@@ -270,6 +303,7 @@ export default function App() {
         // Ignore malformed events; HTTP status remains available without per-message console spam.
       }
     }, state => { setProgressConnection(state); if (state === 'CONNECTED') void fetchData(); });
+    return () => { sessionReads.current.active = false; sessionReads.current.revision++; disconnect(); };
   }, []);
 
   useEffect(() => {
@@ -319,13 +353,23 @@ export default function App() {
   }, []);
 
   const postProjectAction = async (path: string, body: Record<string, unknown> = {}) => {
-    const response = await fetch(`http://localhost:3001${path}`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
-    });
-    const result = await response.json();
-    if (!response.ok) throw new Error(result.error || 'Project operation failed.');
-    await fetchData();
-    return result;
+    // A requested project operation supersedes older reads before its response arrives.
+    sessionReads.current.revision++;
+    const replacesProject=['/api/project/new','/api/project/open','/api/project/from-current','/api/project/quick-work'].includes(path);
+    if(replacesProject){
+      locationProjectTransitions.current++;
+      const owner=locationProjectOwnerRef.current;
+      ownLocationProject(owner.projectId,owner.mode,true);
+    }
+    try {
+      const response = await fetch(`http://localhost:3001${path}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(result.error || 'Project operation failed.');
+      await fetchData();
+      return result;
+    } finally { if(replacesProject)locationProjectTransitions.current--; }
   };
 
   const handleNewProject = async () => {
@@ -411,17 +455,31 @@ export default function App() {
   };
 
   // Local technician fields share the same acknowledged, stable-ID update path.
-  const updateTechnicianField = async (id:string,field:'name'|'notes'|'location',value:string) => {
+  const updateTechnicianField = async (id:string,field:'name'|'notes'|'location',value:string,locationOwner?:typeof locationProjectOwner) => {
+    const requireLocationOwner=()=>{
+      if(locationOwner&&locationProjectTransitions.current)throw Error('The active project is changing. Retry Camera Location after it completes.');
+      if(locationOwner&&(!sessionReads.current.active||!locationOwner.projectId||!locationOwner.mode||locationOwner!==locationProjectOwnerRef.current))throw Error('The active project changed. This Camera Location save belongs to the previous project.');
+    };
+    requireLocationOwner();
     if(!project?.devices.some(d=>d.id===id))throw Error('Device is no longer available.');
     const {response,body}=await requestJson(`http://localhost:3001/api/device/${encodeURIComponent(id)}/config`, {
       method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({technician:{[field]:value}})
     },fetch,5000);
     if(!response.ok || (body as any)?.status!=='LOCAL_METADATA_UPDATED' || (body as any)?.device?.id!==id)throw Error('Metadata save was not confirmed.');
-    await fetchData();
+    // Reconcile the current session through its independent read-freshness checks.
+    // This read grants no authority to complete an obsolete project's editor.
+    if(locationOwner){
+      const reconciliation=await fetchData(true);
+      requireLocationOwner();
+      if(reconciliation.state!=='applied')throw new CameraLocationRefreshError(reconciliation.state);
+      if(reconciliation.owner!==locationOwner||reconciliation.revision!==sessionReads.current.revision)throw new CameraLocationRefreshError('stale');
+      const refreshedDevice=reconciliation.project.devices.find(device=>device.id===id);
+      if(!refreshedDevice||(refreshedDevice.technician?.location??'')!==value)throw new CameraLocationRefreshError('unverified');
+    }else await fetchData();
   };
   const handleUpdateDeviceName = (id:string,name:string) => updateTechnicianField(id,'name',name);
   const handleUpdateDeviceNotes = (id:string,notes:string) => updateTechnicianField(id,'notes',notes);
-  const handleUpdateDeviceLocation = (id:string,location:string) => updateTechnicianField(id,'location',location);
+  const handleUpdateDeviceLocation = (id:string,location:string) => updateTechnicianField(id,'location',location,locationProjectOwner);
 
   // Section 39: Bulk Selection Handlers
   const handleToggleSelect = (id: string) => {
@@ -759,6 +817,7 @@ export default function App() {
       <AttentionActions kind={attentionAction==='SAVE'&&!hasUnsavedAttention(projectSession)?null:attentionAction} collisions={project?.collisions||[]} onCollision={openCollision} onSave={handleSaveProject} onClose={()=>setAttentionAction(null)}/>
       {/* Zone 4: Device Inspector Drawer (v1.5 Section 8) */}
       <DeviceInspectorDrawer
+        key={`location-project-${locationProjectOwner.generation}`}
         isOpen={selectedDeviceForInspector !== null}
         onClose={() => setSelectedDeviceForInspector(null)}
         device={project?.devices.find(d=>d.id===selectedDeviceForInspector?.id)||selectedDeviceForInspector}
