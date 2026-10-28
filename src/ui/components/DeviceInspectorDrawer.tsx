@@ -1,3 +1,4 @@
+import { MetadataWriteConflictError } from '../../shared/metadata_write_context.ts';
 import React, { useEffect, useRef, useState } from 'react';
 import { DiagnosticPresentation } from '../../shared/technician_attention.ts';
 import { Device, DiagnosticCheckEvidence } from '../../types/index.ts';
@@ -62,7 +63,7 @@ export class CameraLocationEdit {
    this.state.confirmed=value;this.state.editing=false;return 'saved';
   }catch(reason){
    if(!current())return 'stale';
-   this.state.error=reason instanceof CameraLocationRefreshError?reason.message:'Camera Location was not saved. The last confirmed value is shown. Try again.';return 'failed';
+   this.state.error=reason instanceof CameraLocationRefreshError||reason instanceof MetadataWriteConflictError?reason.message:'Camera Location was not saved. The last confirmed value is shown. Try again.';return 'failed';
   }finally{if(current()){this.pending=null;this.state.saving=false;}}
  }
 }

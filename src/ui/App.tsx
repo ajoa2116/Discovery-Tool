@@ -1,3 +1,4 @@
+import { isMetadataWriteContext, MetadataWriteConflictError } from '../shared/metadata_write_context.ts';
 import { toggleVisibleSelection } from '../shared/device_selection.ts';
 import {SelectedDeviceActions} from './components/SelectedDeviceActions.tsx';
 import { isActiveCollision } from '../shared/collision_state.ts';
@@ -73,6 +74,7 @@ export default function App() {
   // Regression markers: obsolete useState<TaskItem[]>([]) activity state and unsafe global Available IPs finder are intentionally absent.
   // Appearance retains ['LIGHT','DARK','SYSTEM'] through SettingsMenu; persistence remains browser-local.
   const [project, setProject] = useState<SiteProject | null>(null);
+  const projectSessionContext=useRef<ProjectSession['metadataWriteContext']>(undefined);
   const [projectSession, setProjectSession] = useState<ProjectSession | null>(null);
   // Only the latest session read may apply, while this subscription lifetime owns it.
   // Explicit project updates/transitions supersede reads even when device IDs match.
@@ -207,7 +209,9 @@ export default function App() {
       if (sessionRes.ok) {
         const session = await sessionRes.json() as ProjectSession;
         if(sessionReads.current.active && readRevision===sessionReads.current.revision && locationOwnerAtRead===locationProjectOwnerRef.current && pairAtRequest===currentPairRef.current){
-          ownLocationProject(session.project.id,session.mode);setProjectSession(session);setProject(session.project);
+          ownLocationProject(session.project.id,session.mode);
+          if(projectSessionContext.current?.generation!==session.metadataWriteContext?.generation)ownLocationProject(session.project.id,session.mode,true);
+          projectSessionContext.current=session.metadataWriteContext;setProjectSession(session);setProject(session.project);
           reconciliation={state:'applied',owner:locationProjectOwnerRef.current,project:session.project,revision:readRevision};
         }else reconciliation={state:'stale'};
       }
@@ -282,7 +286,8 @@ export default function App() {
         if ((data.type === 'PROJECT_SESSION_CHANGED' || data.type === 'PROJECT_SAVED') && data.data?.session) {
           sessionReads.current.revision++;
           ownLocationProject(data.data.session.project.id,data.data.session.mode);
-          setProjectSession(data.data.session);
+          if(projectSessionContext.current?.generation!==data.data.session.metadataWriteContext?.generation)ownLocationProject(data.data.session.project.id,data.data.session.mode,true);
+          projectSessionContext.current=data.data.session.metadataWriteContext;setProjectSession(data.data.session);
           setProject(data.data.session.project);
         }
         if (data.type === 'MONITORING_STATE' && data.context?.origin === 'MONITORING' && data.data?.monitoring) setDiagnosticRefresh(data.data.monitoring);
@@ -456,15 +461,21 @@ export default function App() {
 
   // Local technician fields share the same acknowledged, stable-ID update path.
   const updateTechnicianField = async (id:string,field:'name'|'notes'|'location',value:string,locationOwner?:typeof locationProjectOwner) => {
+    // Captured from this render's accepted session; never rebound for this edit.
+    const writeContext=projectSession?.metadataWriteContext;
     const requireLocationOwner=()=>{
       if(locationOwner&&locationProjectTransitions.current)throw Error('The active project is changing. Retry Camera Location after it completes.');
       if(locationOwner&&(!sessionReads.current.active||!locationOwner.projectId||!locationOwner.mode||locationOwner!==locationProjectOwnerRef.current))throw Error('The active project changed. This Camera Location save belongs to the previous project.');
     };
     requireLocationOwner();
+    if(!isMetadataWriteContext(writeContext)||locationProjectTransitions.current||!sessionReads.current.active
+      ||writeContext.generation!==projectSessionContext.current?.generation
+      ||writeContext.projectId!==project?.id)throw new MetadataWriteConflictError();
     if(!project?.devices.some(d=>d.id===id))throw Error('Device is no longer available.');
     const {response,body}=await requestJson(`http://localhost:3001/api/device/${encodeURIComponent(id)}/config`, {
-      method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({technician:{[field]:value}})
+      method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({technician:{[field]:value},metadataWriteContext:writeContext})
     },fetch,5000);
+    if(response.status===409&&(body as any)?.code==='METADATA_PROJECT_CONFLICT')throw new MetadataWriteConflictError();
     if(!response.ok || (body as any)?.status!=='LOCAL_METADATA_UPDATED' || (body as any)?.device?.id!==id)throw Error('Metadata save was not confirmed.');
     // Reconcile the current session through its independent read-freshness checks.
     // This read grants no authority to complete an obsolete project's editor.

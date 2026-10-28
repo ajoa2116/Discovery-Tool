@@ -72,12 +72,13 @@ async function run(){
       db.upsertDevice(camera('camera/neighbor','00:11:22:33:44:52','Garage'));
       const boundary=new LegacyConfigurationBoundary(db);
       const a=await ownedFile(label+'-a.cctvproj',false);await db.saveAs(a);saves++;await ownedFile(basename(a),true);
+      const stableContext=db.getMetadataWriteContext();
       const originalBytes=await fs.readFile(a,'utf8'),originalTarget=structuredClone(db.getDeviceById('camera/shared')!),originalNeighbor=structuredClone(db.getDeviceById('camera/neighbor')!);
       check(label+': baseline explicit file is clean and identities are distinct',()=>{
         assert.equal(db.getSession().dirty,false);assert.equal(db.getDevices().length,2);
         assert.equal(originalTarget.network.ipAddress,originalNeighbor.network.ipAddress);assert.notDeepEqual(originalTarget.anchor,originalNeighbor.anchor);
       });
-      const changed=boundary.updateLocalMetadata('camera/shared',{technician:{location:scenario.value}});
+      const changed=boundary.updateLocalMetadata('camera/shared',{metadataWriteContext:db.getMetadataWriteContext(),technician:{location:scenario.value}});
       check(label+': real boundary changes only exact selected location in memory',()=>{
         assert.equal(changed.id,'camera/shared');assert.equal(changed.technician?.location,scenario.value);assert.equal(db.getSession().dirty,true);
         const normalized=structuredClone(changed);normalized.technician!.location=originalTarget.technician!.location;
@@ -85,10 +86,10 @@ async function run(){
       });
       const afterMemoryBytes=await fs.readFile(a,'utf8');
       check(label+': memory update does not write saved file',()=>assert.equal(afterMemoryBytes,originalBytes));
-      for(const invalid of [{name:'unknown identity',id:'unknown-fixture-id',body:{technician:{location:'Wrong'}}},{name:'non-string location',id:'camera/shared',body:{technician:{location:123}}}]){
+      for(const invalid of [{name:'unknown identity',id:'unknown-fixture-id',body:{metadataWriteContext:db.getMetadataWriteContext(),technician:{location:'Wrong'}}},{name:'non-string location',id:'camera/shared',body:{metadataWriteContext:db.getMetadataWriteContext(),technician:{location:123}}}]){
         const before=JSON.stringify(db.getSession()),disk=await fs.readFile(a,'utf8');
         check(label+': '+invalid.name+' rejects without memory mutation',()=>{
-          assert.throws(()=>boundary.updateLocalMetadata(invalid.id,invalid.body),error=>error instanceof ProjectValidationError&&error.message.includes(invalid.name==='unknown identity'?'Device not found':'location must be text'));
+          assert.throws(()=>boundary.updateLocalMetadata(invalid.id,{...invalid.body,metadataWriteContext:db.getMetadataWriteContext()}),error=>error instanceof ProjectValidationError&&error.message.includes(invalid.name==='unknown identity'?'Device not found':'location must be text'));
           assert.equal(JSON.stringify(db.getSession()),before);
         });
         const diskAfter=await fs.readFile(a,'utf8');
@@ -97,6 +98,7 @@ async function run(){
       await ownedFile(basename(a),true);await db.saveProject();saves++;await ownedFile(basename(a),true);
       const savedA=await fs.readFile(a,'utf8'),bundleA=JSON.parse(savedA);
       check(label+': explicit save contains exact location and unchanged neighbor',()=>{
+        assert.deepEqual(db.getMetadataWriteContext(),stableContext);assert.ok(!savedA.includes(stableContext.generation)&&!savedA.includes('metadataWriteContext'));
         assert.notEqual(savedA,originalBytes);assert.equal(db.getSession().dirty,false);
         assert.equal(bundleA.project.devices.find((d:Device)=>d.id==='camera/shared').technician.location,scenario.value);
         assert.equal(bundleA.project.devices.find((d:Device)=>d.id==='camera/neighbor').technician.location,'Garage');
@@ -119,7 +121,7 @@ async function run(){
       const projectB=db.createNewProject('Fixture B '+label);projectB.technicianName='Synthetic technician';const projectBId=projectB.id;
       db.upsertDevice(camera('camera/shared','00:11:22:33:44:60','Project B original'));
       const b=await ownedFile(label+'-b.cctvproj',false);await db.saveAs(b);saves++;await ownedFile(basename(b),true);
-      const originalB=await fs.readFile(b,'utf8');boundary.updateLocalMetadata('camera/shared',{technician:{location:'Project B separate'}});
+      const originalB=await fs.readFile(b,'utf8');boundary.updateLocalMetadata('camera/shared',{metadataWriteContext:db.getMetadataWriteContext(),technician:{location:'Project B separate'}});
       const aBeforeBSave=await fs.readFile(a,'utf8'),bBeforeBSave=await fs.readFile(b,'utf8');
       check(label+': current Project B owns reused ID without writing either file',()=>{
         assert.notEqual(projectAId,projectBId);assert.equal(db.getDeviceById('camera/shared')?.anchor.macAddress,'00:11:22:33:44:60');

@@ -6,13 +6,14 @@ module.exports=function installAppFixture(){
    network:{ipAddress:'192.0.2.50',subnetMask:'255.255.255.0',port:80,protocol:'ONVIF',ipAddressHistory:['192.0.2.50']},
    technician:{name,location,notes:'Fixture only'},status:'UNKNOWN',sessionVerification:'NOT_FOUND',discoveredPhase:3,firstSeenAt:'fixture',lastSeenAt:'fixture'});
  const project=(name,devices)=>({id:name,name,siteLocation:'Fixture site',technicianName:'Fixture technician',createdAt:'2026-10-19T12:00:00Z',updatedAt:'2026-10-19T12:00:00Z',devices,collisions:[],rogueDhcpEvents:[],auditLogs:[],totalDevices:devices.length});
- const initial={mode:'PROJECT',dirty:false,project:project('Project One',[camera('camera/A','Camera A','Lobby'),camera('camera/B','Camera B','Garage')])};
+ const context=(id,generation='11111111-1111-4111-8111-111111111111')=>({version:1,projectId:id,mode:'PROJECT',generation});
+ const initial={metadataWriteContext:context('Project One'),mode:'PROJECT',dirty:false,project:project('Project One',[camera('camera/A','Camera A','Lobby'),camera('camera/B','Camera B','Garage')])};
  const monitoring={enabled:false,running:false,intervalMs:30000,status:'OFF'};
  const originalStorage=Object.fromEntries(Object.keys(localStorage).map(key=>[key,localStorage.getItem(key)]));
- localStorage.clear();localStorage.setItem('cctv-network-assistant-preferences',JSON.stringify({version:1,appearance:'LIGHT',monitoringEnabled:false,monitoringCadenceMs:30000,newDeviceNotifications:false,browserPreference:'SYSTEM',visibleColumns:['NAME','STATUS','IP']}));
+ localStorage.clear();localStorage.setItem('cctv-network-assistant-preferences',JSON.stringify({version:1,appearance:'LIGHT',monitoringEnabled:false,monitoringCadenceMs:30000,newDeviceNotifications:false,browserPreference:'SYSTEM',visibleColumns:['NAME','STATUS','IP','NOTES']}));
  const state=window.__appTransport={requests:[],violations:[],subscriptions:[],subscriptionId:0,holdSessions:false,session:clone(initial),expectedWrites:[],unmount:null};
  state.snapshot=()=>clone(state.session);
- state.nextProject=(sameId)=>({mode:'PROJECT',dirty:false,project:project('Project Two',[camera(sameId?'camera/A':'camera/C',sameId?'Camera A':'Camera C','New project location')])});
+ state.nextProject=(sameId)=>({metadataWriteContext:context('Project Two','22222222-2222-4222-8222-222222222222'),mode:'PROJECT',dirty:false,project:project('Project Two',[camera(sameId?'camera/A':'camera/C',sameId?'Camera A':'Camera C','New project location')])});
  state.emit=(type,data)=>{const active=state.subscriptions.filter(s=>s.active);check(active.length===1,'inert-subscription-cardinality');active[0].onMessage({data:JSON.stringify({type,data})});};
  state.reconcile=()=>{const active=state.subscriptions.filter(s=>s.active);check(active.length===1,'inert-subscription-cardinality');active[0].onState('CONNECTED');};
  state.restore=()=>{localStorage.clear();for(const [key,value] of Object.entries(originalStorage))localStorage.setItem(key,value);
@@ -47,7 +48,7 @@ module.exports=function installAppFixture(){
    }else if(method==='POST'&&/^\/api\/device\/[^/]+\/config$/.test(u.pathname)){
      const expected=state.expectedWrites.shift();check(!!expected,'unissued-write');
      check(u.pathname==='/api/device/'+encodeURIComponent(expected.id)+'/config','wrong-write-id');
-     check(JSON.stringify(body)===JSON.stringify({technician:{location:expected.value}}),'wrong-write-body');held=true;
+     check(JSON.stringify(body)===JSON.stringify({technician:{[expected.field||'location']:expected.value},metadataWriteContext:expected.context||state.session.metadataWriteContext}),'wrong-write-body');held=true;
    }else check(false,'unexpected-method-or-route:'+method+':'+u.pathname);
    if(method==='POST')check(new Headers(options.headers).get('Content-Type')==='application/json','post-content-type');
    return new Promise((resolve,reject)=>{

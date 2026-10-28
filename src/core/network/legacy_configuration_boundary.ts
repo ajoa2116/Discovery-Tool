@@ -26,6 +26,8 @@ export class LegacyConfigurationBoundary {
     return { status:'NOT_VERIFIED', deviceId:device.id, message:'Configuration has not been read from this camera. Select a saved credential and use the authenticated Device Configuration read.', authoritativeReadEndpoint:`/api/device/${encodeURIComponent(device.id)}/configuration/capabilities` };
   }
   public updateLocalMetadata(identifier: string, payload: Record<string, unknown>): Device {
+    // Synchronous precondition and mutation: no identity lookup or effects before ownership.
+    this.db.requireMetadataWriteContext(payload.metadataWriteContext);
     if (physicalKeys.some(key => key in payload)) throw new ProjectValidationError('This legacy endpoint cannot change physical camera configuration. Use the authenticated Device Configuration workflow.');
     const raw = payload.technician;
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new ProjectValidationError('Only local technician Name, Location, and Notes may be updated here.');

@@ -21,6 +21,7 @@ import { createForegroundDiscoveryRouter } from './foreground_discovery_routes.t
 import express from 'express';
 import { validateHttpHost } from './http_host_validation.ts';
 import { ProductionAuthenticationBoundary } from './production_authentication_boundary.ts';
+import { MetadataWriteConflictError } from '../shared/metadata_write_context.ts';
 import cors from 'cors';
 import { createServer, type IncomingMessage, type Server } from 'node:http';
 import { Server as HttpsServer } from 'node:https';
@@ -590,6 +591,9 @@ export function constructBackend(dependencies: BackendDependencies = {}) {
       broadcast({type:'DEVICE_METADATA_UPDATED',data:{device,project:projectDb.getProject()}});
       res.json({status:'LOCAL_METADATA_UPDATED',device});
     } catch(error) {
+      if (error instanceof MetadataWriteConflictError) {
+        res.status(409).json({status:'CONFLICT',code:error.code,error:error.message});return;
+      }
       const message=error instanceof Error?error.message:'Local metadata could not be updated.';
       res.status(message.includes('Device not found')?404:message.includes('physical camera')?410:400).json({status:message.includes('physical camera')?'UNSUPPORTED':'UNAVAILABLE',error:message});
     }

@@ -2,6 +2,8 @@
 const fs=require('node:fs'),path=require('node:path'),os=require('node:os'),http=require('node:http'),assert=require('node:assert/strict');
 const {chromium}=require('playwright-core');
 const ts=require('typescript');
+const nameOwnerOnly=process.argv[2]==='--open-name-owner-only';
+assert.deepEqual(process.argv.slice(2),nameOwnerOnly?['--open-name-owner-only']:[],'Unsupported fixture selector');
 const repo=path.resolve(__dirname,'../../..'),entry='/src/test/browser/app_location_transport.html';
 
 
@@ -147,6 +149,46 @@ async function check(family,name,run,expectedConsole=false){
  // Independent application assertions may fail; remaining cases use fresh isolated contexts.
 }
 async function suite(){
+ await check(1,'open Name draft cannot rebind to a replacement project with the same device ID',async p=>{
+   await p.getByRole('button',{name:'Edit name for Camera A',exact:true}).click();
+   await p.getByLabel('Camera Name',{exact:true}).fill('Old draft');
+   await eventProject(p,true);
+   await p.getByLabel('Camera Name',{exact:true}).press('Enter');
+   await p.getByRole('alert').waitFor();assert.match(await p.getByRole('alert').textContent(),/Refresh.*review/);
+   assert.equal(await p.evaluate(()=>window.__appTransport.requests.filter(r=>r.path.includes('/api/device/')).length),0);
+ });
+ if(nameOwnerOnly)return;
+ await check(1,'server conflict is actionable without automatic retry or refresh',async p=>{
+   await inspect(p);await edit(p,'Review this edit');const id=await begin(p,'Review this edit');
+   const original=await p.evaluate(id=>window.__appTransport.requests.find(r=>r.id===id).body,id);
+   await p.evaluate(id=>window.__appTransport.requests.find(r=>r.id===id).resolve({status:'CONFLICT',code:'METADATA_PROJECT_CONFLICT'},409),id);await pause(p);
+   await p.getByRole('alert').waitFor();assert.match(await p.getByRole('alert').textContent(),/Refresh.*review/);
+   assert.equal(await confirmed(p),'Lobby');
+   assert.equal(await p.evaluate(()=>window.__appTransport.requests.filter(r=>r.path.includes('/api/device/')).length),1);
+   assert.equal(await p.evaluate(()=>window.__appTransport.requests.filter(r=>r.path==='/api/project/session'&&r.state==='pending').length),0);
+   assert.equal(original.metadataWriteContext.projectId,'Project One');
+ });
+ await check(1,'missing accepted context fails closed before transport',async p=>{
+   await p.evaluate(()=>{const s=window.__appTransport;delete s.session.metadataWriteContext;s.emit('PROJECT_SESSION_CHANGED',{session:s.snapshot()});});await pause(p);
+   await inspect(p);await edit(p,'No context');await button(p,'Save Location').click();
+   await p.getByRole('alert').waitFor();assert.match(await p.getByRole('alert').textContent(),/Refresh.*review/);
+   assert.equal(await p.evaluate(()=>window.__appTransport.requests.filter(r=>r.path.includes('/api/device/')).length),0);
+ });
+ for(const field of ['name','notes'])await check(1,field+' carries accepted context and preserves pending request ownership',async p=>{
+   const label=field==='name'?'Camera Name':'Camera Notes';
+   await p.getByRole('button',{name:'Edit '+field+' for Camera A',exact:true}).click();
+   await p.getByLabel(label,{exact:true}).fill('Owned '+field);
+   await p.evaluate(field=>{const s=window.__appTransport;s.holdSessions=true;s.expectedWrites.push({id:'camera/A',field,value:'Owned '+field,context:s.snapshot().metadataWriteContext});},field);
+   await p.getByLabel(label,{exact:true}).press(field==='notes'?'Tab':'Enter');
+   await p.waitForFunction(()=>window.__appTransport.requests.some(r=>r.path.includes('/api/device/')&&r.state==='pending'));
+   const write=await p.evaluate(()=>window.__appTransport.requests.find(r=>r.path.includes('/api/device/')&&r.state==='pending').id);
+   await eventProject(p,true);
+   const body=await p.evaluate(id=>window.__appTransport.requests.find(r=>r.id===id).body,write);
+   assert.equal(body.metadataWriteContext.projectId,'Project One');
+   await p.evaluate(id=>window.__appTransport.requests.find(r=>r.id===id).resolve({status:'CONFLICT',code:'METADATA_PROJECT_CONFLICT'},409),write);await pause(p);
+   await p.getByRole('alert').waitFor();assert.match(await p.getByRole('alert').textContent(),/Refresh.*review/);
+   assert.equal(await p.evaluate(()=>window.__appTransport.requests.filter(r=>r.path.includes('/api/device/')).length),1);
+ });
  await check(1,'stable-ID exact body, pending UI and refetch completion',async p=>{
    await inspect(p);await edit(p,'  North Door  ');const id=await begin(p,'  North Door  ');
    assert.equal(await confirmed(p),'Lobby');assert.equal(await button(p,'Saving…').isDisabled(),true);
@@ -244,7 +286,7 @@ async function suite(){
 (async()=>{let fatal;
  try{await setup();await suite();}catch(e){fatal=String(e.stack);console.error(fatal);}
  finally{try{await cleanup();}catch(e){fatal=String(e.stack);console.error('CLEANUP UNCERTAIN; preserve '+root+': '+fatal);}}
- const families=Object.fromEntries(Array.from({length:8},(_,i)=>{const rows=results.filter(r=>r.family===i+1);return[i+1,{passed:rows.filter(r=>r.status==='passed').length,failed:rows.filter(r=>r.status==='failed').length,status:!rows.length?'blocked':rows.some(r=>r.status==='failed')?'failed':'passed'}];}));
+ const families=Object.fromEntries(Array.from({length:8},(_,i)=>{const rows=results.filter(r=>r.family===i+1);return[i+1,{passed:rows.filter(r=>r.status==='passed').length,failed:rows.filter(r=>r.status==='failed').length,status:!rows.length?(nameOwnerOnly?'not-executed-filter':'blocked'):rows.some(r=>r.status==='failed')?'failed':'passed'}];}));
  console.log(JSON.stringify({families,results,summaries,boundary,contextsCreated:contexts.length,cleanupConfirmed:closed,listenerClosed:server?!server.listening:null,browserDisconnected:browser?!browser.isConnected():null,fixtureRoot:root,remainingFixtureRoot:root?fs.existsSync(root):false,removedOwnedFiles:removedFiles,fatal},null,2));
- if(fatal||results.length!==17||results.some(r=>r.status==='failed'))process.exitCode=1;
+ if(fatal||results.length!==(nameOwnerOnly?1:22)||results.some(r=>r.status==='failed'))process.exitCode=1;
 })();

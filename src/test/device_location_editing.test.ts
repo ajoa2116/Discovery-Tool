@@ -29,7 +29,7 @@ async function run(){
   check(calls===0&&!db.getSession().dirty,'unchanged location submits no metadata update');
   const beforeDevice=structuredClone(db.getDeviceById(row.id)!);editor.begin();editor.change('  North Door  ');
   const ack=deferred(),targets:Array<[string,string]>=[];
-  const save=editor.save(async(id:string,value:string)=>{targets.push([id,value]);await ack.promise;boundary.updateLocalMetadata(id,{technician:{location:value}})});
+  const save=editor.save(async(id:string,value:string)=>{targets.push([id,value]);await ack.promise;boundary.updateLocalMetadata(id,{metadataWriteContext:db.getMetadataWriteContext(),technician:{location:value}})});
   check(editor.view().saving&&editor.view().confirmed==='Lobby'&&db.getDeviceById(row.id)?.technician?.location==='Lobby','pending save does not claim confirmed success');
   ack.resolve();check(await save==='saved','acknowledged save completes');
   check(targets.length===1&&targets[0][0]===row.id&&targets[0][1]==='  North Door  ','save uses stable ID and preserves existing whitespace semantics');
@@ -41,7 +41,7 @@ async function run(){
   db.exportProjectJsonForSave();editor.sync(row.id,'  North Door  ',true);editor.begin();editor.change('Failed');const history=JSON.stringify(db.getProject());
   check(await editor.save(async()=>{throw Error('Injected failure')})==='failed','failed acknowledgment is denied');
   check(editor.view().confirmed==='  North Door  '&&editor.view().error.includes('not saved')&&editor.view().error.includes('Try again')&&JSON.stringify(db.getProject())===history,'failed save preserves confirmed metadata and provides actionable error');
-  editor.cancel();editor.begin();editor.change('');await editor.save(async(id:string,value:string)=>{boundary.updateLocalMetadata(id,{technician:{location:value}})});
+  editor.cancel();editor.begin();editor.change('');await editor.save(async(id:string,value:string)=>{boundary.updateLocalMetadata(id,{metadataWriteContext:db.getMetadataWriteContext(),technician:{location:value}})});
   check(editor.view().confirmed===''&&db.getDeviceById(row.id)?.technician?.location==='','empty string clears location using existing boundary semantics');
   {
    const state=new Editor();state.sync('camera/A','Lobby',true);state.close();state.sync('camera/A','Lobby',true);state.begin();

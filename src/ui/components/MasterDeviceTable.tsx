@@ -1,3 +1,4 @@
+import { MetadataWriteConflictError } from '../../shared/metadata_write_context.ts';
 import { allVisibleSelected } from '../../shared/device_selection.ts';
 import React, { useState, useRef } from 'react';
 import { Device, DeviceStatus } from '../../types/index.ts';
@@ -68,7 +69,7 @@ export const MasterDeviceTable: React.FC<MasterDeviceTableProps> = ({
   type EditField = 'name' | 'notes';
   const [editing,setEditing] = useState<{id:string;field:EditField}|null>(null);
   const [draft,setDraft] = useState('');
-  const activeEdit = useRef<{id:string;field:EditField;label:string;original:string;value:string}|null>(null);
+  const activeEdit = useRef<{id:string;field:EditField;label:string;original:string;value:string;update:(id:string,value:string)=>Promise<void>|void}|null>(null);
   const pendingEdits = useRef(new Set<string>());
   const [savingEdits,setSavingEdits] = useState(new Set<string>());
   const [editError,setEditError] = useState('');
@@ -94,8 +95,8 @@ export const MasterDeviceTable: React.FC<MasterDeviceTableProps> = ({
     const key=`${edit.id}:${edit.field}`;
     pendingEdits.current.add(key);setSavingEdits(new Set(pendingEdits.current));
     void (async()=>{
-      try{await (edit.field==='name'?onUpdateDeviceName:onUpdateDeviceNotes)(edit.id,value);}
-      catch{setEditError(`${label} was not saved for ${edit.label}. The last confirmed value is shown. Try again.`);}
+      try{await edit.update(edit.id,value);}
+      catch(error){setEditError(error instanceof MetadataWriteConflictError?error.message:`${label} was not saved for ${edit.label}. The last confirmed value is shown. Try again.`);}
       finally{pendingEdits.current.delete(key);setSavingEdits(new Set(pendingEdits.current));}
     })();
   };
@@ -108,7 +109,7 @@ export const MasterDeviceTable: React.FC<MasterDeviceTableProps> = ({
     saveEdit();
     const label=dev.technician?.name || dev.anchor.model || dev.anchor.vendor;
     const value=field==='name'?label:dev.technician?.notes||'';
-    activeEdit.current={id:dev.id,field,label,original:value,value};
+    activeEdit.current={update:field==='name'?onUpdateDeviceName:onUpdateDeviceNotes,id:dev.id,field,label,original:value,value};
     setEditing({id:dev.id,field});setDraft(value);setEditError('');
   };
   const startEditName = (dev:Device,e?:React.MouseEvent) => startEdit(dev,'name',e);

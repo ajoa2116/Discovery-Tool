@@ -1,4 +1,5 @@
 import {SessionSuppression} from './session_suppression.ts';
+import { MetadataWriteContext, isMetadataWriteContext, MetadataWriteConflictError } from '../../shared/metadata_write_context.ts';
 import { reconcileCollisionState } from '../engine/collision_reconciliation.ts';
 import { canonicalAnchor, canonicalMac, mergeAnchors, selectIdentity, sameIdentity } from '../../shared/identity_policy.ts';
 import { promises as fs } from 'node:fs';
@@ -83,6 +84,20 @@ export class SiteProjectDatabase {
   // Process-local lifetime only; never part of ProjectSession or saved bundles.
   private sessionGeneration = Symbol();
   public getSessionGeneration(): symbol { return this.sessionGeneration; }
+  private metadataContext?: { owner: symbol; value: MetadataWriteContext };
+  public getMetadataWriteContext(): MetadataWriteContext {
+    const owner = this.getSessionGeneration();
+    if (!this.metadataContext || this.metadataContext.owner !== owner) {
+      this.metadataContext = { owner, value: { version: 1, projectId: this.session.project.id,
+        mode: this.session.mode, generation: crypto.randomUUID() } };
+    }
+    return { ...this.metadataContext.value };
+  }
+  public requireMetadataWriteContext(value: unknown): void {
+    const current = this.getMetadataWriteContext();
+    if (!isMetadataWriteContext(value) || value.projectId !== current.projectId || value.mode !== current.mode
+      || value.generation !== current.generation) throw new MetadataWriteConflictError();
+  }
   private session: ProjectSession = { mode: 'QUICK_WORK', project: makeProject('Quick Work'), dirty: false };
   private hiddenCurrentDeviceIds = new Set<string>(); // Weak identity: row-only hiding, no physical suppression claim.
   private suppression = new SessionSuppression();
@@ -90,7 +105,7 @@ export class SiteProjectDatabase {
   private currentOnlyDeviceIds = new Set<string>();
   private removedProjectIdentities: Array<{ id: string; mac?: string; uuid?: string; serial?: string }> = [];
 
-  public getSession(): ProjectSession { const project=this.getProject(),visible=new Set(project.devices.map(d=>d.id));return { ...clone(this.session), project, projectMemberDeviceIds:this.session.mode==='PROJECT'?this.getProjectMemberDevices().map(device=>device.id):[], currentListSuppression:{count:this.suppression.count,awaitingRediscovery:this.awaitingRediscovery.count,hiddenDeviceIds:this.getDevices().filter(d=>!visible.has(d.id)).map(d=>d.id)} }; }
+  public getSession(): ProjectSession { const project=this.getProject(),visible=new Set(project.devices.map(d=>d.id));return { ...clone(this.session), metadataWriteContext:this.getMetadataWriteContext(), project, projectMemberDeviceIds:this.session.mode==='PROJECT'?this.getProjectMemberDevices().map(device=>device.id):[], currentListSuppression:{count:this.suppression.count,awaitingRediscovery:this.awaitingRediscovery.count,hiddenDeviceIds:this.getDevices().filter(d=>!visible.has(d.id)).map(d=>d.id)} }; }
   public getProject(): SiteProject {
     const project = clone(this.session.project);
     project.devices = project.devices.filter(device => !this.hiddenCurrentDeviceIds.has(device.id)&&!this.suppression.hides(device,this.getDevices())&&!this.awaitingRediscovery.hides(device,this.getDevices()));
