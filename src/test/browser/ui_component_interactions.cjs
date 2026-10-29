@@ -170,6 +170,18 @@ async function suite(){
    await row.focus();await p.keyboard.press('Enter');
    await p.waitForFunction(()=>document.activeElement?.getAttribute('aria-label')==='Task details');
    assert.equal((await recordFocus('explicit-reselection')).details,true);
+   // Removing details must not redirect focus that already belongs to another dialog control.
+   await close.focus();assert.equal((await recordFocus('close-before-second-removal')).close,true);
+   await p.evaluate(()=>{window.__interaction.taskSnapshot={tasks:[],active:0,attention:0};});
+   await missing.waitFor();assert.equal(await details.count(),0);assert.equal(await unavailable.count(),0);
+   assert.equal((await recordFocus('removed-with-close-focused')).close,true);
+   await p.evaluate(snapshot=>{window.__interaction.taskSnapshot=snapshot;},snapshot);
+   await details.waitFor();await settle(p);assert.equal(await missing.count(),0);
+   assert.equal((await recordFocus('restored-with-close-focused')).close,true);
+   assert.equal(await row.getAttribute('aria-pressed'),'true');assert.equal(await details.textContent(),originalDetails);
+   await row.focus();await p.keyboard.press('Enter');
+   await p.waitForFunction(()=>document.activeElement?.getAttribute('aria-label')==='Task details');
+   assert.equal((await recordFocus('explicit-reselection-after-second-removal')).details,true);
    // Failed observation with a cached record keeps the existing historical-state warning and details.
    await p.evaluate(()=>{window.__interaction.taskPollFailure=true;});
    await unavailable.waitFor();assert.equal(await missing.count(),0);assert.equal(await details.textContent(),originalDetails);
