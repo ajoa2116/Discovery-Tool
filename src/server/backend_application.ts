@@ -445,9 +445,10 @@ export function constructBackend(dependencies: BackendDependencies = {}) {
         onEvidence: (evidence, updated) => {if(!controller.signal.aborted&&diagnosticControllers.get(current.id)===controller)broadcast({ type: 'DIAGNOSTIC_EVIDENCE', data: { taskId, deviceId: updated.id, evidence, device: updated } });},
       }).then(updated => {
         if(controller.signal.aborted){cancelled++;tasks.diagnosticResult(taskId,current.id,'CANCELLED');return;}
-        projectDb.applyDiagnosticRefresh(updated, relationship);
+        const accepted = projectDb.applyDiagnosticRefresh(updated, relationship);
+        if (!accepted) throw Object.assign(new Error('The diagnostic result no longer applies to the current device record or IP address.'), { code: 'DIAGNOSTIC_RESULT_STALE' });
         tasks.diagnosticResult(taskId,current.id,'COMPLETED');
-        broadcast({ type: 'DEVICE_DIAGNOSTICS_UPDATED', context: { origin: 'DIAGNOSTICS' }, data: { device: updated, project: projectDb.getProject() } });
+        broadcast({ type: 'DEVICE_DIAGNOSTICS_UPDATED', context: { origin: 'DIAGNOSTICS' }, data: { device: accepted, project: projectDb.getProject() } });
       }).catch(error => {
         if(controller.signal.aborted)cancelled++;else failed++;
         tasks.diagnosticResult(taskId,current.id,controller.signal.aborted?'CANCELLED':'FAILED');
