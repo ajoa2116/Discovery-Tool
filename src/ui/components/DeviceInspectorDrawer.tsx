@@ -74,6 +74,13 @@ const statusLabels:Record<Device['status'],string>={
   UNRESPONSIVE:'Unreachable',UNREACHABLE:'Unreachable',PROVISIONING:'Working',DISCOVERED:'New Device',
 };
 const checkLabel = (check: DiagnosticCheckEvidence) => check.type === 'TCP' ? `TCP ${check.port}` : check.type.replaceAll('_', ' ');
+// Diagnostic producers use Date.toISOString(). Reject normalized/zone-less or
+// otherwise ambiguous representations rather than assigning them to a run.
+const diagnosticTimestamp = (value: string | undefined): number | undefined => {
+  if (typeof value !== 'string') return undefined;
+  const time = Date.parse(value);
+  return Number.isFinite(time) && new Date(time).toISOString() === value ? time : undefined;
+};
 
 export const DeviceInspectorDrawer: React.FC<DeviceInspectorDrawerProps> = ({ isOpen, onClose, device, onOpenConfigureModal, onOpenBrowserModal, onDiagnose, onUpdateDeviceLocation, projectMode, diagnosticsFocus, diagnostic }) => {
   const [activeTab, setActiveTab] = useState<'DIAGNOSTICS' | 'IDENTITY' | 'HISTORY'>('DIAGNOSTICS');
@@ -96,6 +103,12 @@ export const DeviceInspectorDrawer: React.FC<DeviceInspectorDrawerProps> = ({ is
   };
   if (!isOpen || !device) return null;
   const checks = [...(diagnostic?.checks||device.diagnostics?.checks||[])].filter(c=>c.targetIp===device.network.ipAddress).reverse();
+  const runStartedAt = diagnosticTimestamp(device.diagnostics?.lastRunStartedAt);
+  const latestChecks: DiagnosticCheckEvidence[] = [], earlierChecks: DiagnosticCheckEvidence[] = [];
+  for (const check of checks) {
+    const observedAt = diagnosticTimestamp(check.timestamp);
+    (runStartedAt !== undefined && observedAt !== undefined && observedAt >= runStartedAt ? latestChecks : earlierChecks).push(check);
+  }
   const adapter = checks[0]?.originatingAdapter||device.reachability?.relationshipAdapter||device.reachability?.discoveryInterface;
   const isCamera = device.anchor.hardwareClass === 'IP_CAMERA' || !device.anchor.vendor.toLowerCase().includes('lenel');
 
@@ -143,7 +156,10 @@ export const DeviceInspectorDrawer: React.FC<DeviceInspectorDrawerProps> = ({ is
           <button disabled={diagnostic?.state==='Running'} onClick={() => onDiagnose(device)} className="w-full py-2 bg-sky-600 hover:bg-sky-500 rounded-lg text-white font-bold flex items-center justify-center gap-2"><RefreshCw className="w-4 h-4" />Diagnose Now</button>
           <div className="space-y-2">
             {checks.length === 0 && <div className="p-4 text-center text-slate-500 border border-dashed border-slate-300 rounded-lg">No diagnostic checks have run in this session.</div>}
-            {checks.map((check, index) => <div key={`${check.timestamp}-${index}`} className="p-3 bg-slate-50 rounded-lg border border-slate-200">
+            {[{ title: 'Latest diagnostic run', checks: latestChecks }, { title: 'Earlier observations', checks: earlierChecks }].map(group => group.checks.length > 0 && <section key={group.title} aria-label={group.title} className="space-y-2">
+              <h4 className="font-semibold text-slate-800">{group.title}</h4>
+              {group.title === 'Earlier observations' && <p className="text-slate-500">Earlier or unclassified observations; these do not establish current reachability.</p>}
+            {group.checks.map((check, index) => <div key={`${check.timestamp}-${index}`} className="p-3 bg-slate-50 rounded-lg border border-slate-200">
               <div className="flex justify-between"><span className="font-semibold text-slate-800">{checkLabel(check)}</span><span className={check.success ? 'text-emerald-700' : 'text-slate-500'}>{check.success ? 'Responded' : check.errorCategory || 'No response'}</span></div>
               <div className="mt-1 text-[10px] text-slate-500 font-mono flex flex-wrap gap-x-3">
                 {check.httpStatus !== undefined && <span>HTTP {check.httpStatus}</span>}
@@ -153,6 +169,7 @@ export const DeviceInspectorDrawer: React.FC<DeviceInspectorDrawerProps> = ({ is
                 <span>{check.timestamp}</span>
               </div>
             </div>)}
+            </section>)}
           </div>
         </>}
 

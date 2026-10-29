@@ -4,7 +4,7 @@ const {chromium}=require('playwright-core');
 const ts=require('typescript');
 const repo=path.resolve(__dirname,'../../..'),entry='/src/test/browser/ui_component_interactions.html';
 const selectedGroups=new Set((process.env.UI_INTERACTION_GROUPS||'ABCDEFGHIJKL').replaceAll(',','').split(''));
-assert.ok(selectedGroups.size>0&&[...selectedGroups].every(g=>'ABCDEFGHIJKLM'.includes(g)),'Invalid group selection');
+assert.ok(selectedGroups.size>0&&[...selectedGroups].every(g=>'ABCDEFGHIJKLMN'.includes(g)),'Invalid group selection');
 const results=[],boundary=[],contexts=[],sourcePaths=new Set(['/src/ui/index.css']);let vite,server,browser,root,origin,port,closed=false,removedFiles=0;
 function checked(p){assert.equal(fs.realpathSync(p),p);for(let q=p;;q=path.dirname(q)){assert.equal(fs.lstatSync(q).isSymbolicLink(),false);if(path.dirname(q)===q)break;}}
 function sourceGraph(file){
@@ -119,6 +119,75 @@ async function check(name,group,run){
  return !error;
 }
 async function suite(){
+ await check('latest failed run is separated from earlier success and unclassified evidence','N',async p=>{
+   const {SiteProjectDatabase}=await import('../../core/storage/project_db.ts');
+   const {DeviceDiagnosticEngine}=await import('../../core/engine/diagnostic_engine.ts');
+   const ip='192.0.2.50',older='2000-01-01T12:00:00.000Z',earlier='2000-01-01T12:00:01.000Z';
+   const db=new SiteProjectDatabase('ISOLATED_TEST');db.createNewProject('Synthetic evidence grouping');
+   db.upsertDevice({id:'evidence-camera',anchor:{macAddress:'00:11:22:33:44:50',onvifEndpointUuid:'uuid-evidence',vendor:'Synthetic'},
+     network:{ipAddress:ip,subnetMask:'255.255.255.0',port:80,protocol:'ONVIF'},technician:{name:'Evidence Camera',location:'North Door',notes:'Retained'},
+     status:'ONLINE',sessionVerification:'VERIFIED',evidenceProvenance:'SYNTHETIC_TEST',discoveredPhase:3,firstSeenAt:older,lastSeenAt:earlier,
+     reachability:{subnetClassification:'LOCAL'},diagnostics:{lastRunStartedAt:older,lastRunCompletedAt:earlier,lastSuccessfulContactAt:older,
+       previouslyReachableThisSession:true,checks:[{type:'HTTP',targetIp:ip,success:true,httpStatus:200,timestamp:older},
+         {type:'PING',targetIp:ip,success:false,errorCategory:'TIMEOUT',timestamp:earlier}]}});
+   const savedOnline=db.exportProjectJson(),observed=structuredClone(db.getDevices()[0]);
+   const failed=(type,targetIp)=>({type,targetIp,success:false,errorCategory:'TIMEOUT',timestamp:new Date().toISOString()});
+   const engine=new DeviceDiagnosticEngine({ping:{async check(target){return failed('PING',target);}},
+     http:{async check(target,options){return failed(options.protocol==='https'?'HTTPS':'HTTP',target);}},
+     tcp:{async check(target,options){return{...failed('TCP',target),port:options.port};}}});
+   await engine.diagnose(observed,{isRefresh:true});
+   const stored=db.applyDiagnosticRefresh(observed);assert.equal(stored.status,'UNREACHABLE');
+   assert.equal(stored.diagnostics.lastSuccessfulContactAt,older);
+   // An earlier-IP check must remain excluded, even with a latest-run timestamp.
+   stored.diagnostics.checks.push({type:'HTTP',targetIp:'192.0.2.99',success:true,httpStatus:299,timestamp:new Date().toISOString()});
+   const snapshot=JSON.stringify(db.getSession());
+   await p.waitForFunction(()=>typeof window.__interaction.setDiagnosticDevice==='function');
+   const supply=async device=>{await p.evaluate(device=>window.__interaction.setDiagnosticDevice(device),device);await settle(p);};
+   const dialog=p.getByRole('dialog',{name:'Device Inspector',exact:true});
+   const region=name=>dialog.getByRole('region',{name,exact:true});
+   const cards=section=>section.locator('div.border.rounded-lg');
+   const timestampTexts=section=>cards(section).locator('div.font-mono > span:last-child').allTextContents();
+   const currentStatus=()=>dialog.getByText('Current status',{exact:true}).locator('..').locator('p').textContent();
+   const lastContact=()=>dialog.getByText('Last successful contact',{exact:true}).locator('..').locator('p').textContent();
+   await supply(stored);await dialog.waitFor();
+   const latest=region('Latest diagnostic run'),history=region('Earlier observations');
+   assert.equal(await currentStatus(),'Unreachable');assert.equal(await lastContact(),older);
+   assert.equal(await latest.getByText('Responded',{exact:true}).count(),0);
+   assert.equal(await history.getByText('Responded',{exact:true}).count(),1);
+   assert.equal(await history.getByText('HTTP 200',{exact:true}).count(),1);
+   assert.equal(await latest.getByText('TIMEOUT',{exact:true}).count(),4);
+   assert.equal(await cards(latest).count(),4);assert.equal(await cards(history).count(),2);
+   assert.deepEqual(await timestampTexts(history),[earlier,older]);
+   const expectedLatest=stored.diagnostics.checks.filter(c=>c.targetIp===ip&&Date.parse(c.timestamp)>=Date.parse(stored.diagnostics.lastRunStartedAt)).reverse();
+   assert.deepEqual(await timestampTexts(latest),expectedLatest.map(c=>c.timestamp));
+   assert.deepEqual(await cards(latest).locator('div.flex.justify-between > span:first-child').allTextContents(),expectedLatest.map(c=>c.type==='TCP'?'TCP '+c.port:c.type));
+   assert.equal(await dialog.getByText('HTTP 299',{exact:true}).count(),0);
+   for(const boundary of [undefined,'','not-a-date','2026-10-29T12:00:00','2026-02-30T12:00:00.000Z']){
+     const value=structuredClone(stored);value.diagnostics.lastRunStartedAt=boundary;await supply(value);
+     assert.equal(await region('Latest diagnostic run').count(),0);
+     assert.equal(await cards(region('Earlier observations')).count(),6);
+     assert.equal(await currentStatus(),'Unreachable');assert.equal(await lastContact(),older);
+   }
+   // A valid run boundary never makes missing, malformed or ambiguous check times latest.
+   const uncertain=structuredClone(stored);
+   for(const timestamp of [undefined,'not-a-date','2026-10-29T12:00:00','2026-02-30T12:00:00.000Z'])
+     uncertain.diagnostics.checks.push({type:'HTTP',targetIp:ip,success:true,httpStatus:298,timestamp});
+   await supply(uncertain);assert.equal(await cards(region('Latest diagnostic run')).count(),4);
+   assert.equal(await region('Latest diagnostic run').getByText('HTTP 298',{exact:true}).count(),0);
+   assert.equal(await region('Earlier observations').getByText('HTTP 298',{exact:true}).count(),4);
+   const atBoundary=structuredClone(stored);atBoundary.diagnostics.checks.push({type:'HTTP',targetIp:ip,success:false,errorCategory:'TIMEOUT',httpStatus:297,timestamp:atBoundary.diagnostics.lastRunStartedAt});
+   await supply(atBoundary);assert.equal(await region('Latest diagnostic run').getByText('HTTP 297',{exact:true}).count(),1);
+   assert.equal(JSON.stringify(db.getSession()),snapshot,'rendering must not mutate stored evidence or status');
+   const reopened=new SiteProjectDatabase('ISOLATED_TEST');reopened.importProjectJson(savedOnline);
+   const loaded=reopened.getDevices()[0];assert.equal(loaded.status,'UNKNOWN');assert.equal(loaded.sessionVerification,'NOT_VERIFIED');
+   assert.equal(loaded.savedStatusSnapshot,'ONLINE');assert.equal(loaded.diagnostics,undefined);
+   await supply(loaded);assert.equal(await currentStatus(),'Unknown');assert.equal(await lastContact(),'Unknown');
+   assert.equal(await region('Latest diagnostic run').count(),0);assert.equal(await region('Earlier observations').count(),0);
+   assert.equal(await dialog.getByText('Responded',{exact:true}).count(),0);
+   assert.equal(await dialog.getByText('No diagnostic checks have run in this session.',{exact:true}).count(),1);
+   assert.equal(await p.evaluate(()=>window.__interaction.diagnosticDevice.sessionVerification),'NOT_VERIFIED');
+   await locCount(p,0);assert.equal(await p.evaluate(()=>window.__interaction.previews.length+window.__interaction.exports.length),0);
+ });
  await check('stored diagnostic relationship refresh renders consistently and stale IP is rejected','M',async p=>{
    // Node-only real storage/relationship/diagnostic boundaries. None enter the browser source graph.
    const {SiteProjectDatabase}=await import('../../core/storage/project_db.ts');
@@ -210,7 +279,7 @@ async function cleanup(){
 (async()=>{let fatal;
  try{await setup();await suite();}catch(e){fatal=e;console.error(e.stack);}
  finally{try{await cleanup();}catch(e){fatal=e;console.error('CLEANUP UNCERTAIN; preserve root '+root+': '+e.stack);}}
- const groups=Object.fromEntries('ABCDEFGHIJKLM'.split('').map(group=>{const rows=results.filter(r=>r.group===group);return[group,{passed:rows.filter(r=>r.status==='passed').length,failed:rows.filter(r=>r.status==='failed').length,status:rows.length?(rows.some(r=>r.status==='failed')?'failed':'passed'):(selectedGroups.has(group)?'blocked':'not-executed-filter')}];}));
+ const groups=Object.fromEntries('ABCDEFGHIJKLMN'.split('').map(group=>{const rows=results.filter(r=>r.group===group);return[group,{passed:rows.filter(r=>r.status==='passed').length,failed:rows.filter(r=>r.status==='failed').length,status:rows.length?(rows.some(r=>r.status==='failed')?'failed':'passed'):(selectedGroups.has(group)?'blocked':'not-executed-filter')}];}));
  console.log(JSON.stringify({groups,results,boundary,cleanupConfirmed:closed,listenerClosed:server?!server.listening:null,browserDisconnected:browser?!browser.isConnected():null,
    remainingFixtureRoot:root?fs.existsSync(root):false,removedOwnedFiles:removedFiles,fatal:fatal?String(fatal.message):null},null,2));
  if(fatal||results.some(r=>r.status==='failed')||Object.values(groups).some(r=>r.status==='blocked'))process.exitCode=1;
