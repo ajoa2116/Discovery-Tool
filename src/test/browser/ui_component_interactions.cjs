@@ -4,7 +4,7 @@ const {chromium}=require('playwright-core');
 const ts=require('typescript');
 const repo=path.resolve(__dirname,'../../..'),entry='/src/test/browser/ui_component_interactions.html';
 const selectedGroups=new Set((process.env.UI_INTERACTION_GROUPS||'ABCDEFGHIJKL').replaceAll(',','').split(''));
-assert.ok(selectedGroups.size>0&&[...selectedGroups].every(g=>'ABCDEFGHIJKLMNO'.includes(g)),'Invalid group selection');
+assert.ok(selectedGroups.size>0&&[...selectedGroups].every(g=>'ABCDEFGHIJKLMNOP'.includes(g)),'Invalid group selection');
 const results=[],boundary=[],contexts=[],sourcePaths=new Set(['/src/ui/index.css']);let vite,server,browser,root,origin,port,closed=false,removedFiles=0;
 function checked(p){assert.equal(fs.realpathSync(p),p);for(let q=p;;q=path.dirname(q)){assert.equal(fs.lstatSync(q).isSymbolicLink(),false);if(path.dirname(q)===q)break;}}
 function sourceGraph(file){
@@ -55,11 +55,15 @@ async function pageFixture(){
    if(!allowed(req.url(),req.method())){boundary.push('browser-denied:'+req.url());await route.abort('blockedbyclient');return;}await route.continue();});
  await context.routeWebSocket('**',socket=>{boundary.push('browser-websocket-denied:'+socket.url());socket.close();});
  await context.addInitScript(()=>{
-   const state=window.__interaction={locations:[],previews:[],exports:[],downloads:[],violations:[],unmount:null};
+   const state=window.__interaction={locations:[],previews:[],exports:[],downloads:[],violations:[],taskReads:0,unmount:null};
    window.WebSocket=class{constructor(){state.violations.push('WebSocket');throw Error('Fixture forbids WebSocket');}};
    window.EventSource=class{constructor(){state.violations.push('EventSource');throw Error('Fixture forbids EventSource');}};
    window.fetch=async(url,options={})=>{
      const u=new URL(typeof url==='string'?url:url.url,location.href),method=options.method||'GET';
+     // Tasks navigation observes a supplied snapshot entirely in memory. No API listener.
+     if(method==='GET'&&u.href==='http://localhost:3001/api/tasks'&&state.taskSnapshot){
+       state.taskReads++;return new Response(JSON.stringify(state.taskSnapshot),{headers:{'Content-Type':'application/json'}});
+     }
      const preview=u.origin==='http://localhost:3001'&&u.pathname==='/api/reports/preview';
      const format=u.pathname.match(/^\/api\/reports\/export\/(pdf|csv|json)$/)?.[1];
      if(method!=='POST'||u.origin!=='http://localhost:3001'||u.search||(!preview&&!format)){
@@ -119,6 +123,65 @@ async function check(name,group,run){
  return !error;
 }
 async function suite(){
+ await check('lost acknowledgment is Unavailable; correlated outcomes and Tasks re-association stay authoritative','P',async p=>{
+   const {TaskManager}=await import('../../core/tasks/task_manager.ts');
+   const ip='192.0.2.50',old='2000-01-01T12:00:00.000Z',started='2000-01-01T12:01:00.000Z';
+   const device={id:'observation-camera',anchor:{macAddress:'00:11:22:33:44:50',onvifEndpointUuid:'uuid-observation',vendor:'Synthetic'},
+     network:{ipAddress:ip,subnetMask:'255.255.255.0',port:80,protocol:'ONVIF'},
+     technician:{name:'Observation Camera',location:'North Door',notes:'Retained notes'},status:'UNREACHABLE',sessionVerification:'VERIFIED',
+     evidenceProvenance:'SYNTHETIC_TEST',discoveredPhase:3,firstSeenAt:old,lastSeenAt:old,reachability:{subnetClassification:'LOCAL'},
+     diagnostics:{lastRunStartedAt:started,lastRunCompletedAt:started,lastSuccessfulContactAt:old,previouslyReachableThisSession:true,
+       checks:[{type:'HTTP',targetIp:ip,success:true,httpStatus:200,timestamp:old},
+         {type:'PING',targetIp:ip,success:false,errorCategory:'TIMEOUT',timestamp:started}]}};
+   const tasks=new TaskManager(),finish=(state,reason)=>{const id=tasks.begin('DIAGNOSTICS');tasks.diagnosticTargets(id,[device.id]);
+     tasks.diagnosticResult(id,device.id,state,reason);tasks.update(id,{state,phase:state==='COMPLETED'?'DONE':state});return id;};
+   const completed=finish('COMPLETED'),failed=finish('FAILED','DIAGNOSTIC_RESULT_STALE'),cancelled=finish('CANCELLED');
+   const running=tasks.begin('DIAGNOSTICS');tasks.diagnosticTargets(running,[device.id]);
+   const snapshot=tasks.snapshot(),before=JSON.stringify({device,snapshot});
+   await p.waitForFunction(()=>typeof window.__interaction.setDiagnosticDevice==='function');
+   const dialog=p.getByRole('dialog',{name:'Device Inspector',exact:true}),banner=dialog.getByRole('status');
+   const show=async(request,state,unavailable=false)=>{
+     await p.evaluate(({device,snapshot,request})=>window.__interaction.setDiagnosticDevice(device,{snapshot,request}),
+       {device,snapshot:{...snapshot,unavailable},request});
+     await banner.getByText('Diagnostics: '+state,{exact:true}).waitFor();
+     assert.equal(await banner.locator('strong').textContent(),'Diagnostics: '+state);
+   };
+   await show({failed:true},'Unavailable');
+   assert.ok((await banner.textContent()).includes('Check Tasks before retrying; an accepted operation may still be running.'));
+   assert.equal(await banner.getByText('Diagnostics: Failed',{exact:true}).count(),0);
+   await show({taskId:failed,failed:true},'Failed');
+   assert.ok((await banner.textContent()).includes('Diagnostic result no longer applies.'));
+   assert.ok(!(await banner.textContent()).includes('not acknowledged'));
+   await show({taskId:completed,failed:true},'Completed');
+   assert.equal(await dialog.getByText('Current status',{exact:true}).locator('..').locator('p').textContent(),'Unreachable');
+   await show({taskId:cancelled,failed:true},'Cancelled');
+   assert.ok((await banner.textContent()).includes('Diagnostics were cancelled.'));
+   await show({taskId:completed},'Unavailable',true);
+   await show({taskId:completed,failed:true},'Unavailable',true);
+   await show({taskId:'absent-task'},'Unavailable');
+   await show({taskId:running,failed:true},'Unavailable');
+   await show({failed:true},'Unavailable');
+   // Use the real Tasks component and its Inspect callback, as App does. All fetches
+   // remain inert, and any Diagnose POST or action callback fails this fixture.
+   await p.evaluate(snapshot=>{window.__interaction.taskSnapshot=snapshot;window.__interaction.enableDiagnosticTasks();},
+     {tasks:snapshot.tasks.filter(t=>t.id===completed),active:0,attention:0});
+   await p.waitForFunction(()=>window.__interaction.taskReads>0);
+   await p.getByRole('button',{name:/^Tasks/}).click();
+   const taskDialog=p.getByRole('dialog',{name:'Tasks',exact:true});
+   await taskDialog.getByRole('list',{name:'Recent tasks'}).getByRole('button').click();
+   await taskDialog.getByRole('region',{name:'Task details'}).getByRole('button',{name:'Inspect '+device.id+' — COMPLETED',exact:true}).click();
+   await banner.getByText('Diagnostics: Completed',{exact:true}).waitFor();
+   assert.equal(await taskDialog.count(),0);
+   assert.equal(await dialog.getByText('Current status',{exact:true}).locator('..').locator('p').textContent(),'Unreachable');
+   assert.equal(await dialog.getByText('Last successful contact',{exact:true}).locator('..').locator('p').textContent(),old);
+   assert.equal(await dialog.getByRole('region',{name:'Latest diagnostic run',exact:true}).getByText('TIMEOUT',{exact:true}).count(),1);
+   assert.equal(await dialog.getByRole('region',{name:'Earlier observations',exact:true}).getByText('Responded',{exact:true}).count(),1);
+   assert.equal(await dialog.locator('h3 + p').textContent(),device.technician.name);
+   assert.equal(await locationSection(p).locator('p').first().textContent(),device.technician.location);
+   assert.deepEqual(await p.evaluate(()=>window.__interaction.diagnosticDevice),device); // Exact diagnostics/Notes: props only.
+   assert.equal(JSON.stringify({device,snapshot:tasks.snapshot()}),before);
+   assert.ok(await p.evaluate(()=>window.__interaction.taskReads>0));await locCount(p,0);
+ });
  await check('accepted Unreachable, stale Failed and Cancelled outcomes are truthful in Details','O',async p=>{
    const {SiteProjectDatabase}=await import('../../core/storage/project_db.ts');
    const {DeviceDiagnosticEngine}=await import('../../core/engine/diagnostic_engine.ts');
@@ -341,7 +404,7 @@ async function cleanup(){
 (async()=>{let fatal;
  try{await setup();await suite();}catch(e){fatal=e;console.error(e.stack);}
  finally{try{await cleanup();}catch(e){fatal=e;console.error('CLEANUP UNCERTAIN; preserve root '+root+': '+e.stack);}}
- const groups=Object.fromEntries('ABCDEFGHIJKLMNO'.split('').map(group=>{const rows=results.filter(r=>r.group===group);return[group,{passed:rows.filter(r=>r.status==='passed').length,failed:rows.filter(r=>r.status==='failed').length,status:rows.length?(rows.some(r=>r.status==='failed')?'failed':'passed'):(selectedGroups.has(group)?'blocked':'not-executed-filter')}];}));
+ const groups=Object.fromEntries('ABCDEFGHIJKLMNOP'.split('').map(group=>{const rows=results.filter(r=>r.group===group);return[group,{passed:rows.filter(r=>r.status==='passed').length,failed:rows.filter(r=>r.status==='failed').length,status:rows.length?(rows.some(r=>r.status==='failed')?'failed':'passed'):(selectedGroups.has(group)?'blocked':'not-executed-filter')}];}));
  console.log(JSON.stringify({groups,results,boundary,cleanupConfirmed:closed,listenerClosed:server?!server.listening:null,browserDisconnected:browser?!browser.isConnected():null,
    remainingFixtureRoot:root?fs.existsSync(root):false,removedOwnedFiles:removedFiles,fatal:fatal?String(fatal.message):null},null,2));
  if(fatal||results.some(r=>r.status==='failed')||Object.values(groups).some(r=>r.status==='blocked'))process.exitCode=1;

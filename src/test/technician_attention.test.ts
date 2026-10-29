@@ -72,9 +72,24 @@ async function run(){
  check(policy.diagnosticPresentation(device,tasks.snapshot(),{taskId:staleTask}).message.includes('Diagnostic result no longer applies.'),'stale failure explanation follows the matching per-device task result');
  check(!policy.diagnosticPresentation({...device,id:'generic-peer'},tasks.snapshot(),{taskId:staleTask}).message.includes('no longer applies'),'stale reason is not applied to a generic failed peer');
  check(policy.diagnosticPresentation(device,tasks.snapshot(),{taskId:id}).state==='Completed'&&!policy.diagnosticPresentation(device,tasks.snapshot(),{taskId:id}).message.includes('no longer applies'),'another requested task cannot inherit the stale explanation');
- check(policy.diagnosticPresentation(device,tasks.snapshot(),{taskId:staleTask,failed:true}).message.includes('not acknowledged'),'request acknowledgment failure retains its existing explanation');
+ const correlatedFailure=policy.diagnosticPresentation(device,tasks.snapshot(),{taskId:staleTask,failed:true});
+ check(correlatedFailure.state==='Failed'&&correlatedFailure.message.includes('Diagnostic result no longer applies.')&&!correlatedFailure.message.includes('not acknowledged'),'confirmed correlated failure overrides acknowledgment uncertainty');
  const cancelledReason=tasks.begin('DIAGNOSTICS');tasks.diagnosticTargets(cancelledReason,[device.id]);
  tasks.diagnosticResult(cancelledReason,device.id,'CANCELLED','DIAGNOSTIC_RESULT_STALE');tasks.update(cancelledReason,{state:'CANCELLED',phase:'CANCELLED'});
  check(tasks.get(cancelledReason)?.diagnosticDevices?.[0].reason===undefined&&policy.diagnosticPresentation(device,tasks.snapshot(),{taskId:cancelledReason}).state==='Cancelled','cancellation never retains a stale-result failure reason');
+ const observationBefore=JSON.stringify({device:d,snapshot:tasks.snapshot()});
+ const lost=policy.diagnosticPresentation(d,tasks.snapshot(),{failed:true});
+ check(lost.state==='Unavailable'&&lost.message.includes('Check Tasks before retrying; an accepted operation may still be running.'),'lost acknowledgment stays Unavailable despite an earlier terminal task and saved completion');
+ for(const [taskId,state] of [[id,'Completed'],[staleTask,'Failed'],[cancelledReason,'Cancelled']] as const){
+  const known=policy.diagnosticPresentation(d,tasks.snapshot(),{taskId,failed:true});
+  check(known.state===state&&!known.message.includes('not acknowledged'),`correlated ${state} remains authoritative over the request flag`);
+ }
+ check(policy.diagnosticPresentation(d,{...tasks.snapshot(),unavailable:true},{taskId:id,failed:true}).state==='Unavailable','temporary polling loss cannot confirm a cached terminal outcome');
+ check(policy.diagnosticPresentation(d,{...tasks.snapshot(),unavailable:true},{taskId:id}).state==='Unavailable','temporary observation loss preserves Unavailable without request failure');
+ check(policy.diagnosticPresentation(d,tasks.snapshot(),{taskId:'absent-task'}).state==='Unavailable','missing requested task cannot borrow saved completion or another task');
+ check(policy.diagnosticPresentation({...d,id:'foreign-device'},tasks.snapshot(),{taskId:id,failed:true}).state==='Unavailable','task ID alone cannot confirm a different device outcome');
+ check(policy.diagnosticPresentation(d,tasks.snapshot(),{taskId:duplicate,failed:true}).state==='Unavailable','an observed running task does not confirm an unacknowledged terminal outcome');
+ check(policy.diagnosticPresentation(d,tasks.snapshot(),{taskId:id}).state==='Completed','re-associating the known task restores its completed outcome');
+ check(JSON.stringify({device:d,snapshot:tasks.snapshot()})===observationBefore,'presentation and re-association neither mutate evidence nor start another task');
  console.log(`Phase 8 attention: ${passed} passed, ${failed} failed`);if(failed)process.exitCode=1;
 }run().catch(e=>{console.error(e);process.exitCode=1});

@@ -1,8 +1,9 @@
-import React,{useEffect,useState} from 'react';
+import React,{useCallback,useEffect,useState} from 'react';
 import {createRoot} from 'react-dom/client';
 import {DeviceInspectorDrawer} from '../../ui/components/DeviceInspectorDrawer.tsx';
 import {SiteSurveyReportModal} from '../../ui/components/SiteSurveyReportModal.tsx';
 import {MasterDeviceTable} from '../../ui/components/MasterDeviceTable.tsx';
+import {Tasks} from '../../ui/components/Tasks.tsx';
 import {toggleVisibleSelection} from '../../shared/device_selection.ts';
 import {diagnosticPresentation,type DiagnosticRequest} from '../../shared/technician_attention.ts';
 import type {TaskSnapshot} from '../../shared/tasks.ts';
@@ -20,12 +21,17 @@ function Harness(){
  const [selected,setSelected]=useState(new Set(['camera/A'])),[filter,setFilter]=useState('all');
  const [diagnosticDevice,setDiagnosticDevice]=useState<Device|null>(null);
  const [diagnosticOperation,setDiagnosticOperation]=useState<{snapshot:TaskSnapshot;request?:DiagnosticRequest}|undefined>();
+ const [diagnosticTasks,setDiagnosticTasks]=useState(false);
+ const observeTasks=useCallback((snapshot:TaskSnapshot&{unavailable?:boolean})=>{
+   setDiagnosticOperation(current=>current?{...current,snapshot}:current);
+ },[]);
  useEffect(()=>{
    window.__interaction.setDiagnosticDevice=(next:Device,operation?:{snapshot:TaskSnapshot;request?:DiagnosticRequest})=>{
      window.__interaction.diagnosticDevice=next;
      setDiagnosticDevice(next);setDiagnosticOperation(operation);setPane('diagnostic');setOpen(true);
    };
-   return()=>{window.__interaction.setDiagnosticDevice=null;};
+   window.__interaction.enableDiagnosticTasks=()=>{setOpen(false);setDiagnosticTasks(true);};
+   return()=>{window.__interaction.setDiagnosticDevice=null;window.__interaction.enableDiagnosticTasks=null;};
  },[]);
  const visible=devices.filter(d=>filter==='all'||d.id===filter);
  const updateLocation=(id:string,value:string)=>new Promise<void>((resolve,reject)=>{
@@ -47,6 +53,11 @@ function Harness(){
    <output data-testid="selection">{[...selected].sort().join(',')}</output>
   </nav>
   <main style={{paddingTop:70}}>
+   {diagnosticTasks&&<Tasks onResult={forbidden} onSnapshot={observeTasks} onDiagnostic={(id,taskId)=>{
+     if(id!==diagnosticDevice?.id)return forbidden();
+     setDiagnosticOperation(current=>current?{...current,request:{taskId}}:current);
+     setDiagnosticTasks(false);setOpen(true);
+   }}/ >}
    {pane==='diagnostic'&&<DeviceInspectorDrawer isOpen={open} onClose={()=>setOpen(false)} device={diagnosticDevice}
      diagnostic={diagnosticDevice&&diagnosticOperation?diagnosticPresentation(diagnosticDevice,diagnosticOperation.snapshot,diagnosticOperation.request):undefined}
      onDiagnose={forbidden} onOpenBrowserModal={forbidden} onOpenConfigureModal={forbidden}/ >}
