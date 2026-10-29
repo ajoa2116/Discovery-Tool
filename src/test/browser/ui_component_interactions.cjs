@@ -4,7 +4,7 @@ const {chromium}=require('playwright-core');
 const ts=require('typescript');
 const repo=path.resolve(__dirname,'../../..'),entry='/src/test/browser/ui_component_interactions.html';
 const selectedGroups=new Set((process.env.UI_INTERACTION_GROUPS||'ABCDEFGHIJKL').replaceAll(',','').split(''));
-assert.ok(selectedGroups.size>0&&[...selectedGroups].every(g=>'ABCDEFGHIJKL'.includes(g)),'Invalid group selection');
+assert.ok(selectedGroups.size>0&&[...selectedGroups].every(g=>'ABCDEFGHIJKLM'.includes(g)),'Invalid group selection');
 const results=[],boundary=[],contexts=[],sourcePaths=new Set(['/src/ui/index.css']);let vite,server,browser,root,origin,port,closed=false,removedFiles=0;
 function checked(p){assert.equal(fs.realpathSync(p),p);for(let q=p;;q=path.dirname(q)){assert.equal(fs.lstatSync(q).isSymbolicLink(),false);if(path.dirname(q)===q)break;}}
 function sourceGraph(file){
@@ -119,6 +119,70 @@ async function check(name,group,run){
  return !error;
 }
 async function suite(){
+ await check('stored diagnostic relationship refresh renders consistently and stale IP is rejected','M',async p=>{
+   // Node-only real storage/relationship/diagnostic boundaries. None enter the browser source graph.
+   const {SiteProjectDatabase}=await import('../../core/storage/project_db.ts');
+   const {DeviceDiagnosticEngine}=await import('../../core/engine/diagnostic_engine.ts');
+   const {applyNetworkRelationship,DIFFERENT_NETWORK_MESSAGE}=await import('../../shared/network_relationship.ts');
+   const stamp='2026-10-29T12:00:00.000Z',ip='192.0.2.50';
+   const adapter=(address)=>({interfaceIndex:7,interfaceAlias:address==='192.0.2.10'?'New Ethernet':'Old Ethernet',mediaType:'ETHERNET',
+     operationalStatus:'Up',eligible:true,dhcpEnabled:false,ipv4Addresses:[{address,prefixLength:24}],defaultGateways:[],dnsAutomatic:true,dnsServers:[],capturedAt:stamp});
+   const db=new SiteProjectDatabase('ISOLATED_TEST');db.createNewProject('Synthetic rendered relationship');
+   const device={id:'render-camera',anchor:{macAddress:'00:11:22:33:44:50',onvifEndpointUuid:'uuid-render-camera',serialNumber:'serial-render-camera',vendor:'Synthetic'},
+     network:{ipAddress:ip,subnetMask:'255.255.255.0',port:80,protocol:'ONVIF',ipAddressHistory:['192.0.2.40',ip]},
+     technician:{name:'  Entrance Camera  ',location:'  North Door  ',notes:'  Preserve technician notes  '},status:'UNKNOWN',sessionVerification:'NOT_VERIFIED',
+     evidenceProvenance:'SYNTHETIC_TEST',discoveredPhase:3,firstSeenAt:stamp,lastSeenAt:stamp};
+   applyNetworkRelationship(device,[adapter('198.51.100.10')],[device]);db.upsertDevice(device);db.exportProjectJsonForSave();
+   const original=structuredClone(db.getDevices()[0]);
+   await p.waitForFunction(()=>typeof window.__interaction.setDiagnosticDevice==='function');
+   const supply=async value=>{await p.evaluate(value=>window.__interaction.setDiagnosticDevice(value),value);await settle(p);};
+   const dialog=p.getByRole('dialog',{name:'Device Inspector',exact:true});
+   const assertIdentity=async()=>{
+     assert.equal(await dialog.locator('h3 + p').textContent(),original.technician.name);
+     assert.equal(await locationSection(p).locator('p').first().textContent(),original.technician.location);
+     await button(p,'Identity & Network').click();
+     for(const [label,value] of [['Device IP',ip+':80'],['MAC',original.anchor.macAddress],['ONVIF UUID',original.anchor.onvifEndpointUuid],['Serial',original.anchor.serialNumber]]){
+       assert.equal(await dialog.getByText(label,{exact:true}).locator('..').locator('p').textContent(),value);
+     }
+     await button(p,'Diagnostics').click();
+   };
+   await supply(original);await dialog.waitFor();
+   assert.equal(await dialog.getByText('Current IP: '+ip+' · Subnet: DIFFERENT_SUBNET',{exact:true}).count(),1);
+   assert.equal(await dialog.getByText('Adapter: Old Ethernet • 198.51.100.10',{exact:true}).count(),1);
+   assert.ok((await dialog.textContent()).includes(DIFFERENT_NETWORK_MESSAGE));
+   await assertIdentity();
+   const observed=applyNetworkRelationship(structuredClone(original),[adapter('192.0.2.10')],db.getDevices());
+   const relationship={subnetClassification:observed.reachability.subnetClassification,
+     relationshipAdapter:structuredClone(observed.reachability.relationshipAdapter),pairEligibility:structuredClone(observed.reachability.pairEligibility)};
+   let providerCalls=0;
+   const evidence=(type,targetIp,success=false)=>{providerCalls++;return{type,targetIp,success,timestamp:stamp};};
+   const engine=new DeviceDiagnosticEngine({ping:{async check(target){return evidence('PING',target);}},
+     http:{async check(target,options){return evidence(options.protocol==='https'?'HTTPS':'HTTP',target,options.protocol==='http');}},
+     tcp:{async check(target){return evidence('TCP',target);}}});
+   await engine.diagnose(observed);
+   const stored=db.applyDiagnosticRefresh(observed,relationship);assert.ok(stored);assert.equal(providerCalls,4);
+   assert.deepEqual(stored.anchor,original.anchor);assert.deepEqual(stored.technician,original.technician);assert.deepEqual(stored.network,original.network);
+   assert.equal(db.getSession().dirty,false);
+   await supply(stored);await assertIdentity();
+   const assertCurrent=async()=>{
+     assert.equal(await dialog.getByText('Current status',{exact:true}).locator('..').locator('p').textContent(),'Online');
+     assert.equal(await dialog.getByText('Current IP: '+ip+' · Subnet: LOCAL',{exact:true}).count(),1);
+     assert.equal(await dialog.getByText('Adapter: New Ethernet • 192.0.2.10',{exact:true}).count(),1);
+     const text=await dialog.textContent();assert.ok(!text.includes(DIFFERENT_NETWORK_MESSAGE));assert.ok(!text.includes('DIFFERENT_SUBNET'));
+     assert.ok(!text.includes('Old Ethernet'));assert.ok(!text.includes('198.51.100.10'));
+   };
+   await assertCurrent();
+   await button(p,'Identity & Network').click();
+   assert.equal(await dialog.getByText('Subnet relationship',{exact:true}).locator('..').locator('p').textContent(),'LOCAL');
+   assert.equal(await dialog.getByText('Originating adapter',{exact:true}).locator('..').locator('p').textContent(),'New Ethernet — 192.0.2.10 / 255.255.255.0');
+   assert.ok(!(await dialog.textContent()).includes('Old Ethernet'));await button(p,'Diagnostics').click();
+   // Notes are not a rendered drawer field. Verify storage and props without inventing a DOM assertion.
+   assert.equal(await p.evaluate(()=>window.__interaction.diagnosticDevice.technician.notes),original.technician.notes);
+   const before=JSON.stringify(db.getSession()),stale=structuredClone(original);stale.network.ipAddress='192.0.2.99';
+   assert.equal(db.applyDiagnosticRefresh(stale,{subnetClassification:'DIFFERENT_SUBNET',relationshipAdapter:original.reachability.relationshipAdapter}),undefined);
+   assert.equal(JSON.stringify(db.getSession()),before);await supply(db.getDevices()[0]);await assertCurrent();await assertIdentity();
+   await locCount(p,0);assert.equal(await p.evaluate(()=>window.__interaction.previews.length+window.__interaction.exports.length),0);
+ });
  await check('open shows selected confirmed value without writes','A',async p=>{await location(p);assert.ok((await locationSection(p).textContent()).includes('Lobby'));await button(p,'Edit Camera Location').click();assert.equal(await p.getByLabel('Camera Location',{exact:true}).inputValue(),'Lobby');await locCount(p,0);});
  for(const key of ['Cancel','Escape'])await check('draft cancellation by '+key,'B',async p=>{await location(p);await edit(p,'Discard me');key==='Escape'?await p.getByLabel('Camera Location',{exact:true}).press('Escape'):await button(p,'Cancel').click();await button(p,'Edit Camera Location').waitFor();assert.ok((await locationSection(p).textContent()).includes('Lobby'));await locCount(p,0);});
  for(const value of ['Lobby','','  North Door  '])await check('save semantics '+JSON.stringify(value),'C',async p=>{await location(p);await edit(p,value);await button(p,'Save Location').click();if(value==='Lobby'){await button(p,'Edit Camera Location').waitFor();await locCount(p,0);}else{await locCount(p,1);assert.deepEqual(await p.evaluate(()=>window.__interaction.locations.map(({id,value})=>({id,value}))),[{id:'camera/A',value}]);await resolveLocation(p,0);await button(p,'Edit Camera Location').waitFor();await button(p,'Edit Camera Location').click();assert.equal(await p.getByLabel('Camera Location',{exact:true}).inputValue(),value);}});
@@ -146,7 +210,7 @@ async function cleanup(){
 (async()=>{let fatal;
  try{await setup();await suite();}catch(e){fatal=e;console.error(e.stack);}
  finally{try{await cleanup();}catch(e){fatal=e;console.error('CLEANUP UNCERTAIN; preserve root '+root+': '+e.stack);}}
- const groups=Object.fromEntries('ABCDEFGHIJKL'.split('').map(group=>{const rows=results.filter(r=>r.group===group);return[group,{passed:rows.filter(r=>r.status==='passed').length,failed:rows.filter(r=>r.status==='failed').length,status:rows.length?(rows.some(r=>r.status==='failed')?'failed':'passed'):(selectedGroups.has(group)?'blocked':'not-executed-filter')}];}));
+ const groups=Object.fromEntries('ABCDEFGHIJKLM'.split('').map(group=>{const rows=results.filter(r=>r.group===group);return[group,{passed:rows.filter(r=>r.status==='passed').length,failed:rows.filter(r=>r.status==='failed').length,status:rows.length?(rows.some(r=>r.status==='failed')?'failed':'passed'):(selectedGroups.has(group)?'blocked':'not-executed-filter')}];}));
  console.log(JSON.stringify({groups,results,boundary,cleanupConfirmed:closed,listenerClosed:server?!server.listening:null,browserDisconnected:browser?!browser.isConnected():null,
    remainingFixtureRoot:root?fs.existsSync(root):false,removedOwnedFiles:removedFiles,fatal:fatal?String(fatal.message):null},null,2));
  if(fatal||results.some(r=>r.status==='failed')||Object.values(groups).some(r=>r.status==='blocked'))process.exitCode=1;

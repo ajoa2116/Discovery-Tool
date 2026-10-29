@@ -430,6 +430,11 @@ export function constructBackend(dependencies: BackendDependencies = {}) {
     res.status(202).json({ started: devices.map(device => device!.id), taskId });
     for (const device of devices) {
       const current = applyNetworkRelationship(structuredClone(device), topology, projectDb.getDevices());
+      const relationship = {
+        subnetClassification: current.reachability?.subnetClassification,
+        relationshipAdapter: structuredClone(current.reachability?.relationshipAdapter),
+        pairEligibility: structuredClone(current.reachability?.pairEligibility),
+      };
       diagnosticControllers.get(current.id)?.abort();
       const controller = new AbortController();
       diagnosticControllers.set(current.id, controller);ownedControllers.push(controller);
@@ -440,7 +445,7 @@ export function constructBackend(dependencies: BackendDependencies = {}) {
         onEvidence: (evidence, updated) => {if(!controller.signal.aborted&&diagnosticControllers.get(current.id)===controller)broadcast({ type: 'DIAGNOSTIC_EVIDENCE', data: { taskId, deviceId: updated.id, evidence, device: updated } });},
       }).then(updated => {
         if(controller.signal.aborted){cancelled++;tasks.diagnosticResult(taskId,current.id,'CANCELLED');return;}
-        projectDb.applyDiagnosticRefresh(updated);
+        projectDb.applyDiagnosticRefresh(updated, relationship);
         tasks.diagnosticResult(taskId,current.id,'COMPLETED');
         broadcast({ type: 'DEVICE_DIAGNOSTICS_UPDATED', context: { origin: 'DIAGNOSTICS' }, data: { device: updated, project: projectDb.getProject() } });
       }).catch(error => {

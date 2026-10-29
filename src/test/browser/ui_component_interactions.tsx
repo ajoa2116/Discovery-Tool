@@ -1,4 +1,4 @@
-import React,{useState} from 'react';
+import React,{useEffect,useState} from 'react';
 import {createRoot} from 'react-dom/client';
 import {DeviceInspectorDrawer} from '../../ui/components/DeviceInspectorDrawer.tsx';
 import {SiteSurveyReportModal} from '../../ui/components/SiteSurveyReportModal.tsx';
@@ -16,6 +16,14 @@ const forbidden=()=>{window.__interaction.violations.push('unexpected-component-
 function Harness(){
  const [pane,setPane]=useState(''),[open,setOpen]=useState(false),[deviceId,setDeviceId]=useState('camera/A');
  const [selected,setSelected]=useState(new Set(['camera/A'])),[filter,setFilter]=useState('all');
+ const [diagnosticDevice,setDiagnosticDevice]=useState<Device|null>(null);
+ useEffect(()=>{
+   window.__interaction.setDiagnosticDevice=(next:Device)=>{
+     window.__interaction.diagnosticDevice=next;
+     setDiagnosticDevice(next);setPane('diagnostic');setOpen(true);
+   };
+   return()=>{window.__interaction.setDiagnosticDevice=null;};
+ },[]);
  const visible=devices.filter(d=>filter==='all'||d.id===filter);
  const updateLocation=(id:string,value:string)=>new Promise<void>((resolve,reject)=>{
    window.__interaction.locations.push({id,value,resolve,reject});
@@ -36,6 +44,8 @@ function Harness(){
    <output data-testid="selection">{[...selected].sort().join(',')}</output>
   </nav>
   <main style={{paddingTop:70}}>
+   {pane==='diagnostic'&&<DeviceInspectorDrawer isOpen={open} onClose={()=>setOpen(false)} device={diagnosticDevice}
+     onDiagnose={forbidden} onOpenBrowserModal={forbidden} onOpenConfigureModal={forbidden}/ >}
    {pane==='location'&&<DeviceInspectorDrawer isOpen={open} onClose={()=>setOpen(false)} device={devices.find(d=>d.id===deviceId)!}
      onDiagnose={forbidden} onOpenBrowserModal={forbidden} onOpenConfigureModal={forbidden} onUpdateDeviceLocation={updateLocation}/ >}
    {pane==='report'&&<SiteSurveyReportModal isOpen={open} onClose={()=>setOpen(false)} project={project} projectMode initialScope="SELECTED"

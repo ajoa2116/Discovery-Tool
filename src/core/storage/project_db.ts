@@ -4,7 +4,7 @@ import { reconcileCollisionState } from '../engine/collision_reconciliation.ts';
 import { canonicalAnchor, canonicalMac, mergeAnchors, selectIdentity, sameIdentity } from '../../shared/identity_policy.ts';
 import { promises as fs } from 'node:fs';
 import { dirname } from 'node:path';
-import { CctvProjectBundle, Device, IPCollisionRecord, ProjectSession, RogueDHCPOffer, SiteProject } from '../../types/index.ts';
+import { CctvProjectBundle, Device, IPCollisionRecord, ProjectSession, ReachabilityEvidence, RogueDHCPOffer, SiteProject } from '../../types/index.ts';
 import { appStateDb } from './app_db.ts';
 import { AppendProjectHistory, ProjectHistoryFilter, ProjectHistoryService } from './project_history.ts';
 
@@ -14,6 +14,10 @@ const APPLICATION_VERSION = '1.6.0';
 const SECRET_KEY = /(password|passwd|credential|authorization|token|secret|api[_-]?key|session[_-]?key)/i;
 
 export class ProjectValidationError extends Error {}
+
+/** Only supplied when the caller recomputed topology for this diagnostic run. */
+export type DiagnosticNetworkRelationship = Pick<ReachabilityEvidence,
+  'subnetClassification' | 'relationshipAdapter' | 'pairEligibility'>;
 
 const clone = <T>(value: T): T => structuredClone(value);
 const isObject = (value: unknown): value is Record<string, unknown> => Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -221,10 +225,17 @@ export class SiteProjectDatabase {
     return storedDevice;
   }
 
-  public applyDiagnosticRefresh(observed:Device):Device|undefined {
+  public applyDiagnosticRefresh(observed:Device, relationship?:DiagnosticNetworkRelationship):Device|undefined {
     const current=this.getDeviceById(observed.id);
     if(!current||current.network.ipAddress!==observed.network.ipAddress)return;
+    // Background diagnostics carry a cloned, possibly older discovery snapshot.
+    // Only explicit freshly recomputed relationship fields may replace current topology.
+    const reachability=relationship?{...current.reachability,
+      subnetClassification:relationship.subnetClassification,
+      relationshipAdapter:clone(relationship.relationshipAdapter),
+      pairEligibility:clone(relationship.pairEligibility)}:current.reachability;
     return this.upsertDevice({...current,diagnostics:observed.diagnostics,
+      reachability,
       status:current.status==='COLLISION'?'COLLISION':observed.status,
       statusMessage:current.status==='COLLISION'?current.statusMessage:observed.statusMessage,
       sessionVerification:observed.sessionVerification},'DEVICE_ADDED',true);
