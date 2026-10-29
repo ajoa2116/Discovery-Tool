@@ -13,7 +13,7 @@ export interface TechnicianTask {
   phase: string; progress?: { completed: number; total: number }; reference?: string;
   target?: string;
   reportGeneration?:ReportGeneration;
-  diagnosticDevices?: Array<{deviceId:string;state:'RUNNING'|'COMPLETED'|'FAILED'|'CANCELLED'}>;
+  diagnosticDevices?: Array<{deviceId:string;state:'RUNNING'|'COMPLETED'|'FAILED'|'CANCELLED';reason?:'DIAGNOSTIC_RESULT_STALE'}>;
   cancellable: boolean; cancellationRequested?: boolean;
   result?: 'PROJECT_HISTORY' | 'REPORTS' | 'NETWORK_RECOVERY';
 }

@@ -4,7 +4,7 @@ const {chromium}=require('playwright-core');
 const ts=require('typescript');
 const repo=path.resolve(__dirname,'../../..'),entry='/src/test/browser/ui_component_interactions.html';
 const selectedGroups=new Set((process.env.UI_INTERACTION_GROUPS||'ABCDEFGHIJKL').replaceAll(',','').split(''));
-assert.ok(selectedGroups.size>0&&[...selectedGroups].every(g=>'ABCDEFGHIJKLMN'.includes(g)),'Invalid group selection');
+assert.ok(selectedGroups.size>0&&[...selectedGroups].every(g=>'ABCDEFGHIJKLMNO'.includes(g)),'Invalid group selection');
 const results=[],boundary=[],contexts=[],sourcePaths=new Set(['/src/ui/index.css']);let vite,server,browser,root,origin,port,closed=false,removedFiles=0;
 function checked(p){assert.equal(fs.realpathSync(p),p);for(let q=p;;q=path.dirname(q)){assert.equal(fs.lstatSync(q).isSymbolicLink(),false);if(path.dirname(q)===q)break;}}
 function sourceGraph(file){
@@ -119,6 +119,68 @@ async function check(name,group,run){
  return !error;
 }
 async function suite(){
+ await check('accepted Unreachable, stale Failed and Cancelled outcomes are truthful in Details','O',async p=>{
+   const {SiteProjectDatabase}=await import('../../core/storage/project_db.ts');
+   const {DeviceDiagnosticEngine}=await import('../../core/engine/diagnostic_engine.ts');
+   const {TaskManager}=await import('../../core/tasks/task_manager.ts');
+   const {technicianErrorResponse}=await import('../../shared/error_presentation.ts');
+   const old='2000-01-01T12:00:00.000Z',ip='192.0.2.50',db=new SiteProjectDatabase('ISOLATED_TEST');db.createNewProject('Synthetic outcomes');
+   db.upsertDevice({id:'outcome-camera',anchor:{macAddress:'00:11:22:33:44:50',onvifEndpointUuid:'uuid-outcome',serialNumber:'serial-outcome',vendor:'Synthetic'},
+     network:{ipAddress:ip,subnetMask:'255.255.255.0',port:80,protocol:'ONVIF'},technician:{name:'Outcome Camera',location:'North Door',notes:'Retained notes'},
+     status:'ONLINE',sessionVerification:'VERIFIED',evidenceProvenance:'SYNTHETIC_TEST',discoveredPhase:3,firstSeenAt:old,lastSeenAt:old,
+     reachability:{subnetClassification:'LOCAL'},diagnostics:{lastSuccessfulContactAt:old,previouslyReachableThisSession:true,
+       checks:[{type:'HTTP',targetIp:ip,success:true,httpStatus:200,timestamp:old}]}});
+   const tasks=new TaskManager();
+   const start=()=>{const id=tasks.begin('DIAGNOSTICS');tasks.diagnosticTargets(id,['outcome-camera']);tasks.update(id,{state:'RUNNING',phase:'WORKING',progress:{completed:0,total:1}});return id;};
+   const failure=(type,targetIp)=>({type,targetIp,success:false,errorCategory:'TIMEOUT',timestamp:new Date().toISOString()});
+   const engine=new DeviceDiagnosticEngine({ping:{async check(target){return failure('PING',target);}},
+     http:{async check(target,options){return failure(options.protocol==='https'?'HTTPS':'HTTP',target);}},
+     tcp:{async check(target,options){return{...failure('TCP',target),port:options.port};}}});
+   await p.waitForFunction(()=>typeof window.__interaction.setDiagnosticDevice==='function');
+   const show=async(device,taskId)=>{await p.evaluate(({device,snapshot,taskId})=>window.__interaction.setDiagnosticDevice(device,{snapshot,request:{taskId}}),
+     {device,snapshot:tasks.snapshot(),taskId});await settle(p);};
+   const dialog=p.getByRole('dialog',{name:'Device Inspector',exact:true}),banner=dialog.getByRole('status');
+   const currentStatus=()=>dialog.getByText('Current status',{exact:true}).locator('..').locator('p').textContent();
+   const lastContact=()=>dialog.getByText('Last successful contact',{exact:true}).locator('..').locator('p').textContent();
+   const completed=start(),result=await engine.diagnose(structuredClone(db.getDevices()[0]),{isRefresh:true});
+   const accepted=db.applyDiagnosticRefresh(result);assert.ok(accepted);assert.equal(accepted.status,'UNREACHABLE');
+   tasks.diagnosticResult(completed,accepted.id,'COMPLETED');tasks.update(completed,{state:'COMPLETED',phase:'DONE',progress:{completed:1,total:1}});
+   await show(accepted,completed);await dialog.waitFor();
+   assert.equal(await banner.getByText('Diagnostics: Completed',{exact:true}).count(),1);assert.equal(await currentStatus(),'Unreachable');
+   assert.ok((await banner.textContent()).includes('Network failures remain evidence, not an operation failure.'));
+   assert.equal(await dialog.getByRole('region',{name:'Latest diagnostic run',exact:true}).getByText('TIMEOUT',{exact:true}).count(),4);
+   assert.equal(await dialog.getByRole('region',{name:'Earlier observations',exact:true}).getByText('Responded',{exact:true}).count(),1);
+   assert.equal(await lastContact(),old);
+   const rejected=start(),stale=structuredClone(accepted);
+   db.upsertDevice({...structuredClone(accepted),network:{...accepted.network,ipAddress:'192.0.2.99'}});
+   const before=JSON.stringify(db.getSession());assert.equal(db.applyDiagnosticRefresh(stale),undefined);
+   assert.equal(JSON.stringify(db.getSession()),before);
+   const staleError=technicianErrorResponse(Object.assign(Error('Diagnostic result no longer applies'),{code:'DIAGNOSTIC_RESULT_STALE'}),{operation:'DIAGNOSE',deviceId:accepted.id,fallbackCode:'OPERATION_FAILED'});
+   tasks.diagnosticResult(rejected,accepted.id,'FAILED','DIAGNOSTIC_RESULT_STALE');tasks.update(rejected,{state:'FAILED',phase:'FAILED',progress:{completed:1,total:1}});
+   const current=db.getDevices()[0];await show(current,rejected);
+   assert.equal(await banner.getByText('Diagnostics: Failed',{exact:true}).count(),1);
+   assert.ok((await banner.textContent()).includes(staleError.presentation.title));
+   assert.ok((await banner.textContent()).includes(staleError.presentation.message));
+   assert.ok((await banner.textContent()).includes(staleError.presentation.action));
+   assert.equal(await banner.getByText('Diagnostics: Completed',{exact:true}).count(),0);assert.equal(await currentStatus(),'Unreachable');
+   assert.equal(await dialog.getByText('Current IP: 192.0.2.99 · Subnet: LOCAL',{exact:true}).count(),1);
+   assert.equal(await dialog.locator('h3 + p').textContent(),current.technician.name);
+   assert.equal(await locationSection(p).locator('p').first().textContent(),current.technician.location);
+   assert.equal(await lastContact(),old);assert.equal(await dialog.getByText('Responded',{exact:true}).count(),0);
+   assert.equal(await dialog.getByRole('region',{name:'Latest diagnostic run',exact:true}).count(),0);
+   assert.deepEqual(await p.evaluate(()=>window.__interaction.diagnosticDevice),current);
+   // Device Details has no Notes field: exact diagnostics/Notes remain storage/props assertions.
+   assert.equal(current.technician.notes,'Retained notes');assert.deepEqual(current.diagnostics,accepted.diagnostics);
+   const cancelled=start();tasks.diagnosticResult(cancelled,current.id,'CANCELLED');tasks.update(cancelled,{state:'CANCELLED',phase:'CANCELLED',progress:{completed:1,total:1}});
+   await show(current,cancelled);assert.equal(await banner.getByText('Diagnostics: Cancelled',{exact:true}).count(),1);
+   assert.ok((await banner.textContent()).includes('Diagnostics were cancelled.'));
+   assert.equal(await banner.getByText('Diagnostics: Failed',{exact:true}).count(),0);assert.equal(await banner.getByText('Diagnostics: Completed',{exact:true}).count(),0);
+   assert.ok(!(await banner.textContent()).includes(staleError.presentation.title));assert.equal(await lastContact(),old);
+   // An old failed operation must not replace the explicitly selected newer task.
+   await show(current,completed);assert.equal(await banner.getByText('Diagnostics: Completed',{exact:true}).count(),1);
+   assert.ok(!(await banner.textContent()).includes(staleError.presentation.title));
+   assert.equal(JSON.stringify(db.getSession()),before);await locCount(p,0);
+ });
  await check('latest failed run is separated from earlier success and unclassified evidence','N',async p=>{
    const {SiteProjectDatabase}=await import('../../core/storage/project_db.ts');
    const {DeviceDiagnosticEngine}=await import('../../core/engine/diagnostic_engine.ts');
@@ -279,7 +341,7 @@ async function cleanup(){
 (async()=>{let fatal;
  try{await setup();await suite();}catch(e){fatal=e;console.error(e.stack);}
  finally{try{await cleanup();}catch(e){fatal=e;console.error('CLEANUP UNCERTAIN; preserve root '+root+': '+e.stack);}}
- const groups=Object.fromEntries('ABCDEFGHIJKLMN'.split('').map(group=>{const rows=results.filter(r=>r.group===group);return[group,{passed:rows.filter(r=>r.status==='passed').length,failed:rows.filter(r=>r.status==='failed').length,status:rows.length?(rows.some(r=>r.status==='failed')?'failed':'passed'):(selectedGroups.has(group)?'blocked':'not-executed-filter')}];}));
+ const groups=Object.fromEntries('ABCDEFGHIJKLMNO'.split('').map(group=>{const rows=results.filter(r=>r.group===group);return[group,{passed:rows.filter(r=>r.status==='passed').length,failed:rows.filter(r=>r.status==='failed').length,status:rows.length?(rows.some(r=>r.status==='failed')?'failed':'passed'):(selectedGroups.has(group)?'blocked':'not-executed-filter')}];}));
  console.log(JSON.stringify({groups,results,boundary,cleanupConfirmed:closed,listenerClosed:server?!server.listening:null,browserDisconnected:browser?!browser.isConnected():null,
    remainingFixtureRoot:root?fs.existsSync(root):false,removedOwnedFiles:removedFiles,fatal:fatal?String(fatal.message):null},null,2));
  if(fatal||results.some(r=>r.status==='failed')||Object.values(groups).some(r=>r.status==='blocked'))process.exitCode=1;

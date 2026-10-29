@@ -92,6 +92,7 @@ await test('manual Diagnose accepts results before reporting completion', {timeo
    const before=JSON.stringify(f.db.getSession()),auditBefore=structuredClone(appStateDb.getAuditLogs());
    f.calls[0].resolve(f.outcome());const task=await f.terminal;
    assert.equal(task.state,'FAILED');assert.deepEqual(task.progress,{completed:1,total:1});assert.equal(task.diagnosticDevices?.[0].state,'FAILED');
+   assert.equal(task.diagnosticDevices?.[0].reason,'DIAGNOSTIC_RESULT_STALE');
    assert.deepEqual(f.trace.filter(s=>s==='camera:COMPLETED'||s==='camera:CANCELLED'),[]);
    assert.equal(f.events.filter(e=>e.type==='DEVICE_DIAGNOSTICS_UPDATED').length,0);
    assert.equal(f.events.length,1);assert.equal(f.events[0].type,'DIAGNOSTIC_FAILED');assert.equal(f.events[0].data.code,'OPERATION_FAILED');
@@ -105,6 +106,7 @@ await test('manual Diagnose accepts results before reporting completion', {timeo
    f.db.updateDeviceTechnicianFields('camera',{notes:'Newer technician notes'});
    f.calls[0].resolve(expected);const task=await f.terminal;
    assert.equal(task.state,'COMPLETED');assert.equal(task.diagnosticDevices?.[0].state,'COMPLETED');assert.deepEqual(task.progress,{completed:1,total:1});
+   assert.equal(task.diagnosticDevices?.[0].reason,undefined);
    assert.equal(f.events.length,1);assert.equal(f.events[0].type,'DEVICE_DIAGNOSTICS_UPDATED');
    assert.deepEqual(f.events[0].data.device,f.db.getDevices()[0]);assert.equal(f.events[0].data.device.status,status);
    assert.equal(f.events[0].data.device.technician.notes,'Newer technician notes');assert.equal(f.applyCalls,1);
@@ -116,12 +118,14 @@ await test('manual Diagnose accepts results before reporting completion', {timeo
    f.db.removeDeviceFromProject('camera');const before=JSON.stringify(f.db.getSession()),auditBefore=structuredClone(appStateDb.getAuditLogs());
    f.calls[0].resolve(f.outcome());const task=await f.terminal;
    assert.equal(task.state,'CANCELLED');assert.equal(task.diagnosticDevices?.[0].state,'CANCELLED');assert.equal(f.applyCalls,0);assert.deepEqual(f.events,[]);
+   assert.equal(task.diagnosticDevices?.[0].reason,undefined);
    f.noAcceptanceMutation(before,auditBefore,'CANCELLED');assert.equal(f.controllers.size,0);
   });
   await t.test('provider exception remains Failed rather than stale or cancelled',async()=>{
    const f=await fixture();const before=JSON.stringify(f.db.getSession()),auditBefore=structuredClone(appStateDb.getAuditLogs());
    f.calls[0].reject(Error('Synthetic diagnostic provider failure'));const task=await f.terminal;
    assert.equal(task.state,'FAILED');assert.equal(task.diagnosticDevices?.[0].state,'FAILED');assert.equal(f.applyCalls,0);
+   assert.equal(task.diagnosticDevices?.[0].reason,undefined);
    assert.equal(f.events.length,1);assert.equal(f.events[0].type,'DIAGNOSTIC_FAILED');
    assert.notEqual(f.events[0].data.presentation.title,'Diagnostic result no longer applies');f.noAcceptanceMutation(before,auditBefore);
   });
@@ -133,6 +137,7 @@ await test('manual Diagnose accepts results before reporting completion', {timeo
    f.calls[1].resolve(f.outcome(1));task=await f.terminal;
    assert.equal(task.state,'FAILED');assert.deepEqual(task.progress,{completed:2,total:2});
    assert.deepEqual(task.diagnosticDevices?.map(d=>d.state),['FAILED','COMPLETED']);
+   assert.deepEqual(task.diagnosticDevices?.map(d=>d.reason),['DIAGNOSTIC_RESULT_STALE',undefined]);
    assert.deepEqual(f.events.map(e=>e.type),['DIAGNOSTIC_FAILED','DEVICE_DIAGNOSTICS_UPDATED']);assert.equal(f.events[1].data.device.id,'peer');
    assert.equal(f.trace.filter(s=>s.startsWith('terminal:')).length,1);assert.equal(f.controllers.size,0);
   });

@@ -451,7 +451,8 @@ export function constructBackend(dependencies: BackendDependencies = {}) {
         broadcast({ type: 'DEVICE_DIAGNOSTICS_UPDATED', context: { origin: 'DIAGNOSTICS' }, data: { device: accepted, project: projectDb.getProject() } });
       }).catch(error => {
         if(controller.signal.aborted)cancelled++;else failed++;
-        tasks.diagnosticResult(taskId,current.id,controller.signal.aborted?'CANCELLED':'FAILED');
+        tasks.diagnosticResult(taskId,current.id,controller.signal.aborted?'CANCELLED':'FAILED',
+          (error as {code?:unknown}|null)?.code==='DIAGNOSTIC_RESULT_STALE'?'DIAGNOSTIC_RESULT_STALE':undefined);
         const body=technicianErrorResponse(error,{operation:'DIAGNOSE',deviceId:current.id,fallbackCode:'OPERATION_FAILED'});broadcast({ type: 'DIAGNOSTIC_FAILED', data: { deviceId: current.id, ...body } });
       }).finally(() => {if(diagnosticControllers.get(current.id)===controller)diagnosticControllers.delete(current.id);finishDiagnostic();});
     }

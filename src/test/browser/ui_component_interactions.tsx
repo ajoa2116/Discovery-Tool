@@ -4,6 +4,8 @@ import {DeviceInspectorDrawer} from '../../ui/components/DeviceInspectorDrawer.t
 import {SiteSurveyReportModal} from '../../ui/components/SiteSurveyReportModal.tsx';
 import {MasterDeviceTable} from '../../ui/components/MasterDeviceTable.tsx';
 import {toggleVisibleSelection} from '../../shared/device_selection.ts';
+import {diagnosticPresentation,type DiagnosticRequest} from '../../shared/technician_attention.ts';
+import type {TaskSnapshot} from '../../shared/tasks.ts';
 import type {Device,SiteProject} from '../../types/index.ts';
 declare global{interface Window{__interaction:any;}}
 const camera=(id:string,location:string):Device=>({id,anchor:{macAddress:id==='camera/A'?'00:11:22:33:44:50':'00:11:22:33:44:52',vendor:'Fixture',model:id},
@@ -17,10 +19,11 @@ function Harness(){
  const [pane,setPane]=useState(''),[open,setOpen]=useState(false),[deviceId,setDeviceId]=useState('camera/A');
  const [selected,setSelected]=useState(new Set(['camera/A'])),[filter,setFilter]=useState('all');
  const [diagnosticDevice,setDiagnosticDevice]=useState<Device|null>(null);
+ const [diagnosticOperation,setDiagnosticOperation]=useState<{snapshot:TaskSnapshot;request?:DiagnosticRequest}|undefined>();
  useEffect(()=>{
-   window.__interaction.setDiagnosticDevice=(next:Device)=>{
+   window.__interaction.setDiagnosticDevice=(next:Device,operation?:{snapshot:TaskSnapshot;request?:DiagnosticRequest})=>{
      window.__interaction.diagnosticDevice=next;
-     setDiagnosticDevice(next);setPane('diagnostic');setOpen(true);
+     setDiagnosticDevice(next);setDiagnosticOperation(operation);setPane('diagnostic');setOpen(true);
    };
    return()=>{window.__interaction.setDiagnosticDevice=null;};
  },[]);
@@ -45,6 +48,7 @@ function Harness(){
   </nav>
   <main style={{paddingTop:70}}>
    {pane==='diagnostic'&&<DeviceInspectorDrawer isOpen={open} onClose={()=>setOpen(false)} device={diagnosticDevice}
+     diagnostic={diagnosticDevice&&diagnosticOperation?diagnosticPresentation(diagnosticDevice,diagnosticOperation.snapshot,diagnosticOperation.request):undefined}
      onDiagnose={forbidden} onOpenBrowserModal={forbidden} onOpenConfigureModal={forbidden}/ >}
    {pane==='location'&&<DeviceInspectorDrawer isOpen={open} onClose={()=>setOpen(false)} device={devices.find(d=>d.id===deviceId)!}
      onDiagnose={forbidden} onOpenBrowserModal={forbidden} onOpenConfigureModal={forbidden} onUpdateDeviceLocation={updateLocation}/ >}

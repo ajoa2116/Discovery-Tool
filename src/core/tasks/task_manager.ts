@@ -69,9 +69,13 @@ export class TaskManager {
     const task=this.entries.get(id);if(!task||task.kind!=='DIAGNOSTICS'||!taskActive(task))return;
     task.diagnosticDevices=[...new Set(deviceIds)].map(deviceId=>({deviceId,state:'RUNNING'}));
   }
-  diagnosticResult(id:string,deviceId:string,state:'COMPLETED'|'FAILED'|'CANCELLED') {
+  diagnosticResult(id:string,deviceId:string,state:'COMPLETED'|'FAILED'|'CANCELLED',reason?:'DIAGNOSTIC_RESULT_STALE') {
     const task=this.entries.get(id);if(!task||!taskActive(task))return;
-    const item=task.diagnosticDevices?.find(d=>d.deviceId===deviceId);if(item?.state==='RUNNING')item.state=state;
+    const item=task.diagnosticDevices?.find(d=>d.deviceId===deviceId);if(item?.state==='RUNNING'){
+      item.state=state;
+      // Retain only a controlled existing failure reason, never raw provider text.
+      if(state==='FAILED'&&reason==='DIAGNOSTIC_RESULT_STALE')item.reason=reason;
+    }
   }
   snapshot():TaskSnapshot {
     const tasks=[...this.entries.values()].reverse().map(t=>structuredClone(t));

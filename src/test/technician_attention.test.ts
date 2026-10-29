@@ -66,5 +66,15 @@ async function run(){
  const rendered=renderToStaticMarkup(React.createElement(DeviceInspectorDrawer,{...props,device:{...device,diagnostics:undefined},diagnostic:policy.diagnosticPresentation({...device,id:'unknown'},{tasks:[],active:0,attention:0})}));
  check(rendered.includes('Unavailable')&&rendered.includes('No diagnostic checks'),'T17 partial device evidence renders safely');
  check(!rendered.includes('password')&&!rendered.includes('credentialId'),'Inspector diagnostic projection renders no credentials');
+ const staleTask=tasks.begin('DIAGNOSTICS');tasks.diagnosticTargets(staleTask,[device.id,'generic-peer']);
+ tasks.diagnosticResult(staleTask,device.id,'FAILED','DIAGNOSTIC_RESULT_STALE');tasks.diagnosticResult(staleTask,'generic-peer','FAILED');
+ tasks.update(staleTask,{state:'FAILED',phase:'FAILED'});
+ check(policy.diagnosticPresentation(device,tasks.snapshot(),{taskId:staleTask}).message.includes('Diagnostic result no longer applies.'),'stale failure explanation follows the matching per-device task result');
+ check(!policy.diagnosticPresentation({...device,id:'generic-peer'},tasks.snapshot(),{taskId:staleTask}).message.includes('no longer applies'),'stale reason is not applied to a generic failed peer');
+ check(policy.diagnosticPresentation(device,tasks.snapshot(),{taskId:id}).state==='Completed'&&!policy.diagnosticPresentation(device,tasks.snapshot(),{taskId:id}).message.includes('no longer applies'),'another requested task cannot inherit the stale explanation');
+ check(policy.diagnosticPresentation(device,tasks.snapshot(),{taskId:staleTask,failed:true}).message.includes('not acknowledged'),'request acknowledgment failure retains its existing explanation');
+ const cancelledReason=tasks.begin('DIAGNOSTICS');tasks.diagnosticTargets(cancelledReason,[device.id]);
+ tasks.diagnosticResult(cancelledReason,device.id,'CANCELLED','DIAGNOSTIC_RESULT_STALE');tasks.update(cancelledReason,{state:'CANCELLED',phase:'CANCELLED'});
+ check(tasks.get(cancelledReason)?.diagnosticDevices?.[0].reason===undefined&&policy.diagnosticPresentation(device,tasks.snapshot(),{taskId:cancelledReason}).state==='Cancelled','cancellation never retains a stale-result failure reason');
  console.log(`Phase 8 attention: ${passed} passed, ${failed} failed`);if(failed)process.exitCode=1;
 }run().catch(e=>{console.error(e);process.exitCode=1});
