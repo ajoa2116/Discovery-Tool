@@ -4,7 +4,7 @@ const {chromium}=require('playwright-core');
 const ts=require('typescript');
 const repo=path.resolve(__dirname,'../../..'),entry='/src/test/browser/ui_component_interactions.html';
 const selectedGroups=new Set((process.env.UI_INTERACTION_GROUPS||'ABCDEFGHIJKL').replaceAll(',','').split(''));
-assert.ok(selectedGroups.size>0&&[...selectedGroups].every(g=>'ABCDEFGHIJKLMNOP'.includes(g)),'Invalid group selection');
+assert.ok(selectedGroups.size>0&&[...selectedGroups].every(g=>'ABCDEFGHIJKLMNOPQ'.includes(g)),'Invalid group selection');
 const results=[],boundary=[],contexts=[],sourcePaths=new Set(['/src/ui/index.css']);let vite,server,browser,root,origin,port,closed=false,removedFiles=0;
 function checked(p){assert.equal(fs.realpathSync(p),p);for(let q=p;;q=path.dirname(q)){assert.equal(fs.lstatSync(q).isSymbolicLink(),false);if(path.dirname(q)===q)break;}}
 function sourceGraph(file){
@@ -62,7 +62,8 @@ async function pageFixture(){
      const u=new URL(typeof url==='string'?url:url.url,location.href),method=options.method||'GET';
      // Tasks navigation observes a supplied snapshot entirely in memory. No API listener.
      if(method==='GET'&&u.href==='http://localhost:3001/api/tasks'&&state.taskSnapshot){
-       state.taskReads++;return new Response(JSON.stringify(state.taskSnapshot),{headers:{'Content-Type':'application/json'}});
+       state.taskReads++;if(state.taskPollFailure)throw Error('Injected task observation failure');
+       return new Response(JSON.stringify(state.taskSnapshot),{headers:{'Content-Type':'application/json'}});
      }
      const preview=u.origin==='http://localhost:3001'&&u.pathname==='/api/reports/preview';
      const format=u.pathname.match(/^\/api\/reports\/export\/(pdf|csv|json)$/)?.[1];
@@ -123,6 +124,39 @@ async function check(name,group,run){
  return !error;
 }
 async function suite(){
+ await check('selected task absence, polling failure and reappearance have distinct notices','Q',async p=>{
+   const stamp='2000-01-01T12:00:00.000Z';
+   const task={id:'DIAGNOSTICS:fixture-observation',correlationId:'fixture-observation',kind:'DIAGNOSTICS',title:'Run Diagnostics',
+     state:'COMPLETED',phase:'Operation completed',startedAt:stamp,updatedAt:stamp,endedAt:stamp,cancellable:false,
+     diagnosticDevices:[{deviceId:'camera/A',state:'COMPLETED'}]};
+   const snapshot={tasks:[task],active:0,attention:0},before=JSON.stringify(snapshot);
+   await p.waitForFunction(()=>typeof window.__interaction.enableDiagnosticTasks==='function');
+   await p.evaluate(snapshot=>{window.__interaction.taskSnapshot=snapshot;window.__interaction.enableDiagnosticTasks();},snapshot);
+   await p.getByRole('button',{name:'Tasks',exact:true}).click();
+   const dialog=p.getByRole('dialog',{name:'Tasks',exact:true}),details=dialog.getByRole('region',{name:'Task details'});
+   const missing=dialog.getByText('The selected task is absent from the current Tasks snapshot. Its execution outcome cannot be determined from that absence.',{exact:true});
+   const unavailable=dialog.getByText('Task status unavailable. Showing the last known state.',{exact:true});
+   const row=dialog.getByRole('list',{name:'Recent tasks'}).getByRole('button');
+   await row.waitFor();assert.equal(await missing.count(),0);await row.click();await details.waitFor();
+   const originalDetails=await details.textContent();
+   assert.ok(originalDetails.includes('COMPLETED — Operation completed'));
+   assert.equal(await row.getAttribute('aria-pressed'),'true');
+   await p.evaluate(()=>{window.__interaction.taskSnapshot={tasks:[],active:0,attention:0};});
+   await missing.waitFor();assert.equal(await details.count(),0);assert.equal(await unavailable.count(),0);
+   assert.equal(await dialog.getByText('No recent technician tasks.',{exact:true}).count(),1);
+   for(const label of ['COMPLETED','FAILED','CANCELLED'])assert.ok(!(await dialog.textContent()).includes(label));
+   await p.evaluate(()=>{window.__interaction.taskPollFailure=true;});
+   await unavailable.waitFor();assert.equal(await missing.count(),0);assert.equal(await details.count(),0);
+   await p.evaluate(snapshot=>{window.__interaction.taskSnapshot=snapshot;window.__interaction.taskPollFailure=false;},snapshot);
+   await details.waitFor();assert.equal(await missing.count(),0);assert.equal(await unavailable.count(),0);
+   assert.equal(await details.textContent(),originalDetails);assert.equal(await row.getAttribute('aria-pressed'),'true');
+   // Failed observation with a cached record keeps the existing historical-state warning and details.
+   await p.evaluate(()=>{window.__interaction.taskPollFailure=true;});
+   await unavailable.waitFor();assert.equal(await missing.count(),0);assert.equal(await details.textContent(),originalDetails);
+   assert.equal(await details.getByRole('button',{name:'Cancel Task',exact:true}).count(),0);
+   assert.deepEqual(await p.evaluate(()=>window.__interaction.taskSnapshot),snapshot);assert.equal(JSON.stringify(snapshot),before);
+   await locCount(p,0); // Any task action/Diagnose request or callback is forbidden by the fixture.
+ });
  await check('lost acknowledgment is Unavailable; correlated outcomes and Tasks re-association stay authoritative','P',async p=>{
    const {TaskManager}=await import('../../core/tasks/task_manager.ts');
    const ip='192.0.2.50',old='2000-01-01T12:00:00.000Z',started='2000-01-01T12:01:00.000Z';
@@ -404,7 +438,7 @@ async function cleanup(){
 (async()=>{let fatal;
  try{await setup();await suite();}catch(e){fatal=e;console.error(e.stack);}
  finally{try{await cleanup();}catch(e){fatal=e;console.error('CLEANUP UNCERTAIN; preserve root '+root+': '+e.stack);}}
- const groups=Object.fromEntries('ABCDEFGHIJKLMNOP'.split('').map(group=>{const rows=results.filter(r=>r.group===group);return[group,{passed:rows.filter(r=>r.status==='passed').length,failed:rows.filter(r=>r.status==='failed').length,status:rows.length?(rows.some(r=>r.status==='failed')?'failed':'passed'):(selectedGroups.has(group)?'blocked':'not-executed-filter')}];}));
+ const groups=Object.fromEntries('ABCDEFGHIJKLMNOPQ'.split('').map(group=>{const rows=results.filter(r=>r.group===group);return[group,{passed:rows.filter(r=>r.status==='passed').length,failed:rows.filter(r=>r.status==='failed').length,status:rows.length?(rows.some(r=>r.status==='failed')?'failed':'passed'):(selectedGroups.has(group)?'blocked':'not-executed-filter')}];}));
  console.log(JSON.stringify({groups,results,boundary,cleanupConfirmed:closed,listenerClosed:server?!server.listening:null,browserDisconnected:browser?!browser.isConnected():null,
    remainingFixtureRoot:root?fs.existsSync(root):false,removedOwnedFiles:removedFiles,fatal:fatal?String(fatal.message):null},null,2));
  if(fatal||results.some(r=>r.status==='failed')||Object.values(groups).some(r=>r.status==='blocked'))process.exitCode=1;
