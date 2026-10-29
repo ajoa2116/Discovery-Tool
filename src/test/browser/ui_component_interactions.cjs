@@ -302,6 +302,17 @@ async function suite(){
    assert.equal(await locationSection(p).locator('p').first().textContent(),current.technician.location);
    assert.equal(await lastContact(),old);assert.equal(await dialog.getByText('Responded',{exact:true}).count(),0);
    assert.equal(await dialog.getByRole('region',{name:'Latest diagnostic run',exact:true}).count(),0);
+   assert.equal(await dialog.getByRole('region',{name:'Earlier observations',exact:true}).count(),0);
+   assert.equal(await dialog.getByText('TIMEOUT',{exact:true}).count(),0);
+   assert.equal(await dialog.getByText('No diagnostic checks are available for the current IP address.',{exact:true}).count(),1);
+   assert.equal(current.diagnostics.checks.length,5);assert.ok(current.diagnostics.checks.every(check=>check.targetIp===ip));
+   assert.equal(current.id,accepted.id);assert.deepEqual(current.anchor,accepted.anchor);
+   assert.deepEqual(current.technician,accepted.technician);assert.deepEqual(current.network.ipAddressHistory,[ip,'192.0.2.99']);
+   await dialog.getByRole('button',{name:'Identity & Network',exact:true}).click();
+   for(const [label,value] of [['MAC',accepted.anchor.macAddress],['ONVIF UUID',accepted.anchor.onvifEndpointUuid],['Serial',accepted.anchor.serialNumber]]){
+     assert.equal(await dialog.getByText(label,{exact:true}).locator('..').locator('p').textContent(),value);
+   }
+   await dialog.getByRole('button',{name:'Diagnostics',exact:true}).click();assert.equal(await lastContact(),old);
    assert.deepEqual(await p.evaluate(()=>window.__interaction.diagnosticDevice),current);
    // Device Details has no Notes field: exact diagnostics/Notes remain storage/props assertions.
    assert.equal(current.technician.notes,'Retained notes');assert.deepEqual(current.diagnostics,accepted.diagnostics);
@@ -380,7 +391,7 @@ async function suite(){
    await supply(loaded);assert.equal(await currentStatus(),'Unknown');assert.equal(await lastContact(),'Unknown');
    assert.equal(await region('Latest diagnostic run').count(),0);assert.equal(await region('Earlier observations').count(),0);
    assert.equal(await dialog.getByText('Responded',{exact:true}).count(),0);
-   assert.equal(await dialog.getByText('No diagnostic checks have run in this session.',{exact:true}).count(),1);
+   assert.equal(await dialog.getByText('No diagnostic checks are available for the current IP address.',{exact:true}).count(),1);
    assert.equal(await p.evaluate(()=>window.__interaction.diagnosticDevice.sessionVerification),'NOT_VERIFIED');
    await locCount(p,0);assert.equal(await p.evaluate(()=>window.__interaction.previews.length+window.__interaction.exports.length),0);
  });

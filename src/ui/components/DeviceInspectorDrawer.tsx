@@ -155,7 +155,7 @@ export const DeviceInspectorDrawer: React.FC<DeviceInspectorDrawerProps> = ({ is
           {device.status === 'COLLISION' && <div className="p-3 rounded-lg border border-amber-500/40 bg-amber-50 text-amber-900 flex gap-2"><AlertTriangle className="w-4 h-4 shrink-0" />Network responses on this shared IP may be identity-ambiguous.</div>}
           <button disabled={diagnostic?.state==='Running'} onClick={() => onDiagnose(device)} className="w-full py-2 bg-sky-600 hover:bg-sky-500 rounded-lg text-white font-bold flex items-center justify-center gap-2"><RefreshCw className="w-4 h-4" />Diagnose Now</button>
           <div className="space-y-2">
-            {checks.length === 0 && <div className="p-4 text-center text-slate-500 border border-dashed border-slate-300 rounded-lg">No diagnostic checks have run in this session.</div>}
+            {checks.length === 0 && <div className="p-4 text-center text-slate-500 border border-dashed border-slate-300 rounded-lg">No diagnostic checks are available for the current IP address.</div>}
             {[{ title: 'Latest diagnostic run', checks: latestChecks }, { title: 'Earlier observations', checks: earlierChecks }].map(group => group.checks.length > 0 && <section key={group.title} aria-label={group.title} className="space-y-2">
               <h4 className="font-semibold text-slate-800">{group.title}</h4>
               {group.title === 'Earlier observations' && <p className="text-slate-500">Earlier or unclassified observations; these do not establish current reachability.</p>}
