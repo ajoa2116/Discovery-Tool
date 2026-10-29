@@ -124,7 +124,7 @@ async function check(name,group,run){
  return !error;
 }
 async function suite(){
- await check('selected task absence, polling failure and reappearance have distinct notices','Q',async p=>{
+ await check('selected task notices and keyboard focus survive disappearance and reappearance','Q',async p=>{
    const stamp='2000-01-01T12:00:00.000Z';
    const task={id:'DIAGNOSTICS:fixture-observation',correlationId:'fixture-observation',kind:'DIAGNOSTICS',title:'Run Diagnostics',
      state:'COMPLETED',phase:'Operation completed',startedAt:stamp,updatedAt:stamp,endedAt:stamp,cancellable:false,
@@ -132,30 +132,55 @@ async function suite(){
    const snapshot={tasks:[task],active:0,attention:0},before=JSON.stringify(snapshot);
    await p.waitForFunction(()=>typeof window.__interaction.enableDiagnosticTasks==='function');
    await p.evaluate(snapshot=>{window.__interaction.taskSnapshot=snapshot;window.__interaction.enableDiagnosticTasks();},snapshot);
-   await p.getByRole('button',{name:'Tasks',exact:true}).click();
+   const trigger=p.getByRole('button',{name:'Tasks',exact:true});
+   await trigger.focus();await p.keyboard.press('Enter');
    const dialog=p.getByRole('dialog',{name:'Tasks',exact:true}),details=dialog.getByRole('region',{name:'Task details'});
+   const focusIssues=[],focusTransitions=[];
+   const recordFocus=async stage=>{
+     const observation=await dialog.evaluate(element=>{const active=document.activeElement;return{tag:active?.tagName,
+       label:active?.getAttribute('aria-label')||active?.textContent?.trim().slice(0,60),inside:element.contains(active),
+       details:active===element.querySelector('[aria-label="Task details"]'),close:active===Array.from(element.querySelectorAll('button')).find(b=>b.textContent==='Close Tasks')};});
+     focusTransitions.push({stage,...observation});return observation;
+   };
    const missing=dialog.getByText('The selected task is absent from the current Tasks snapshot. Its execution outcome cannot be determined from that absence.',{exact:true});
    const unavailable=dialog.getByText('Task status unavailable. Showing the last known state.',{exact:true});
    const row=dialog.getByRole('list',{name:'Recent tasks'}).getByRole('button');
-   await row.waitFor();assert.equal(await missing.count(),0);await row.click();await details.waitFor();
+   await row.waitFor();assert.equal(await missing.count(),0);await row.focus();await p.keyboard.press('Enter');await details.waitFor();
+   await p.waitForFunction(()=>document.activeElement?.getAttribute('aria-label')==='Task details');
+   assert.equal((await recordFocus('keyboard-selection')).details,true);
    const originalDetails=await details.textContent();
    assert.ok(originalDetails.includes('COMPLETED — Operation completed'));
    assert.equal(await row.getAttribute('aria-pressed'),'true');
    await p.evaluate(()=>{window.__interaction.taskSnapshot={tasks:[],active:0,attention:0};});
    await missing.waitFor();assert.equal(await details.count(),0);assert.equal(await unavailable.count(),0);
+   if(!(await recordFocus('record-removed')).inside)focusIssues.push('Removing focused details loses focus outside Tasks');
+   await p.keyboard.press('Tab');
+   if(!(await recordFocus('tab-after-removal')).inside)focusIssues.push('Tab after removal escapes Tasks');
+   const close=dialog.getByRole('button',{name:'Close Tasks',exact:true});await close.focus();
+   assert.equal((await recordFocus('close-focused-while-missing')).close,true);
    assert.equal(await dialog.getByText('No recent technician tasks.',{exact:true}).count(),1);
    for(const label of ['COMPLETED','FAILED','CANCELLED'])assert.ok(!(await dialog.textContent()).includes(label));
    await p.evaluate(()=>{window.__interaction.taskPollFailure=true;});
    await unavailable.waitFor();assert.equal(await missing.count(),0);assert.equal(await details.count(),0);
    await p.evaluate(snapshot=>{window.__interaction.taskSnapshot=snapshot;window.__interaction.taskPollFailure=false;},snapshot);
    await details.waitFor();assert.equal(await missing.count(),0);assert.equal(await unavailable.count(),0);
+   await settle(p);
+   if(!(await recordFocus('record-reappeared')).close)focusIssues.push('Record reappearance steals focus from Close Tasks');
    assert.equal(await details.textContent(),originalDetails);assert.equal(await row.getAttribute('aria-pressed'),'true');
+   await row.focus();await p.keyboard.press('Enter');
+   await p.waitForFunction(()=>document.activeElement?.getAttribute('aria-label')==='Task details');
+   assert.equal((await recordFocus('explicit-reselection')).details,true);
    // Failed observation with a cached record keeps the existing historical-state warning and details.
    await p.evaluate(()=>{window.__interaction.taskPollFailure=true;});
    await unavailable.waitFor();assert.equal(await missing.count(),0);assert.equal(await details.textContent(),originalDetails);
    assert.equal(await details.getByRole('button',{name:'Cancel Task',exact:true}).count(),0);
    assert.deepEqual(await p.evaluate(()=>window.__interaction.taskSnapshot),snapshot);assert.equal(JSON.stringify(snapshot),before);
    await locCount(p,0); // Any task action/Diagnose request or callback is forbidden by the fixture.
+   await p.evaluate(()=>{window.__interaction.taskPollFailure=false;});await unavailable.waitFor({state:'hidden'});
+   await p.keyboard.press('Escape');await dialog.waitFor({state:'hidden'});
+   const triggerRestored=await trigger.evaluate(element=>element===document.activeElement);
+   focusTransitions.push({stage:'escape',triggerRestored});if(!triggerRestored)focusIssues.push('Escape does not restore the original Tasks trigger');
+   console.log(JSON.stringify({group:'Q',focusTransitions,focusIssues}));assert.deepEqual(focusIssues,[]);
  });
  await check('lost acknowledgment is Unavailable; correlated outcomes and Tasks re-association stay authoritative','P',async p=>{
    const {TaskManager}=await import('../../core/tasks/task_manager.ts');
