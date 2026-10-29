@@ -21,7 +21,7 @@ import { createForegroundDiscoveryRouter } from './foreground_discovery_routes.t
 import express from 'express';
 import { validateHttpHost } from './http_host_validation.ts';
 import { ProductionAuthenticationBoundary } from './production_authentication_boundary.ts';
-import { MetadataWriteConflictError } from '../shared/metadata_write_context.ts';
+import { registerLocalMetadataRoute } from './local_metadata_route.ts';
 import cors from 'cors';
 import { createServer, type IncomingMessage, type Server } from 'node:http';
 import { Server as HttpsServer } from 'node:https';
@@ -584,20 +584,7 @@ export function constructBackend(dependencies: BackendDependencies = {}) {
     catch (error) { res.status(404).json({ status:'UNAVAILABLE', error:error instanceof Error?error.message:'Device not found.' }); }
   });
 
-  app.post('/api/device/:identifier/config', (req, res) => {
-    try {
-      const device=legacyConfigurationBoundary.updateLocalMetadata(req.params.identifier,req.body||{});
-      appStateDb.logAudit({id:crypto.randomUUID(),timestamp:new Date().toISOString(),category:'SYSTEM',level:'INFO',message:'Local technician metadata updated.',deviceId:device.id});
-      broadcast({type:'DEVICE_METADATA_UPDATED',data:{device,project:projectDb.getProject()}});
-      res.json({status:'LOCAL_METADATA_UPDATED',device});
-    } catch(error) {
-      if (error instanceof MetadataWriteConflictError) {
-        res.status(409).json({status:'CONFLICT',code:error.code,error:error.message});return;
-      }
-      const message=error instanceof Error?error.message:'Local metadata could not be updated.';
-      res.status(message.includes('Device not found')?404:message.includes('physical camera')?410:400).json({status:message.includes('physical camera')?'UNSUPPORTED':'UNAVAILABLE',error:message});
-    }
-  });
+  registerLocalMetadataRoute(app, {projectDb,legacyConfigurationBoundary,logAudit:entry=>appStateDb.logAudit(entry),broadcast});
 
   // PTZ Move Command
   app.post('/api/device/:identifier/ptz', (req, res) => {
