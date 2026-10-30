@@ -45,6 +45,8 @@ module.exports=function installAppFixture(){
      }
    }else if(method==='POST'&&u.pathname==='/api/monitoring/preferences'){
      check(JSON.stringify(body)===JSON.stringify({enabled:false,cadenceMs:30000}),'monitoring-body');response=clone(monitoring);
+   }else if(method==='POST'&&u.pathname==='/api/project/reverify'){
+     check(state.expectedReverify===true&&JSON.stringify(body)==='{}','unissued-reverify');state.expectedReverify=false;held=true;
    }else if(method==='POST'&&/^\/api\/device\/[^/]+\/config$/.test(u.pathname)){
      const expected=state.expectedWrites.shift();check(!!expected,'unissued-write');
      check(u.pathname==='/api/device/'+encodeURIComponent(expected.id)+'/config','wrong-write-id');

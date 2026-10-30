@@ -3,7 +3,8 @@ const fs=require('node:fs'),path=require('node:path'),os=require('node:os'),http
 const {chromium}=require('playwright-core');
 const ts=require('typescript');
 const nameOwnerOnly=process.argv[2]==='--open-name-owner-only';
-assert.deepEqual(process.argv.slice(2),nameOwnerOnly?['--open-name-owner-only']:[],'Unsupported fixture selector');
+const reverifyRefreshOnly=process.argv[2]==='--reverify-refresh-only';
+assert.deepEqual(process.argv.slice(2),nameOwnerOnly?['--open-name-owner-only']:reverifyRefreshOnly?['--reverify-refresh-only']:[],'Unsupported fixture selector');
 const repo=path.resolve(__dirname,'../../..'),entry='/src/test/browser/app_location_transport.html';
 
 
@@ -122,6 +123,8 @@ async function pageFixture(){
  await pause(p);return f;
 }
 async function check(family,name,run,expectedConsole=false){
+ if(nameOwnerOnly&&family===9)return;
+ if(reverifyRefreshOnly&&![7,9].includes(family))return;
  let f,status='passed',error,observations;
  try{
    f=await pageFixture();await run(f.page);observations=await evidence(f.page);
@@ -149,6 +152,49 @@ async function check(family,name,run,expectedConsole=false){
  // Independent application assertions may fail; remaining cases use fresh isolated contexts.
 }
 async function suite(){
+ for(const outcome of ['applied','failed','stale'])await check(9,'confirmed Reverify with '+outcome+' inventory refresh',async p=>{
+   await p.evaluate(()=>{const s=window.__appTransport;s.session.project.devices[0].sessionVerification='NOT_VERIFIED';
+     s.session.project.devices[0].savedStatusSnapshot='ONLINE';s.emit('PROJECT_SESSION_CHANGED',{session:s.snapshot()});});
+   await pause(p);const baseline=await p.evaluate(()=>window.__appTransport.snapshot());
+   const inspector=p.getByRole('dialog',{name:'Device Inspector',exact:true});
+   const currentStatus=()=>inspector.getByText('Current status',{exact:true}).locator('..').locator('p').textContent();
+   await inspect(p);assert.equal(await currentStatus(),'Unknown');assert.equal(await confirmed(p),'Lobby');await close(p);
+   await p.evaluate(()=>{const s=window.__appTransport;s.holdSessions=true;s.expectedReverify=true;});
+   await button(p,'Project').click();await button(p,'Reverify').click();
+   await p.waitForFunction(()=>window.__appTransport.requests.some(r=>r.path==='/api/project/reverify'&&r.state==='pending'));
+   const refreshed=structuredClone(baseline),device=refreshed.project.devices[0];
+   device.status='ONLINE';device.sessionVerification='VERIFIED';
+   device.reachability={lastSuccessfulResponseAt:'2026-10-29T12:00:00.000Z'};
+   const result={totalKnown:2,recognizedCount:1,changedIpCount:0,newDevicesCount:0,notVerifiedCount:1,collisionCount:0,
+     verifiedDevices:[device],notVerifiedDevices:[refreshed.project.devices[1]],newDevices:[],possibleReplacements:[]};
+   await p.evaluate(({result,refreshed})=>{const s=window.__appTransport;s.session=refreshed;
+     s.requests.find(r=>r.path==='/api/project/reverify'&&r.state==='pending').resolve({result,project:refreshed.project});},{result,refreshed});
+   const modal=p.getByRole('dialog',{name:'Project Reverify',exact:true});
+   await modal.getByRole('heading',{name:'Verified',exact:true}).waitFor();assert.equal(await modal.locator('strong').first().textContent(),'1');
+   const [read]=await heldSessions(p);
+   if(outcome==='applied')await release(p,read,refreshed);
+   else if(outcome==='failed')await p.evaluate(id=>window.__appTransport.requests.find(r=>r.id===id).resolve({error:'Inventory unavailable'},503),read);
+   else{
+     await p.evaluate(()=>window.__appTransport.reconcile());const pending=await heldSessions(p,2);
+     await release(p,pending.find(id=>id!==read),baseline);await release(p,read,refreshed);
+   }
+   await button(p,'Done').waitFor();
+   const warning=modal.getByText('Reverify completed, but the displayed device inventory could not be confirmed as refreshed.',{exact:true});
+   assert.equal(await warning.count(),outcome==='applied'?0:1);assert.equal(await modal.locator('strong').first().textContent(),'1');
+   assert.equal(await modal.getByRole('button',{name:'Retry',exact:true}).count(),0);
+   assert.equal(await modal.getByText('Reverify outcome unavailable. The operation may still be running. Check Tasks before retrying.',{exact:true}).count(),0);
+   await button(p,'Done').click();await modal.waitFor({state:'hidden'});await inspect(p);
+   assert.equal(await currentStatus(),outcome==='applied'?'Online':'Unknown');assert.equal(await confirmed(p),'Lobby');
+   assert.equal(await inspector.locator('h3 + p').textContent(),'Camera A');
+   assert.equal(await inspector.getByText('Current IP: 192.0.2.50 · Subnet: Unknown',{exact:true}).count(),1);
+   assert.equal(await inspector.getByText('Last successful contact',{exact:true}).locator('..').locator('p').textContent(),outcome==='applied'?'2026-10-29T12:00:00.000Z':'Unknown');
+   assert.equal(await inspector.getByText('No diagnostic checks are available for the current IP address.',{exact:true}).count(),1);
+   const requests=await p.evaluate(()=>window.__appTransport.requests.map(({path,method})=>({path,method})));
+   assert.equal(requests.filter(r=>r.path==='/api/project/reverify').length,1);
+   assert.ok(requests.filter(r=>r.method==='POST').every(r=>['/api/monitoring/preferences','/api/project/reverify'].includes(r.path)));
+   assert.deepEqual(baseline.project.devices[0].technician,device.technician); // Fixture state, not a DOM Notes assertion.
+   await close(p);
+ });
  await check(1,'open Name draft cannot rebind to a replacement project with the same device ID',async p=>{
    await p.getByRole('button',{name:'Edit name for Camera A',exact:true}).click();
    await p.getByLabel('Camera Name',{exact:true}).fill('Old draft');
@@ -286,7 +332,7 @@ async function suite(){
 (async()=>{let fatal;
  try{await setup();await suite();}catch(e){fatal=String(e.stack);console.error(fatal);}
  finally{try{await cleanup();}catch(e){fatal=String(e.stack);console.error('CLEANUP UNCERTAIN; preserve '+root+': '+fatal);}}
- const families=Object.fromEntries(Array.from({length:8},(_,i)=>{const rows=results.filter(r=>r.family===i+1);return[i+1,{passed:rows.filter(r=>r.status==='passed').length,failed:rows.filter(r=>r.status==='failed').length,status:!rows.length?(nameOwnerOnly?'not-executed-filter':'blocked'):rows.some(r=>r.status==='failed')?'failed':'passed'}];}));
+ const families=Object.fromEntries(Array.from({length:9},(_,i)=>{const rows=results.filter(r=>r.family===i+1);return[i+1,{passed:rows.filter(r=>r.status==='passed').length,failed:rows.filter(r=>r.status==='failed').length,status:!rows.length?(nameOwnerOnly||reverifyRefreshOnly?'not-executed-filter':'blocked'):rows.some(r=>r.status==='failed')?'failed':'passed'}];}));
  console.log(JSON.stringify({families,results,summaries,boundary,contextsCreated:contexts.length,cleanupConfirmed:closed,listenerClosed:server?!server.listening:null,browserDisconnected:browser?!browser.isConnected():null,fixtureRoot:root,remainingFixtureRoot:root?fs.existsSync(root):false,removedOwnedFiles:removedFiles,fatal},null,2));
- if(fatal||results.length!==(nameOwnerOnly?1:22)||results.some(r=>r.status==='failed'))process.exitCode=1;
+ if(fatal||results.length!==(nameOwnerOnly?1:reverifyRefreshOnly?7:25)||results.some(r=>r.status==='failed'))process.exitCode=1;
 })();

@@ -3,15 +3,20 @@ import React, { useEffect, useRef, useState } from 'react';
 import { AlertTriangle, CheckCircle, RefreshCw, X } from 'lucide-react';
 import { Device, ReverificationResult } from '../../types/index.ts';
 
-interface Props { isOpen: boolean; onClose: () => void; onChanged: () => Promise<void>; }
+interface Props { isOpen: boolean; onClose: () => void; onChanged: () => Promise<'applied'|'failed'|'stale'>; }
 const tail = (value?: string | null) => value ? value.replace(/[^a-f0-9]/gi, '').slice(-6).toUpperCase() : 'Unknown';
 const label = (device: Device) => device.technician?.name || device.anchor.model || device.anchor.vendor || device.network.ipAddress;
 
 export const ProjectReverifyModal: React.FC<Props> = ({ isOpen, onClose, onChanged }) => {
   const [busy, setBusy] = useState(false), [result, setResult] = useState<ReverificationResult | null>(null), [error, setError] = useState('');
+  const [inventoryUnconfirmed, setInventoryUnconfirmed] = useState(false);
   const started = useRef(false);
+  const refreshInventory = async () => {
+    try { setInventoryUnconfirmed(await onChanged() !== 'applied'); }
+    catch { setInventoryUnconfirmed(true); }
+  };
   const start = async () => {
-    setBusy(true); setError(''); setResult(null);
+    setBusy(true); setError(''); setResult(null); setInventoryUnconfirmed(false);
     let responseUnderstood = false;
     try {
       const response = await fetch('http://localhost:3001/api/project/reverify', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
@@ -19,22 +24,22 @@ export const ProjectReverifyModal: React.FC<Props> = ({ isOpen, onClose, onChang
       if (!body || typeof body !== 'object' || Array.isArray(body)) throw new Error('Unusable Reverify response');
       if (!response.ok) { responseUnderstood = true; throw new Error(typeof body.error === 'string' && body.error ? body.error : 'Project reverification could not complete.'); }
       if (!body.result || typeof body.result !== 'object' || !Array.isArray(body.result.possibleReplacements)) throw new Error('Unusable Reverify result');
-      responseUnderstood = true; setResult(body.result); await onChanged();
+      responseUnderstood = true; setResult(body.result); await refreshInventory();
     }
     catch (reason) { setError(responseUnderstood ? (reason instanceof Error ? reason.message : 'Project reverification could not complete.') : 'Reverify outcome unavailable. The operation may still be running. Check Tasks before retrying.'); }
     finally { setBusy(false); }
   };
-  useEffect(() => { if (isOpen && !started.current) { started.current = true; void start(); } if (!isOpen) { started.current = false; setResult(null); setError(''); } }, [isOpen]);
+  useEffect(() => { if (isOpen && !started.current) { started.current = true; void start(); } if (!isOpen) { started.current = false; setResult(null); setError(''); setInventoryUnconfirmed(false); } }, [isOpen]);
   if (!isOpen) return null;
   const cancel = async () => { await fetch('http://localhost:3001/api/project/reverify/cancel', { method: 'POST' }); };
   const decide = async (candidateId: string, decision: 'CONFIRMED'|'REJECTED'|'DEFERRED') => {
     setError(''); const response = await fetch(`http://localhost:3001/api/project/reverify/replacements/${encodeURIComponent(candidateId)}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ decision }) }); const body = await response.json(); if (!response.ok) { setError(body.error || 'Replacement review could not be completed.'); return; }
-    setResult(current => current ? { ...current, possibleReplacements: current.possibleReplacements.map(candidate => candidate.candidateId === candidateId ? { ...candidate, decision } : candidate) } : current); await onChanged();
+    setResult(current => current ? { ...current, possibleReplacements: current.possibleReplacements.map(candidate => candidate.candidateId === candidateId ? { ...candidate, decision } : candidate) } : current); await refreshInventory();
   };
   return <ModalViewport className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"><section role="dialog" aria-label="Project Reverify" className="max-h-[90vh] w-full max-w-3xl overflow-auto rounded-xl border border-slate-200 bg-white shadow-xl dark:border-slate-700 dark:bg-slate-900">
     <header className="flex items-start justify-between border-b border-slate-200 p-4 dark:border-slate-700"><div><h2 className="text-sm font-bold">Project Reverify</h2><p className="text-xs text-slate-500">Live discovery is reconciled against saved physical identities. New devices are not added automatically.</p></div><button aria-label="Close" disabled={busy} onClick={onClose}><X className="h-5 w-5"/></button></header>
     <div className="modal-body space-y-4 p-4 text-xs">{busy && <div className="flex items-center gap-2 rounded bg-blue-50 p-3 text-blue-700 dark:bg-blue-950/30 dark:text-blue-300"><RefreshCw className="h-4 w-4 animate-spin"/>Discovering and reconciling Project identities…</div>}{error && <div className="rounded border border-amber-300 bg-amber-50 p-3 text-amber-800 dark:bg-amber-950/30 dark:text-amber-300"><AlertTriangle className="mr-2 inline h-4 w-4"/>{error}</div>}
-    {result && <><div className="grid grid-cols-2 gap-2 sm:grid-cols-5">{[['Verified',result.recognizedCount],['Not Verified',result.notVerifiedCount||0],['New',result.newDevicesCount],['Replacements',result.possibleReplacements.length],['Collisions',result.collisionCount||0]].map(([name,count])=><div key={String(name)} className="rounded border border-slate-200 p-3 text-center dark:border-slate-700"><strong className="block text-lg">{count}</strong>{name}</div>)}</div>
+    {result && <>{inventoryUnconfirmed && <p role="status" className="rounded border border-amber-300 bg-amber-50 p-3 text-amber-800 dark:bg-amber-950/30 dark:text-amber-300">Reverify completed, but the displayed device inventory could not be confirmed as refreshed.</p>}<div className="grid grid-cols-2 gap-2 sm:grid-cols-5">{[['Verified',result.recognizedCount],['Not Verified',result.notVerifiedCount||0],['New',result.newDevicesCount],['Replacements',result.possibleReplacements.length],['Collisions',result.collisionCount||0]].map(([name,count])=><div key={String(name)} className="rounded border border-slate-200 p-3 text-center dark:border-slate-700"><strong className="block text-lg">{count}</strong>{name}</div>)}</div>
       {!!result.verifiedDevices?.length && <div><h3 className="mb-1 font-bold text-emerald-700">Verified</h3>{result.verifiedDevices.map(device=><div key={device.id} className="border-t border-slate-100 py-1 dark:border-slate-800">{label(device)} · {device.network.ipAddress}</div>)}</div>}
       {!!result.notVerifiedDevices?.length && <div><h3 className="mb-1 font-bold text-amber-700">Not Verified</h3>{result.notVerifiedDevices.map(device=><div key={device.id} className="border-t border-slate-100 py-1 dark:border-slate-800">{label(device)} · saved {device.network.ipAddress}</div>)}</div>}
       {!!result.newDevices?.length && <div><h3 className="mb-1 font-bold text-blue-700">New Devices · Not in Project</h3>{result.newDevices.map(device=><div key={device.id} className="border-t border-slate-100 py-1 dark:border-slate-800">{label(device)} · {device.network.ipAddress} · MAC …{tail(device.anchor.macAddress)}</div>)}</div>}

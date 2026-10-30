@@ -227,6 +227,14 @@ export default function App() {
     return trackSession===true?reconciliation:undefined;
   }
 
+  const refreshReverifiedInventory = async ():Promise<'applied'|'failed'|'stale'> => {
+    const owner=locationProjectOwnerRef.current;
+    const refresh=await fetchData(true);
+    if(refresh.state!=='applied')return refresh.state;
+    // Accepted by existing client ownership/revision guards, not an independent freshness proof.
+    return refresh.owner===owner&&owner===locationProjectOwnerRef.current&&refresh.revision===sessionReads.current.revision?'applied':'stale';
+  };
+
   useEffect(()=>{
     const controller=new AbortController(),pairAtRequest=currentPairRef.current;
     void requestJson('http://localhost:3001/api/pair/adapters',{signal:controller.signal},fetch,10000).then(({response,body})=>{
@@ -881,7 +889,7 @@ export default function App() {
         </>
       )}
       <AdvancedScanModal open={advancedScanOpen} onClose={()=>setAdvancedScanOpen(false)} onStarted={(_quick, foreground)=>{scanEpoch.current++; acceptForeground(foreground)}}/>
-      <ProjectReverifyModal isOpen={projectReverifyOpen} onClose={()=>setProjectReverifyOpen(false)} onChanged={fetchData}/>
+      <ProjectReverifyModal isOpen={projectReverifyOpen} onClose={()=>setProjectReverifyOpen(false)} onChanged={refreshReverifiedInventory}/>
       <ProjectHistoryModal open={projectHistoryOpen} onClose={()=>setProjectHistoryOpen(false)}/>
 
       {/* Section 12: Duplicate Assistant (Separate Window / Drawer) */}
