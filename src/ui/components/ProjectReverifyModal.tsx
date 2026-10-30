@@ -12,8 +12,16 @@ export const ProjectReverifyModal: React.FC<Props> = ({ isOpen, onClose, onChang
   const started = useRef(false);
   const start = async () => {
     setBusy(true); setError(''); setResult(null);
-    try { const response = await fetch('http://localhost:3001/api/project/reverify', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }); const body = await response.json(); if (!response.ok) throw new Error(body.error || 'Project reverification could not complete.'); setResult(body.result); await onChanged(); }
-    catch (reason) { setError(reason instanceof Error ? reason.message : 'Project reverification could not complete.'); }
+    let responseUnderstood = false;
+    try {
+      const response = await fetch('http://localhost:3001/api/project/reverify', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+      const body = await response.json();
+      if (!body || typeof body !== 'object' || Array.isArray(body)) throw new Error('Unusable Reverify response');
+      if (!response.ok) { responseUnderstood = true; throw new Error(typeof body.error === 'string' && body.error ? body.error : 'Project reverification could not complete.'); }
+      if (!body.result || typeof body.result !== 'object' || !Array.isArray(body.result.possibleReplacements)) throw new Error('Unusable Reverify result');
+      responseUnderstood = true; setResult(body.result); await onChanged();
+    }
+    catch (reason) { setError(responseUnderstood ? (reason instanceof Error ? reason.message : 'Project reverification could not complete.') : 'Reverify outcome unavailable. The operation may still be running. Check Tasks before retrying.'); }
     finally { setBusy(false); }
   };
   useEffect(() => { if (isOpen && !started.current) { started.current = true; void start(); } if (!isOpen) { started.current = false; setResult(null); setError(''); } }, [isOpen]);

@@ -61,7 +61,7 @@ async function pageFixture(){
    window.fetch=async(url,options={})=>{
      const u=new URL(typeof url==='string'?url:url.url,location.href),method=options.method||'GET';
      if(state.reverifyEnabled&&method==='POST'&&u.href==='http://localhost:3001/api/project/reverify'&&options.body==='{}')
-       return new Promise(resolve=>state.reverifyRequests.push({resolve}));
+       return new Promise((resolve,reject)=>state.reverifyRequests.push({resolve,reject}));
      if(state.reverifyEnabled&&method==='POST'&&u.href==='http://localhost:3001/api/project/reverify/cancel'&&options.body===undefined)
        return new Promise(resolve=>state.reverifyCancels.push({resolve}));
      // Tasks navigation observes a supplied snapshot entirely in memory. No API listener.
@@ -128,7 +128,7 @@ async function check(name,group,run){
  return !error;
 }
 async function suite(){
- await check('reopened saved details stay unverified after rejected and cancelled Reverify','R',async p=>{
+ await check('reopened saved details stay unverified after rejected, cancelled and uncertain Reverify','R',async p=>{
    const {SiteProjectDatabase}=await import('../../core/storage/project_db.ts');
    const {technicianErrorResponse}=await import('../../shared/error_presentation.ts');
    const stamp='2000-01-01T12:00:00.000Z',ip='192.0.2.50';
@@ -168,10 +168,12 @@ async function suite(){
      await modal.waitFor();await p.waitForFunction(n=>window.__interaction.reverifyRequests.length===n,n);};
    const finish=async(index,status,body)=>{await p.evaluate(({index,status,body})=>window.__interaction.reverifyRequests[index].resolve(
      new Response(JSON.stringify(body),{status,headers:{'Content-Type':'application/json'}})),{index,status,body});};
+   const uncertain='Reverify outcome unavailable. The operation may still be running. Check Tasks before retrying.';
    await inspect();await open(1);
    // Actual route's preflight rejection contract: no discovery or backend is invoked here.
    const rejected='Project reverification cannot start while a foreground scan is active.';
    await finish(0,409,{error:rejected});await modal.getByText(rejected,{exact:true}).waitFor();await noResults();
+   assert.equal(await modal.getByText(uncertain,{exact:true}).count(),0);
    await modal.getByRole('button',{name:'Done',exact:true}).click();await modal.waitFor({state:'hidden'});await inspect();
    await open(2);await modal.getByRole('button',{name:'Cancel Reverify',exact:true}).click();
    await p.waitForFunction(()=>window.__interaction.reverifyCancels.length===1);
@@ -182,10 +184,28 @@ async function suite(){
    const cancelled=technicianErrorResponse(Error('Project reverification was cancelled.'),{operation:'PROJECT_REVERIFY',fallbackCode:'OPERATION_FAILED'});
    assert.equal(cancelled.code,'CANCELLED');await finish(1,400,cancelled);
    await modal.getByText(cancelled.error,{exact:true}).waitFor();assert.ok(/cancelled/i.test(cancelled.error));await noResults();
+   assert.equal(await modal.getByText(uncertain,{exact:true}).count(),0);
    assert.equal(await modal.getByText(rejected,{exact:true}).count(),0);
    await modal.getByRole('button',{name:'Done',exact:true}).click();await modal.waitFor({state:'hidden'});await inspect();
+   for(const [offset,mode] of ['transport','invalid-json','unreadable-rejection','missing-result'].entries()){
+     const index=offset+2;await open(index+1);
+     assert.equal(await modal.getByText('Discovering and reconciling Project identities…',{exact:true}).count(),1);
+     assert.equal(await modal.getByRole('button',{name:'Retry',exact:true}).count(),0);
+     await p.evaluate(({index,mode})=>{
+       const pending=window.__interaction.reverifyRequests[index];
+       if(mode==='transport')pending.reject(new TypeError('Injected fetch rejection'));
+       else pending.resolve(new Response(mode==='missing-result'?'{}':'incomplete JSON',{status:mode==='unreadable-rejection'?400:200}));
+     },{index,mode});
+     await modal.getByText(uncertain,{exact:true}).waitFor();await noResults();await settle(p);
+     assert.equal(await modal.getByRole('button',{name:'Retry',exact:true}).count(),1);
+     assert.equal(await modal.getByRole('button',{name:'Cancel Reverify',exact:true}).count(),0);
+     for(const label of ['Completed','Failed','Cancelled'])assert.equal(await modal.getByText(label,{exact:true}).count(),0);
+     assert.equal(await p.evaluate(()=>window.__interaction.reverifyRequests.length),index+1);
+     assert.equal(await p.evaluate(()=>window.__interaction.reverifyCancels.length),1);
+     await modal.getByRole('button',{name:'Done',exact:true}).click();await modal.waitFor({state:'hidden'});await inspect();
+   }
    assert.equal(JSON.stringify(db.getSession()),before);assert.equal(device.technician.notes,'  Retained notes\nSecond line  ');
-   assert.equal(await p.evaluate(()=>window.__interaction.reverifyRequests.length),2);assert.equal(await p.evaluate(()=>window.__interaction.reverifyCancels.length),1);
+   assert.equal(await p.evaluate(()=>window.__interaction.reverifyRequests.length),6);assert.equal(await p.evaluate(()=>window.__interaction.reverifyCancels.length),1);
    await locCount(p,0);assert.equal(await p.evaluate(()=>window.__interaction.previews.length+window.__interaction.exports.length),0);
  });
  await check('selected task notices and keyboard focus survive disappearance and reappearance','Q',async p=>{
