@@ -4,7 +4,8 @@ const {chromium}=require('playwright-core');
 const ts=require('typescript');
 const nameOwnerOnly=process.argv[2]==='--open-name-owner-only';
 const reverifyRefreshOnly=process.argv[2]==='--reverify-refresh-only';
-assert.deepEqual(process.argv.slice(2),nameOwnerOnly?['--open-name-owner-only']:reverifyRefreshOnly?['--reverify-refresh-only']:[],'Unsupported fixture selector');
+const reverifyOwnerOnly=process.argv[2]==='--reverify-owner-only';
+assert.deepEqual(process.argv.slice(2),nameOwnerOnly?['--open-name-owner-only']:reverifyRefreshOnly?['--reverify-refresh-only']:reverifyOwnerOnly?['--reverify-owner-only']:[],'Unsupported fixture selector');
 const repo=path.resolve(__dirname,'../../..'),entry='/src/test/browser/app_location_transport.html';
 
 
@@ -123,8 +124,9 @@ async function pageFixture(){
  await pause(p);return f;
 }
 async function check(family,name,run,expectedConsole=false){
- if(nameOwnerOnly&&family===9)return;
+ if(nameOwnerOnly&&family>=9)return;
  if(reverifyRefreshOnly&&![7,9].includes(family))return;
+ if(reverifyOwnerOnly&&![9,10].includes(family))return;
  let f,status='passed',error,observations;
  try{
    f=await pageFixture();await run(f.page);observations=await evidence(f.page);
@@ -152,6 +154,58 @@ async function check(family,name,run,expectedConsole=false){
  // Independent application assertions may fail; remaining cases use fresh isolated contexts.
 }
 async function suite(){
+ const startReverify=async p=>{
+   await p.evaluate(()=>{const s=window.__appTransport;s.expectedReverify=true;s.holdSessions=true;});
+   await button(p,'Project').click();await button(p,'Reverify').click();
+   await p.waitForFunction(()=>window.__appTransport.requests.some(r=>r.path==='/api/project/reverify'&&r.state==='pending'));
+   return p.evaluate(()=>window.__appTransport.requests.filter(r=>r.path==='/api/project/reverify'&&r.state==='pending').at(-1).id);
+ };
+ const switchReverifyOwner=async(p,transition)=>{
+   if(transition==='B')await eventProject(p,true);
+   else{await p.evaluate(()=>{const s=window.__appTransport;s.session.metadataWriteContext.generation='33333333-3333-4333-8333-333333333333';
+     s.session.project.devices[0].technician.location='Reopened location';s.emit('PROJECT_SESSION_CHANGED',{session:s.snapshot()});});await pause(p);}
+   await p.getByRole('dialog',{name:'Project Reverify',exact:true}).waitFor({state:'hidden'});
+ };
+ const oldResult={totalKnown:2,recognizedCount:2,changedIpCount:0,newDevicesCount:0,possibleReplacements:[]};
+ for(const transition of ['B','same-project-reopen'])for(const outcome of ['success','rejection','transport','cancelled'])
+ await check(10,'late A '+outcome+' after '+transition+' cannot affect current owner',async p=>{
+   const request=await startReverify(p);await switchReverifyOwner(p,transition);
+   const current=await p.evaluate(()=>window.__appTransport.snapshot());
+   const reads=await p.evaluate(()=>window.__appTransport.requests.filter(r=>r.path==='/api/project/session').length);
+   await p.evaluate(({request,outcome,oldResult})=>{const r=window.__appTransport.requests.find(r=>r.id===request);
+     if(outcome==='transport')r.reject('Old A transport rejection');
+     else r.resolve(outcome==='success'?{result:oldResult}:{error:outcome==='cancelled'?'Project reverification was cancelled.':'Old A request rejected',code:outcome==='cancelled'?'CANCELLED':'OPERATION_FAILED'},outcome==='success'?200:400);
+   },{request,outcome,oldResult});await pause(p);
+   assert.equal(await p.getByRole('dialog',{name:'Project Reverify',exact:true}).count(),0);
+   assert.equal(await button(p,'Reverify').count(),0); // No menu or replacement-owner run was opened automatically.
+   assert.equal(await p.getByText('Old A request rejected',{exact:true}).count(),0);
+   assert.equal(await p.getByText('Project reverification was cancelled.',{exact:true}).count(),0);
+   assert.equal(await p.evaluate(()=>window.__appTransport.requests.filter(r=>r.path==='/api/project/session').length),reads);
+   assert.deepEqual(await p.evaluate(()=>window.__appTransport.snapshot()),current);
+   const posts=await p.evaluate(()=>window.__appTransport.requests.filter(r=>r.method==='POST').map(r=>r.path));
+   assert.equal(posts.filter(path=>path==='/api/project/reverify').length,1);
+   assert.ok(posts.every(path=>['/api/monitoring/preferences','/api/project/reverify'].includes(path)));
+   await inspect(p);assert.equal(await confirmed(p),transition==='B'?'New project location':'Reopened location');
+   const inspector=p.getByRole('dialog',{name:'Device Inspector',exact:true});
+   assert.equal(await inspector.getByText('Current status',{exact:true}).locator('..').locator('p').textContent(),'Unknown');
+   assert.equal(await inspector.locator('h3 + p').textContent(),'Camera A');await close(p);
+ });
+ await check(10,'obsolete A refresh and finally cannot overwrite an explicitly started B operation',async p=>{
+   const a=await startReverify(p),oldSession=await p.evaluate(()=>window.__appTransport.snapshot());
+   await p.evaluate(({a,oldResult})=>window.__appTransport.requests.find(r=>r.id===a).resolve({result:oldResult}),{a,oldResult});
+   const [oldRead]=await heldSessions(p);await switchReverifyOwner(p,'B');
+   const current=await p.evaluate(()=>window.__appTransport.snapshot()),b=await startReverify(p);
+   const modal=p.getByRole('dialog',{name:'Project Reverify',exact:true});await modal.waitFor();
+   await release(p,oldRead,oldSession);
+   assert.equal(await modal.getByText('Discovering and reconciling Project identities…',{exact:true}).count(),1);
+   assert.equal(await modal.locator('strong').count(),0);assert.equal(await button(p,'Done').count(),0);
+   assert.equal(await modal.getByRole('status').count(),0);assert.deepEqual(await p.evaluate(()=>window.__appTransport.snapshot()),current);
+   await p.evaluate(b=>window.__appTransport.requests.find(r=>r.id===b).resolve({result:{totalKnown:1,recognizedCount:0,changedIpCount:0,newDevicesCount:0,possibleReplacements:[]}}),b);
+   const [newRead]=await heldSessions(p);await release(p,newRead,current);await button(p,'Done').waitFor();
+   assert.equal(await modal.locator('strong').first().textContent(),'0');await button(p,'Done').click();
+   await inspect(p);assert.equal(await confirmed(p),'New project location');await close(p);
+   assert.equal(await p.evaluate(()=>window.__appTransport.requests.filter(r=>r.path==='/api/project/reverify').length),2);
+ });
  for(const outcome of ['applied','failed','stale'])await check(9,'confirmed Reverify with '+outcome+' inventory refresh',async p=>{
    await p.evaluate(()=>{const s=window.__appTransport;s.session.project.devices[0].sessionVerification='NOT_VERIFIED';
      s.session.project.devices[0].savedStatusSnapshot='ONLINE';s.emit('PROJECT_SESSION_CHANGED',{session:s.snapshot()});});
@@ -332,7 +386,7 @@ async function suite(){
 (async()=>{let fatal;
  try{await setup();await suite();}catch(e){fatal=String(e.stack);console.error(fatal);}
  finally{try{await cleanup();}catch(e){fatal=String(e.stack);console.error('CLEANUP UNCERTAIN; preserve '+root+': '+fatal);}}
- const families=Object.fromEntries(Array.from({length:9},(_,i)=>{const rows=results.filter(r=>r.family===i+1);return[i+1,{passed:rows.filter(r=>r.status==='passed').length,failed:rows.filter(r=>r.status==='failed').length,status:!rows.length?(nameOwnerOnly||reverifyRefreshOnly?'not-executed-filter':'blocked'):rows.some(r=>r.status==='failed')?'failed':'passed'}];}));
+ const families=Object.fromEntries(Array.from({length:10},(_,i)=>{const rows=results.filter(r=>r.family===i+1);return[i+1,{passed:rows.filter(r=>r.status==='passed').length,failed:rows.filter(r=>r.status==='failed').length,status:!rows.length?(nameOwnerOnly||reverifyRefreshOnly||reverifyOwnerOnly?'not-executed-filter':'blocked'):rows.some(r=>r.status==='failed')?'failed':'passed'}];}));
  console.log(JSON.stringify({families,results,summaries,boundary,contextsCreated:contexts.length,cleanupConfirmed:closed,listenerClosed:server?!server.listening:null,browserDisconnected:browser?!browser.isConnected():null,fixtureRoot:root,remainingFixtureRoot:root?fs.existsSync(root):false,removedOwnedFiles:removedFiles,fatal},null,2));
- if(fatal||results.length!==(nameOwnerOnly?1:reverifyRefreshOnly?7:25)||results.some(r=>r.status==='failed'))process.exitCode=1;
+ if(fatal||results.length!==(nameOwnerOnly?1:reverifyRefreshOnly?7:reverifyOwnerOnly?12:34)||results.some(r=>r.status==='failed'))process.exitCode=1;
 })();

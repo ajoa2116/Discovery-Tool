@@ -889,7 +889,7 @@ export default function App() {
         </>
       )}
       <AdvancedScanModal open={advancedScanOpen} onClose={()=>setAdvancedScanOpen(false)} onStarted={(_quick, foreground)=>{scanEpoch.current++; acceptForeground(foreground)}}/>
-      <ProjectReverifyModal isOpen={projectReverifyOpen} onClose={()=>setProjectReverifyOpen(false)} onChanged={refreshReverifiedInventory}/>
+      <ProjectReverifyModal isOpen={projectReverifyOpen} projectOwner={locationProjectOwner} isOwnerCurrent={owner=>sessionReads.current.active&&owner===locationProjectOwnerRef.current} onClose={()=>setProjectReverifyOpen(false)} onChanged={refreshReverifiedInventory}/>
       <ProjectHistoryModal open={projectHistoryOpen} onClose={()=>setProjectHistoryOpen(false)}/>
 
       {/* Section 12: Duplicate Assistant (Separate Window / Drawer) */}

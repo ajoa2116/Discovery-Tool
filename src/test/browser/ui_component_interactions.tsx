@@ -56,7 +56,7 @@ function Harness(){
    <output data-testid="selection">{[...selected].sort().join(',')}</output>
   </nav>
   <main style={{paddingTop:70}}>
-   <ProjectReverifyModal isOpen={reverifyOpen} onClose={()=>setReverifyOpen(false)} onChanged={async()=>forbidden()}/ >
+   <ProjectReverifyModal isOpen={reverifyOpen} projectOwner={project} isOwnerCurrent={owner=>owner===project} onClose={()=>setReverifyOpen(false)} onChanged={async()=>forbidden()}/ >
    {diagnosticTasks&&<Tasks onResult={forbidden} onSnapshot={observeTasks} onDiagnostic={(id,taskId)=>{
      if(id!==diagnosticDevice?.id)return forbidden();
      setDiagnosticOperation(current=>current?{...current,request:{taskId}}:current);

@@ -3,38 +3,57 @@ import React, { useEffect, useRef, useState } from 'react';
 import { AlertTriangle, CheckCircle, RefreshCw, X } from 'lucide-react';
 import { Device, ReverificationResult } from '../../types/index.ts';
 
-interface Props { isOpen: boolean; onClose: () => void; onChanged: () => Promise<'applied'|'failed'|'stale'>; }
+interface Props { isOpen: boolean; projectOwner: object; isOwnerCurrent: (owner:object) => boolean; onClose: () => void; onChanged: () => Promise<'applied'|'failed'|'stale'>; }
 const tail = (value?: string | null) => value ? value.replace(/[^a-f0-9]/gi, '').slice(-6).toUpperCase() : 'Unknown';
 const label = (device: Device) => device.technician?.name || device.anchor.model || device.anchor.vendor || device.network.ipAddress;
 
-export const ProjectReverifyModal: React.FC<Props> = ({ isOpen, onClose, onChanged }) => {
+export const ProjectReverifyModal: React.FC<Props> = ({ isOpen, projectOwner, isOwnerCurrent, onClose, onChanged }) => {
   const [busy, setBusy] = useState(false), [result, setResult] = useState<ReverificationResult | null>(null), [error, setError] = useState('');
   const [inventoryUnconfirmed, setInventoryUnconfirmed] = useState(false);
   const started = useRef(false);
-  const refreshInventory = async () => {
-    try { setInventoryUnconfirmed(await onChanged() !== 'applied'); }
-    catch { setInventoryUnconfirmed(true); }
+  const activeRun = useRef<{owner:object}|null>(null), previousOwner = useRef(projectOwner), mounted = useRef(false);
+  const context = useRef({isOpen,projectOwner,isOwnerCurrent});context.current={isOpen,projectOwner,isOwnerCurrent};
+  const current = (run:{owner:object}) => mounted.current && activeRun.current===run && context.current.isOpen
+    && context.current.projectOwner===run.owner && context.current.isOwnerCurrent(run.owner);
+  useEffect(()=>{mounted.current=true;return()=>{mounted.current=false;};},[]);
+  useEffect(()=>{
+    if(previousOwner.current===projectOwner)return;
+    previousOwner.current=projectOwner;activeRun.current=null;
+    setBusy(false);setResult(null);setError('');setInventoryUnconfirmed(false);
+    // Invalidate the UI only. Do not cancel backend work or start a run for the new owner.
+    if(isOpen){started.current=true;onClose();}
+  },[projectOwner]);
+  const refreshInventory = async (run:{owner:object}) => {
+    if(!current(run))return;
+    try { const outcome=await onChanged();if(current(run))setInventoryUnconfirmed(outcome !== 'applied'); }
+    catch { if(current(run))setInventoryUnconfirmed(true); }
   };
   const start = async () => {
+    if(!isOwnerCurrent(projectOwner))return;
+    const run={owner:projectOwner};activeRun.current=run;
     setBusy(true); setError(''); setResult(null); setInventoryUnconfirmed(false);
     let responseUnderstood = false;
     try {
       const response = await fetch('http://localhost:3001/api/project/reverify', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+      if(!current(run))return;
       const body = await response.json();
+      if(!current(run))return;
       if (!body || typeof body !== 'object' || Array.isArray(body)) throw new Error('Unusable Reverify response');
       if (!response.ok) { responseUnderstood = true; throw new Error(typeof body.error === 'string' && body.error ? body.error : 'Project reverification could not complete.'); }
       if (!body.result || typeof body.result !== 'object' || !Array.isArray(body.result.possibleReplacements)) throw new Error('Unusable Reverify result');
-      responseUnderstood = true; setResult(body.result); await refreshInventory();
+      responseUnderstood = true; setResult(body.result); await refreshInventory(run);
     }
-    catch (reason) { setError(responseUnderstood ? (reason instanceof Error ? reason.message : 'Project reverification could not complete.') : 'Reverify outcome unavailable. The operation may still be running. Check Tasks before retrying.'); }
-    finally { setBusy(false); }
+    catch (reason) { if(current(run))setError(responseUnderstood ? (reason instanceof Error ? reason.message : 'Project reverification could not complete.') : 'Reverify outcome unavailable. The operation may still be running. Check Tasks before retrying.'); }
+    finally { if(current(run))setBusy(false); }
   };
-  useEffect(() => { if (isOpen && !started.current) { started.current = true; void start(); } if (!isOpen) { started.current = false; setResult(null); setError(''); setInventoryUnconfirmed(false); } }, [isOpen]);
-  if (!isOpen) return null;
-  const cancel = async () => { await fetch('http://localhost:3001/api/project/reverify/cancel', { method: 'POST' }); };
+  useEffect(() => { if (isOpen && !started.current) { started.current = true; void start(); } if (!isOpen) { activeRun.current=null;started.current = false;setBusy(false);setResult(null);setError('');setInventoryUnconfirmed(false); } }, [isOpen]);
+  if (!isOpen || !activeRun.current || !current(activeRun.current)) return null;
+  const cancel = async () => { const run=activeRun.current;if(run&&current(run))await fetch('http://localhost:3001/api/project/reverify/cancel', { method: 'POST' }); };
   const decide = async (candidateId: string, decision: 'CONFIRMED'|'REJECTED'|'DEFERRED') => {
-    setError(''); const response = await fetch(`http://localhost:3001/api/project/reverify/replacements/${encodeURIComponent(candidateId)}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ decision }) }); const body = await response.json(); if (!response.ok) { setError(body.error || 'Replacement review could not be completed.'); return; }
-    setResult(current => current ? { ...current, possibleReplacements: current.possibleReplacements.map(candidate => candidate.candidateId === candidateId ? { ...candidate, decision } : candidate) } : current); await refreshInventory();
+    const run=activeRun.current;if(!run||!current(run))return;
+    setError(''); const response = await fetch(`http://localhost:3001/api/project/reverify/replacements/${encodeURIComponent(candidateId)}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ decision }) });if(!current(run))return;
+    const body = await response.json();if(!current(run))return;if (!response.ok) { setError(body.error || 'Replacement review could not be completed.'); return; }
+    setResult(value => value ? { ...value, possibleReplacements: value.possibleReplacements.map(candidate => candidate.candidateId === candidateId ? { ...candidate, decision } : candidate) } : value); await refreshInventory(run);
   };
   return <ModalViewport className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"><section role="dialog" aria-label="Project Reverify" className="max-h-[90vh] w-full max-w-3xl overflow-auto rounded-xl border border-slate-200 bg-white shadow-xl dark:border-slate-700 dark:bg-slate-900">
     <header className="flex items-start justify-between border-b border-slate-200 p-4 dark:border-slate-700"><div><h2 className="text-sm font-bold">Project Reverify</h2><p className="text-xs text-slate-500">Live discovery is reconciled against saved physical identities. New devices are not added automatically.</p></div><button aria-label="Close" disabled={busy} onClick={onClose}><X className="h-5 w-5"/></button></header>
