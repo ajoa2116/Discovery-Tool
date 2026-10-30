@@ -48,6 +48,8 @@ module.exports=function installAppFixture(){
      check(JSON.stringify(body)===JSON.stringify({enabled:false,cadenceMs:30000}),'monitoring-body');response=clone(monitoring);
    }else if(method==='POST'&&u.pathname==='/api/project/reverify'){
      check(state.expectedReverify===true&&JSON.stringify(body)==='{}','unissued-reverify');state.expectedReverify=false;held=true;
+   }else if(method==='POST'&&u.pathname==='/api/project/reverify/cancel'){
+     check(state.expectedCancel===true&&body===null,'unissued-reverify-cancel');state.expectedCancel=false;held=true;
    }else if(method==='POST'&&u.pathname==='/api/project/reverify/replacements/fixture-candidate'){
      check(state.expectedDecision!==undefined&&JSON.stringify(body)===JSON.stringify({decision:state.expectedDecision}),'unissued-replacement-decision');state.expectedDecision=undefined;held=true;
    }else if(method==='POST'&&/^\/api\/device\/[^/]+\/config$/.test(u.pathname)){
@@ -55,12 +57,12 @@ module.exports=function installAppFixture(){
      check(u.pathname==='/api/device/'+encodeURIComponent(expected.id)+'/config','wrong-write-id');
      check(JSON.stringify(body)===JSON.stringify({technician:{[expected.field||'location']:expected.value},metadataWriteContext:expected.context||state.session.metadataWriteContext}),'wrong-write-body');held=true;
    }else check(false,'unexpected-method-or-route:'+method+':'+u.pathname);
-   if(method==='POST')check(new Headers(options.headers).get('Content-Type')==='application/json','post-content-type');
+   if(method==='POST'&&u.pathname!=='/api/project/reverify/cancel')check(new Headers(options.headers).get('Content-Type')==='application/json','post-content-type');
    return new Promise((resolve,reject)=>{
      const signal=options.signal;
      const detach=()=>signal?.removeEventListener('abort',abort);
      record.resolve=(data,status=200)=>{check(record.state==='pending','duplicate-response:'+record.id);detach();record.state='resolved';record.response=clone(data);resolve(new Response(JSON.stringify(data),{status,headers:{'Content-Type':'application/json'}}));};
-     record.resolveText=(text,status=200)=>{check(record.state==='pending'&&record.path==='/api/project/reverify/replacements/fixture-candidate','unissued-text-response');detach();record.state='resolved';record.response=text;resolve(new Response(text,{status,headers:{'Content-Type':'application/json'}}));};
+     record.resolveText=(text,status=200)=>{check(record.state==='pending'&&['/api/project/reverify/replacements/fixture-candidate','/api/project/reverify/cancel'].includes(record.path),'unissued-text-response');detach();record.state='resolved';record.response=text;resolve(new Response(text,{status,headers:{'Content-Type':'application/json'}}));};
      record.reject=(message='Injected transport failure')=>{check(record.state==='pending','duplicate-rejection:'+record.id);detach();record.state='rejected';reject(Error(message));};
      const abort=()=>{if(record.state==='pending'){detach();record.state='aborted';reject(new DOMException('Fixture request aborted','AbortError'));}};
      if(signal?.aborted){abort();return;}signal?.addEventListener('abort',abort,{once:true});

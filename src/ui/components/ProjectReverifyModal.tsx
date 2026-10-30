@@ -11,8 +11,9 @@ export const ProjectReverifyModal: React.FC<Props> = ({ isOpen, projectOwner, is
   const [busy, setBusy] = useState(false), [result, setResult] = useState<ReverificationResult | null>(null), [error, setError] = useState('');
   const [inventoryUnconfirmed, setInventoryUnconfirmed] = useState(false);
   const [decisionUncertain, setDecisionUncertain] = useState(false);
+  const [cancellationNotice, setCancellationNotice] = useState('');
   const started = useRef(false);
-  const activeRun = useRef<{owner:object}|null>(null), previousOwner = useRef(projectOwner), mounted = useRef(false);
+  const activeRun = useRef<{owner:object;settled?:boolean}|null>(null), previousOwner = useRef(projectOwner), mounted = useRef(false);
   const context = useRef({isOpen,projectOwner,isOwnerCurrent});context.current={isOpen,projectOwner,isOwnerCurrent};
   const current = (run:{owner:object}) => mounted.current && activeRun.current===run && context.current.isOpen
     && context.current.projectOwner===run.owner && context.current.isOwnerCurrent(run.owner);
@@ -20,7 +21,7 @@ export const ProjectReverifyModal: React.FC<Props> = ({ isOpen, projectOwner, is
   useEffect(()=>{
     if(previousOwner.current===projectOwner)return;
     previousOwner.current=projectOwner;activeRun.current=null;
-    setBusy(false);setResult(null);setError('');setInventoryUnconfirmed(false);setDecisionUncertain(false);
+    setBusy(false);setResult(null);setError('');setInventoryUnconfirmed(false);setDecisionUncertain(false);setCancellationNotice('');
     // Invalidate the UI only. Do not cancel backend work or start a run for the new owner.
     if(isOpen){started.current=true;onClose();}
   },[projectOwner]);
@@ -31,8 +32,8 @@ export const ProjectReverifyModal: React.FC<Props> = ({ isOpen, projectOwner, is
   };
   const start = async () => {
     if(!isOwnerCurrent(projectOwner))return;
-    const run={owner:projectOwner};activeRun.current=run;
-    setBusy(true); setError(''); setResult(null); setInventoryUnconfirmed(false);setDecisionUncertain(false);
+    const run:{owner:object;settled?:boolean}={owner:projectOwner};activeRun.current=run;
+    setBusy(true); setError(''); setResult(null); setInventoryUnconfirmed(false);setDecisionUncertain(false);setCancellationNotice('');
     let responseUnderstood = false;
     try {
       const response = await fetch('http://localhost:3001/api/project/reverify', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
@@ -45,11 +46,25 @@ export const ProjectReverifyModal: React.FC<Props> = ({ isOpen, projectOwner, is
       responseUnderstood = true; setResult(body.result); await refreshInventory(run);
     }
     catch (reason) { if(current(run))setError(responseUnderstood ? (reason instanceof Error ? reason.message : 'Project reverification could not complete.') : 'Reverify outcome unavailable. The operation may still be running. Check Tasks before retrying.'); }
-    finally { if(current(run))setBusy(false); }
+    finally { if(current(run)){run.settled=true;setCancellationNotice('');setBusy(false);} }
   };
-  useEffect(() => { if (isOpen && !started.current) { started.current = true; void start(); } if (!isOpen) { activeRun.current=null;started.current = false;setBusy(false);setResult(null);setError('');setInventoryUnconfirmed(false);setDecisionUncertain(false); } }, [isOpen]);
+  useEffect(() => { if (isOpen && !started.current) { started.current = true; void start(); } if (!isOpen) { activeRun.current=null;started.current = false;setBusy(false);setResult(null);setError('');setInventoryUnconfirmed(false);setDecisionUncertain(false);setCancellationNotice(''); } }, [isOpen]);
   if (!isOpen || !activeRun.current || !current(activeRun.current)) return null;
-  const cancel = async () => { const run=activeRun.current;if(run&&current(run))await fetch('http://localhost:3001/api/project/reverify/cancel', { method: 'POST' }); };
+  const cancel = async () => {
+    const run=activeRun.current;if(!run||!current(run)||run.settled)return;
+    setCancellationNotice('Cancellation requested; waiting for acknowledgment.');
+    try {
+      const response=await fetch('http://localhost:3001/api/project/reverify/cancel', {method:'POST'});
+      if(!current(run)||run.settled)return;
+      const body=await response.json();if(!current(run)||run.settled)return;
+      if(!body||typeof body!=='object'||Array.isArray(body))throw new Error('Unusable cancellation response');
+      if(!response.ok||body.cancelled===false){setCancellationNotice('Cancellation request was not accepted. The Reverify operation may still be running.');return;}
+      if(response.status!==202||body.cancelled!==true)throw new Error('Unconfirmed cancellation acknowledgment');
+      setCancellationNotice('Cancellation request accepted. Waiting for the Reverify operation’s terminal result.');
+    } catch {
+      if(current(run)&&!run.settled)setCancellationNotice('Cancellation acknowledgment unavailable. The Reverify operation may still be running. Check Tasks before retrying.');
+    }
+  };
   const decide = async (candidateId: string, decision: 'CONFIRMED'|'REJECTED'|'DEFERRED') => {
     const run=activeRun.current;if(!run||!current(run))return;
     setError('');setDecisionUncertain(false);
@@ -70,6 +85,7 @@ export const ProjectReverifyModal: React.FC<Props> = ({ isOpen, projectOwner, is
   return <ModalViewport className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"><section role="dialog" aria-label="Project Reverify" className="max-h-[90vh] w-full max-w-3xl overflow-auto rounded-xl border border-slate-200 bg-white shadow-xl dark:border-slate-700 dark:bg-slate-900">
     <header className="flex items-start justify-between border-b border-slate-200 p-4 dark:border-slate-700"><div><h2 className="text-sm font-bold">Project Reverify</h2><p className="text-xs text-slate-500">Live discovery is reconciled against saved physical identities. New devices are not added automatically.</p></div><button aria-label="Close" disabled={busy} onClick={onClose}><X className="h-5 w-5"/></button></header>
     <div className="modal-body space-y-4 p-4 text-xs">{busy && <div className="flex items-center gap-2 rounded bg-blue-50 p-3 text-blue-700 dark:bg-blue-950/30 dark:text-blue-300"><RefreshCw className="h-4 w-4 animate-spin"/>Discovering and reconciling Project identities…</div>}{error && <div className="rounded border border-amber-300 bg-amber-50 p-3 text-amber-800 dark:bg-amber-950/30 dark:text-amber-300"><AlertTriangle className="mr-2 inline h-4 w-4"/>{error}</div>}
+    {cancellationNotice && <p role="status" className="rounded border border-amber-300 bg-amber-50 p-3 text-amber-800 dark:bg-amber-950/30 dark:text-amber-300">{cancellationNotice}</p>}
     {result && <>{inventoryUnconfirmed && <p role="status" className="rounded border border-amber-300 bg-amber-50 p-3 text-amber-800 dark:bg-amber-950/30 dark:text-amber-300">Reverify completed, but the displayed device inventory could not be confirmed as refreshed.</p>}<div className="grid grid-cols-2 gap-2 sm:grid-cols-5">{[['Verified',result.recognizedCount],['Not Verified',result.notVerifiedCount||0],['New',result.newDevicesCount],['Replacements',result.possibleReplacements.length],['Collisions',result.collisionCount||0]].map(([name,count])=><div key={String(name)} className="rounded border border-slate-200 p-3 text-center dark:border-slate-700"><strong className="block text-lg">{count}</strong>{name}</div>)}</div>
       {!!result.verifiedDevices?.length && <div><h3 className="mb-1 font-bold text-emerald-700">Verified</h3>{result.verifiedDevices.map(device=><div key={device.id} className="border-t border-slate-100 py-1 dark:border-slate-800">{label(device)} · {device.network.ipAddress}</div>)}</div>}
       {!!result.notVerifiedDevices?.length && <div><h3 className="mb-1 font-bold text-amber-700">Not Verified</h3>{result.notVerifiedDevices.map(device=><div key={device.id} className="border-t border-slate-100 py-1 dark:border-slate-800">{label(device)} · saved {device.network.ipAddress}</div>)}</div>}

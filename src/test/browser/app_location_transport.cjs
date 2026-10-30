@@ -6,7 +6,8 @@ const nameOwnerOnly=process.argv[2]==='--open-name-owner-only';
 const reverifyRefreshOnly=process.argv[2]==='--reverify-refresh-only';
 const reverifyOwnerOnly=process.argv[2]==='--reverify-owner-only';
 const replacementOwnerOnly=process.argv[2]==='--replacement-owner-only';
-assert.deepEqual(process.argv.slice(2),nameOwnerOnly?['--open-name-owner-only']:reverifyRefreshOnly?['--reverify-refresh-only']:reverifyOwnerOnly?['--reverify-owner-only']:replacementOwnerOnly?['--replacement-owner-only']:[],'Unsupported fixture selector');
+const cancelAckOnly=process.argv[2]==='--cancel-ack-only';
+assert.deepEqual(process.argv.slice(2),nameOwnerOnly?['--open-name-owner-only']:reverifyRefreshOnly?['--reverify-refresh-only']:reverifyOwnerOnly?['--reverify-owner-only']:replacementOwnerOnly?['--replacement-owner-only']:cancelAckOnly?['--cancel-ack-only']:[],'Unsupported fixture selector');
 const repo=path.resolve(__dirname,'../../..'),entry='/src/test/browser/app_location_transport.html';
 
 
@@ -129,6 +130,7 @@ async function check(family,name,run,expectedConsole=false){
  if(reverifyRefreshOnly&&![7,9].includes(family))return;
  if(reverifyOwnerOnly&&![9,10].includes(family))return;
  if(replacementOwnerOnly&&![9,11].includes(family))return;
+ if(cancelAckOnly&&![9,12].includes(family))return;
  let f,status='passed',error,observations;
  try{
    f=await pageFixture();await run(f.page);observations=await evidence(f.page);
@@ -169,6 +171,77 @@ async function suite(){
    await p.getByRole('dialog',{name:'Project Reverify',exact:true}).waitFor({state:'hidden'});
  };
  const oldResult={totalKnown:2,recognizedCount:2,changedIpCount:0,newDevicesCount:0,possibleReplacements:[]};
+ const cancelWaiting='Cancellation requested; waiting for acknowledgment.';
+ const cancelAccepted='Cancellation request accepted. Waiting for the Reverify operation’s terminal result.';
+ const cancelRejected='Cancellation request was not accepted. The Reverify operation may still be running.';
+ const cancelUnavailable='Cancellation acknowledgment unavailable. The Reverify operation may still be running. Check Tasks before retrying.';
+ const requestCancel=async p=>{
+   await p.evaluate(()=>{window.__appTransport.expectedCancel=true;});await button(p,'Cancel Reverify').click();
+   await p.waitForFunction(()=>window.__appTransport.requests.some(r=>r.path==='/api/project/reverify/cancel'&&r.state==='pending'));
+   await p.getByText(cancelWaiting,{exact:true}).waitFor();
+   return p.evaluate(()=>window.__appTransport.requests.find(r=>r.path==='/api/project/reverify/cancel'&&r.state==='pending').id);
+ };
+ const acknowledgeCancel=async(p,id,mode)=>{
+   await p.evaluate(({id,mode})=>{const r=window.__appTransport.requests.find(r=>r.id===id);
+     if(mode==='transport')r.reject('Injected cancellation secret=not-for-display');
+     else if(mode==='json')r.resolveText('incomplete JSON');
+     else if(mode==='unusable')r.resolve({});
+     else if(mode==='http')r.resolve({error:'Raw rejected acknowledgment'},409);
+     else r.resolve({cancelled:mode==='accepted'},202);
+   },{id,mode});await pause(p);
+ };
+ const stillRunning=async p=>{
+   const modal=p.getByRole('dialog',{name:'Project Reverify',exact:true});
+   assert.equal(await modal.getByText('Discovering and reconciling Project identities…',{exact:true}).count(),1);
+   assert.equal(await modal.locator('strong').count(),0);assert.equal(await button(p,'Done').count(),0);assert.equal(await button(p,'Retry').count(),0);
+   assert.equal(await modal.getByText('Project reverification was cancelled.',{exact:true}).count(),0);
+ };
+ const finishOriginal=async(p,id,terminal)=>{
+   const session=await p.evaluate(()=>window.__appTransport.snapshot());
+   await p.evaluate(({id,terminal,oldResult})=>window.__appTransport.requests.find(r=>r.id===id).resolve(
+     terminal==='cancelled'?{error:'Project reverification was cancelled.',code:'CANCELLED'}:{result:oldResult},terminal==='cancelled'?400:200),{id,terminal,oldResult});
+   if(terminal==='completed'){const [read]=await heldSessions(p);await release(p,read,session);}
+   await button(p,'Done').waitFor();const modal=p.getByRole('dialog',{name:'Project Reverify',exact:true});
+   if(terminal==='cancelled')assert.equal(await modal.getByText('Project reverification was cancelled.',{exact:true}).count(),1);
+   else assert.equal(await modal.locator('strong').first().textContent(),'2');
+   for(const text of [cancelWaiting,cancelAccepted,cancelRejected,cancelUnavailable])assert.equal(await modal.getByText(text,{exact:true}).count(),0);
+ };
+ const oneCancel=async p=>{
+   const posts=await p.evaluate(()=>window.__appTransport.requests.filter(r=>r.method==='POST').map(r=>r.path));
+   assert.equal(posts.filter(path=>path==='/api/project/reverify').length,1);assert.equal(posts.filter(path=>path==='/api/project/reverify/cancel').length,1);
+   assert.ok(posts.every(path=>['/api/monitoring/preferences','/api/project/reverify','/api/project/reverify/cancel'].includes(path)));
+ };
+ for(const terminal of ['cancelled','completed'])await check(12,'accepted cancellation acknowledgment then original '+terminal,async p=>{
+   const original=await startReverify(p),session=await p.evaluate(()=>window.__appTransport.snapshot()),ack=await requestCancel(p);
+   await stillRunning(p);await acknowledgeCancel(p,ack,'accepted');await p.getByText(cancelAccepted,{exact:true}).waitFor();await stillRunning(p);
+   await finishOriginal(p,original,terminal);await oneCancel(p);assert.deepEqual(await p.evaluate(()=>window.__appTransport.snapshot()),session);
+ });
+ for(const mode of ['http','negative','transport','json','unusable'])await check(12,'cancellation '+mode+' acknowledgment leaves original operation active',async p=>{
+   const original=await startReverify(p),session=await p.evaluate(()=>window.__appTransport.snapshot()),ack=await requestCancel(p);
+   const reads=await p.evaluate(()=>window.__appTransport.requests.filter(r=>r.path==='/api/project/session').length);
+   await acknowledgeCancel(p,ack,mode);await p.getByText(['http','negative'].includes(mode)?cancelRejected:cancelUnavailable,{exact:true}).waitFor();await stillRunning(p);
+   assert.equal(await p.getByText('Raw rejected acknowledgment',{exact:true}).count(),0);assert.ok(!(await p.locator('body').textContent()).includes('secret=not-for-display'));
+   assert.equal(await p.evaluate(()=>window.__appTransport.requests.filter(r=>r.path==='/api/project/session').length),reads);
+   await oneCancel(p);assert.deepEqual(await p.evaluate(()=>window.__appTransport.snapshot()),session);await finishOriginal(p,original,'completed');
+ });
+ for(const mode of ['accepted','transport'])await check(12,'original completes before late '+mode+' cancellation acknowledgment',async p=>{
+   const original=await startReverify(p),ack=await requestCancel(p);await finishOriginal(p,original,'completed');
+   await acknowledgeCancel(p,ack,mode);await oneCancel(p);
+   assert.equal(await p.getByRole('dialog',{name:'Project Reverify'}).locator('strong').first().textContent(),'2');
+   for(const text of [cancelWaiting,cancelAccepted,cancelRejected,cancelUnavailable])assert.equal(await p.getByText(text,{exact:true}).count(),0);
+ });
+ for(const transition of ['B','same-project-reopen'])for(const mode of ['accepted','http','transport','json'])
+ await check(12,'obsolete '+mode+' cancellation acknowledgment after '+transition,async p=>{
+   const original=await startReverify(p),ack=await requestCancel(p);await switchReverifyOwner(p,transition);
+   const session=await p.evaluate(()=>window.__appTransport.snapshot()),reads=await p.evaluate(()=>window.__appTransport.requests.filter(r=>r.path==='/api/project/session').length);
+   await acknowledgeCancel(p,ack,mode);
+   await p.evaluate(({original,oldResult})=>window.__appTransport.requests.find(r=>r.id===original).resolve({result:oldResult}),{original,oldResult});await pause(p);
+   assert.equal(await p.getByRole('dialog',{name:'Project Reverify'}).count(),0);
+   for(const text of [cancelWaiting,cancelAccepted,cancelRejected,cancelUnavailable])assert.equal(await p.getByText(text,{exact:true}).count(),0);
+   assert.equal(await p.evaluate(()=>window.__appTransport.requests.filter(r=>r.path==='/api/project/session').length),reads);await oneCancel(p);
+   assert.deepEqual(await p.evaluate(()=>window.__appTransport.snapshot()),session);await inspect(p);
+   assert.equal(await confirmed(p),transition==='B'?'New project location':'Reopened location');await close(p);
+ });
  const modalFor=p=>p.getByRole('dialog',{name:'Project Reverify',exact:true});
  const decisionButtons={CONFIRMED:'Confirm Replacement',REJECTED:'Keep Original / Do Not Replace',DEFERRED:'Decide Later'};
  const decisionMessages={CONFIRMED:'Replacement confirmed; Project has unsaved changes.',REJECTED:'Original retained.',DEFERRED:'Decision deferred.'};
@@ -457,7 +530,7 @@ async function suite(){
 (async()=>{let fatal;
  try{await setup();await suite();}catch(e){fatal=String(e.stack);console.error(fatal);}
  finally{try{await cleanup();}catch(e){fatal=String(e.stack);console.error('CLEANUP UNCERTAIN; preserve '+root+': '+fatal);}}
- const families=Object.fromEntries(Array.from({length:11},(_,i)=>{const rows=results.filter(r=>r.family===i+1);return[i+1,{passed:rows.filter(r=>r.status==='passed').length,failed:rows.filter(r=>r.status==='failed').length,status:!rows.length?(nameOwnerOnly||reverifyRefreshOnly||reverifyOwnerOnly||replacementOwnerOnly?'not-executed-filter':'blocked'):rows.some(r=>r.status==='failed')?'failed':'passed'}];}));
+ const families=Object.fromEntries(Array.from({length:12},(_,i)=>{const rows=results.filter(r=>r.family===i+1);return[i+1,{passed:rows.filter(r=>r.status==='passed').length,failed:rows.filter(r=>r.status==='failed').length,status:!rows.length?(nameOwnerOnly||reverifyRefreshOnly||reverifyOwnerOnly||replacementOwnerOnly||cancelAckOnly?'not-executed-filter':'blocked'):rows.some(r=>r.status==='failed')?'failed':'passed'}];}));
  console.log(JSON.stringify({families,results,summaries,boundary,contextsCreated:contexts.length,cleanupConfirmed:closed,listenerClosed:server?!server.listening:null,browserDisconnected:browser?!browser.isConnected():null,fixtureRoot:root,remainingFixtureRoot:root?fs.existsSync(root):false,removedOwnedFiles:removedFiles,fatal},null,2));
- if(fatal||results.length!==(nameOwnerOnly?1:reverifyRefreshOnly?7:reverifyOwnerOnly?12:replacementOwnerOnly?18:49)||results.some(r=>r.status==='failed'))process.exitCode=1;
+ if(fatal||results.length!==(nameOwnerOnly?1:reverifyRefreshOnly?7:reverifyOwnerOnly?12:replacementOwnerOnly?18:cancelAckOnly?20:66)||results.some(r=>r.status==='failed'))process.exitCode=1;
 })();
