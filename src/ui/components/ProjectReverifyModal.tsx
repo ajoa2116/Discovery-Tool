@@ -13,7 +13,7 @@ export const ProjectReverifyModal: React.FC<Props> = ({ isOpen, projectOwner, is
   const [decisionUncertain, setDecisionUncertain] = useState(false);
   const [cancellationNotice, setCancellationNotice] = useState('');
   const started = useRef(false);
-  const activeRun = useRef<{owner:object;settled?:boolean}|null>(null), previousOwner = useRef(projectOwner), mounted = useRef(false);
+  const activeRun = useRef<{owner:object;settled?:boolean;cancellationSubmission?:object}|null>(null), previousOwner = useRef(projectOwner), mounted = useRef(false);
   const context = useRef({isOpen,projectOwner,isOwnerCurrent});context.current={isOpen,projectOwner,isOwnerCurrent};
   const current = (run:{owner:object}) => mounted.current && activeRun.current===run && context.current.isOpen
     && context.current.projectOwner===run.owner && context.current.isOwnerCurrent(run.owner);
@@ -32,7 +32,7 @@ export const ProjectReverifyModal: React.FC<Props> = ({ isOpen, projectOwner, is
   };
   const start = async () => {
     if(!isOwnerCurrent(projectOwner))return;
-    const run:{owner:object;settled?:boolean}={owner:projectOwner};activeRun.current=run;
+    const run:{owner:object;settled?:boolean;cancellationSubmission?:object}={owner:projectOwner};activeRun.current=run;
     setBusy(true); setError(''); setResult(null); setInventoryUnconfirmed(false);setDecisionUncertain(false);setCancellationNotice('');
     let responseUnderstood = false;
     try {
@@ -52,17 +52,19 @@ export const ProjectReverifyModal: React.FC<Props> = ({ isOpen, projectOwner, is
   if (!isOpen || !activeRun.current || !current(activeRun.current)) return null;
   const cancel = async () => {
     const run=activeRun.current;if(!run||!current(run)||run.settled)return;
+    const submission={};run.cancellationSubmission=submission;
+    const latest=()=>current(run)&&!run.settled&&run.cancellationSubmission===submission;
     setCancellationNotice('Cancellation requested; waiting for acknowledgment.');
     try {
       const response=await fetch('http://localhost:3001/api/project/reverify/cancel', {method:'POST'});
-      if(!current(run)||run.settled)return;
-      const body=await response.json();if(!current(run)||run.settled)return;
+      if(!latest())return;
+      const body=await response.json();if(!latest())return;
       if(!body||typeof body!=='object'||Array.isArray(body))throw new Error('Unusable cancellation response');
       if(!response.ok||body.cancelled===false){setCancellationNotice('Cancellation request was not accepted. The Reverify operation may still be running.');return;}
       if(response.status!==202||body.cancelled!==true)throw new Error('Unconfirmed cancellation acknowledgment');
       setCancellationNotice('Cancellation request accepted. Waiting for the Reverify operation’s terminal result.');
     } catch {
-      if(current(run)&&!run.settled)setCancellationNotice('Cancellation acknowledgment unavailable. The Reverify operation may still be running. Check Tasks before retrying.');
+      if(latest())setCancellationNotice('Cancellation acknowledgment unavailable. The Reverify operation may still be running. Check Tasks before retrying.');
     }
   };
   const decide = async (candidateId: string, decision: 'CONFIRMED'|'REJECTED'|'DEFERRED') => {

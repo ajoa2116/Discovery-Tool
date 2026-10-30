@@ -176,10 +176,11 @@ async function suite(){
  const cancelRejected='Cancellation request was not accepted. The Reverify operation may still be running.';
  const cancelUnavailable='Cancellation acknowledgment unavailable. The Reverify operation may still be running. Check Tasks before retrying.';
  const requestCancel=async p=>{
+   const previous=await p.evaluate(()=>window.__appTransport.requests.filter(r=>r.path==='/api/project/reverify/cancel').map(r=>r.id));
    await p.evaluate(()=>{window.__appTransport.expectedCancel=true;});await button(p,'Cancel Reverify').click();
-   await p.waitForFunction(()=>window.__appTransport.requests.some(r=>r.path==='/api/project/reverify/cancel'&&r.state==='pending'));
+   await p.waitForFunction(previous=>window.__appTransport.requests.some(r=>r.path==='/api/project/reverify/cancel'&&r.state==='pending'&&!previous.includes(r.id)),previous);
    await p.getByText(cancelWaiting,{exact:true}).waitFor();
-   return p.evaluate(()=>window.__appTransport.requests.find(r=>r.path==='/api/project/reverify/cancel'&&r.state==='pending').id);
+   return p.evaluate(previous=>window.__appTransport.requests.find(r=>r.path==='/api/project/reverify/cancel'&&r.state==='pending'&&!previous.includes(r.id)).id,previous);
  };
  const acknowledgeCancel=async(p,id,mode)=>{
    await p.evaluate(({id,mode})=>{const r=window.__appTransport.requests.find(r=>r.id===id);
@@ -206,11 +207,25 @@ async function suite(){
    else assert.equal(await modal.locator('strong').first().textContent(),'2');
    for(const text of [cancelWaiting,cancelAccepted,cancelRejected,cancelUnavailable])assert.equal(await modal.getByText(text,{exact:true}).count(),0);
  };
- const oneCancel=async p=>{
+ const oneCancel=async(p,count=1)=>{
    const posts=await p.evaluate(()=>window.__appTransport.requests.filter(r=>r.method==='POST').map(r=>r.path));
-   assert.equal(posts.filter(path=>path==='/api/project/reverify').length,1);assert.equal(posts.filter(path=>path==='/api/project/reverify/cancel').length,1);
+   assert.equal(posts.filter(path=>path==='/api/project/reverify').length,1);assert.equal(posts.filter(path=>path==='/api/project/reverify/cancel').length,count);
    assert.ok(posts.every(path=>['/api/monitoring/preferences','/api/project/reverify','/api/project/reverify/cancel'].includes(path)));
  };
+ for(const [newer,older] of [['accepted','http'],['negative','accepted'],['transport','accepted'],['negative','transport'],['negative','json'],['transport','transport'],['transport','json']])
+ await check(12,'latest cancellation '+newer+' survives older '+older+' acknowledgment',async p=>{
+   const original=await startReverify(p),session=await p.evaluate(()=>window.__appTransport.snapshot());
+   const reads=await p.evaluate(()=>window.__appTransport.requests.filter(r=>r.path==='/api/project/session').length);
+   const first=await requestCancel(p),second=await requestCancel(p);assert.notEqual(first,second);
+   const expected=newer==='accepted'?cancelAccepted:newer==='negative'?cancelRejected:cancelUnavailable;
+   await acknowledgeCancel(p,second,newer);await p.getByText(expected,{exact:true}).waitFor();await stillRunning(p);
+   await acknowledgeCancel(p,first,older);assert.equal(await p.getByText(expected,{exact:true}).count(),1);await stillRunning(p);
+   for(const text of [cancelWaiting,cancelAccepted,cancelRejected,cancelUnavailable].filter(text=>text!==expected))assert.equal(await p.getByText(text,{exact:true}).count(),0);
+   await oneCancel(p,2);assert.deepEqual(await p.evaluate(()=>window.__appTransport.snapshot()),session);
+   assert.equal(await p.evaluate(()=>window.__appTransport.requests.filter(r=>r.path==='/api/project/session').length),reads);
+   await finishOriginal(p,original,newer==='accepted'?'cancelled':'completed');await oneCancel(p,2);
+   assert.deepEqual(await p.evaluate(()=>window.__appTransport.snapshot()),session);
+ });
  for(const terminal of ['cancelled','completed'])await check(12,'accepted cancellation acknowledgment then original '+terminal,async p=>{
    const original=await startReverify(p),session=await p.evaluate(()=>window.__appTransport.snapshot()),ack=await requestCancel(p);
    await stillRunning(p);await acknowledgeCancel(p,ack,'accepted');await p.getByText(cancelAccepted,{exact:true}).waitFor();await stillRunning(p);
@@ -532,5 +547,5 @@ async function suite(){
  finally{try{await cleanup();}catch(e){fatal=String(e.stack);console.error('CLEANUP UNCERTAIN; preserve '+root+': '+fatal);}}
  const families=Object.fromEntries(Array.from({length:12},(_,i)=>{const rows=results.filter(r=>r.family===i+1);return[i+1,{passed:rows.filter(r=>r.status==='passed').length,failed:rows.filter(r=>r.status==='failed').length,status:!rows.length?(nameOwnerOnly||reverifyRefreshOnly||reverifyOwnerOnly||replacementOwnerOnly||cancelAckOnly?'not-executed-filter':'blocked'):rows.some(r=>r.status==='failed')?'failed':'passed'}];}));
  console.log(JSON.stringify({families,results,summaries,boundary,contextsCreated:contexts.length,cleanupConfirmed:closed,listenerClosed:server?!server.listening:null,browserDisconnected:browser?!browser.isConnected():null,fixtureRoot:root,remainingFixtureRoot:root?fs.existsSync(root):false,removedOwnedFiles:removedFiles,fatal},null,2));
- if(fatal||results.length!==(nameOwnerOnly?1:reverifyRefreshOnly?7:reverifyOwnerOnly?12:replacementOwnerOnly?18:cancelAckOnly?20:66)||results.some(r=>r.status==='failed'))process.exitCode=1;
+ if(fatal||results.length!==(nameOwnerOnly?1:reverifyRefreshOnly?7:reverifyOwnerOnly?12:replacementOwnerOnly?18:cancelAckOnly?27:73)||results.some(r=>r.status==='failed'))process.exitCode=1;
 })();
