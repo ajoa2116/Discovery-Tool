@@ -12,6 +12,7 @@ module.exports=function installAppFixture(){
  const originalStorage=Object.fromEntries(Object.keys(localStorage).map(key=>[key,localStorage.getItem(key)]));
  localStorage.clear();localStorage.setItem('cctv-network-assistant-preferences',JSON.stringify({version:1,appearance:'LIGHT',monitoringEnabled:false,monitoringCadenceMs:30000,newDeviceNotifications:false,browserPreference:'SYSTEM',visibleColumns:['NAME','STATUS','IP','NOTES']}));
  const state=window.__appTransport={requests:[],violations:[],subscriptions:[],subscriptionId:0,holdSessions:false,session:clone(initial),expectedWrites:[],unmount:null};
+ window.addEventListener('unhandledrejection',()=>state.violations.push('unhandled-rejection'));
  state.snapshot=()=>clone(state.session);
  state.nextProject=(sameId)=>({metadataWriteContext:context('Project Two','22222222-2222-4222-8222-222222222222'),mode:'PROJECT',dirty:false,project:project('Project Two',[camera(sameId?'camera/A':'camera/C',sameId?'Camera A':'Camera C','New project location')])});
  state.emit=(type,data)=>{const active=state.subscriptions.filter(s=>s.active);check(active.length===1,'inert-subscription-cardinality');active[0].onMessage({data:JSON.stringify({type,data})});};
@@ -47,6 +48,8 @@ module.exports=function installAppFixture(){
      check(JSON.stringify(body)===JSON.stringify({enabled:false,cadenceMs:30000}),'monitoring-body');response=clone(monitoring);
    }else if(method==='POST'&&u.pathname==='/api/project/reverify'){
      check(state.expectedReverify===true&&JSON.stringify(body)==='{}','unissued-reverify');state.expectedReverify=false;held=true;
+   }else if(method==='POST'&&u.pathname==='/api/project/reverify/replacements/fixture-candidate'){
+     check(state.expectedDecision!==undefined&&JSON.stringify(body)===JSON.stringify({decision:state.expectedDecision}),'unissued-replacement-decision');state.expectedDecision=undefined;held=true;
    }else if(method==='POST'&&/^\/api\/device\/[^/]+\/config$/.test(u.pathname)){
      const expected=state.expectedWrites.shift();check(!!expected,'unissued-write');
      check(u.pathname==='/api/device/'+encodeURIComponent(expected.id)+'/config','wrong-write-id');
@@ -57,6 +60,7 @@ module.exports=function installAppFixture(){
      const signal=options.signal;
      const detach=()=>signal?.removeEventListener('abort',abort);
      record.resolve=(data,status=200)=>{check(record.state==='pending','duplicate-response:'+record.id);detach();record.state='resolved';record.response=clone(data);resolve(new Response(JSON.stringify(data),{status,headers:{'Content-Type':'application/json'}}));};
+     record.resolveText=(text,status=200)=>{check(record.state==='pending'&&record.path==='/api/project/reverify/replacements/fixture-candidate','unissued-text-response');detach();record.state='resolved';record.response=text;resolve(new Response(text,{status,headers:{'Content-Type':'application/json'}}));};
      record.reject=(message='Injected transport failure')=>{check(record.state==='pending','duplicate-rejection:'+record.id);detach();record.state='rejected';reject(Error(message));};
      const abort=()=>{if(record.state==='pending'){detach();record.state='aborted';reject(new DOMException('Fixture request aborted','AbortError'));}};
      if(signal?.aborted){abort();return;}signal?.addEventListener('abort',abort,{once:true});

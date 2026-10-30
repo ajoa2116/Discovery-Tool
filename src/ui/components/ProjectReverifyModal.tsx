@@ -10,6 +10,7 @@ const label = (device: Device) => device.technician?.name || device.anchor.model
 export const ProjectReverifyModal: React.FC<Props> = ({ isOpen, projectOwner, isOwnerCurrent, onClose, onChanged }) => {
   const [busy, setBusy] = useState(false), [result, setResult] = useState<ReverificationResult | null>(null), [error, setError] = useState('');
   const [inventoryUnconfirmed, setInventoryUnconfirmed] = useState(false);
+  const [decisionUncertain, setDecisionUncertain] = useState(false);
   const started = useRef(false);
   const activeRun = useRef<{owner:object}|null>(null), previousOwner = useRef(projectOwner), mounted = useRef(false);
   const context = useRef({isOpen,projectOwner,isOwnerCurrent});context.current={isOpen,projectOwner,isOwnerCurrent};
@@ -19,7 +20,7 @@ export const ProjectReverifyModal: React.FC<Props> = ({ isOpen, projectOwner, is
   useEffect(()=>{
     if(previousOwner.current===projectOwner)return;
     previousOwner.current=projectOwner;activeRun.current=null;
-    setBusy(false);setResult(null);setError('');setInventoryUnconfirmed(false);
+    setBusy(false);setResult(null);setError('');setInventoryUnconfirmed(false);setDecisionUncertain(false);
     // Invalidate the UI only. Do not cancel backend work or start a run for the new owner.
     if(isOpen){started.current=true;onClose();}
   },[projectOwner]);
@@ -31,7 +32,7 @@ export const ProjectReverifyModal: React.FC<Props> = ({ isOpen, projectOwner, is
   const start = async () => {
     if(!isOwnerCurrent(projectOwner))return;
     const run={owner:projectOwner};activeRun.current=run;
-    setBusy(true); setError(''); setResult(null); setInventoryUnconfirmed(false);
+    setBusy(true); setError(''); setResult(null); setInventoryUnconfirmed(false);setDecisionUncertain(false);
     let responseUnderstood = false;
     try {
       const response = await fetch('http://localhost:3001/api/project/reverify', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' });
@@ -46,14 +47,25 @@ export const ProjectReverifyModal: React.FC<Props> = ({ isOpen, projectOwner, is
     catch (reason) { if(current(run))setError(responseUnderstood ? (reason instanceof Error ? reason.message : 'Project reverification could not complete.') : 'Reverify outcome unavailable. The operation may still be running. Check Tasks before retrying.'); }
     finally { if(current(run))setBusy(false); }
   };
-  useEffect(() => { if (isOpen && !started.current) { started.current = true; void start(); } if (!isOpen) { activeRun.current=null;started.current = false;setBusy(false);setResult(null);setError('');setInventoryUnconfirmed(false); } }, [isOpen]);
+  useEffect(() => { if (isOpen && !started.current) { started.current = true; void start(); } if (!isOpen) { activeRun.current=null;started.current = false;setBusy(false);setResult(null);setError('');setInventoryUnconfirmed(false);setDecisionUncertain(false); } }, [isOpen]);
   if (!isOpen || !activeRun.current || !current(activeRun.current)) return null;
   const cancel = async () => { const run=activeRun.current;if(run&&current(run))await fetch('http://localhost:3001/api/project/reverify/cancel', { method: 'POST' }); };
   const decide = async (candidateId: string, decision: 'CONFIRMED'|'REJECTED'|'DEFERRED') => {
     const run=activeRun.current;if(!run||!current(run))return;
-    setError(''); const response = await fetch(`http://localhost:3001/api/project/reverify/replacements/${encodeURIComponent(candidateId)}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ decision }) });if(!current(run))return;
-    const body = await response.json();if(!current(run))return;if (!response.ok) { setError(body.error || 'Replacement review could not be completed.'); return; }
-    setResult(value => value ? { ...value, possibleReplacements: value.possibleReplacements.map(candidate => candidate.candidateId === candidateId ? { ...candidate, decision } : candidate) } : value); await refreshInventory(run);
+    setError('');setDecisionUncertain(false);
+    try {
+      const response = await fetch(`http://localhost:3001/api/project/reverify/replacements/${encodeURIComponent(candidateId)}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ decision }) });if(!current(run))return;
+      const body = await response.json();if(!current(run))return;
+      if(!body||typeof body!=='object'||Array.isArray(body))throw new Error('Unusable replacement response');
+      if (!response.ok) { setError(typeof body.error==='string'&&body.error ? body.error : 'Replacement review could not be completed.'); return; }
+      if(body.decision!==decision)throw new Error('Unconfirmed replacement decision');
+      setResult(value => value ? { ...value, possibleReplacements: value.possibleReplacements.map(candidate => candidate.candidateId === candidateId ? { ...candidate, decision } : candidate) } : value); await refreshInventory(run);
+    } catch {
+      if(!current(run))return;
+      // Earlier Reverify results do not confirm what happened to this decision.
+      setResult(null);setInventoryUnconfirmed(false);setDecisionUncertain(true);
+      setError('Replacement decision outcome unavailable. The decision may have been applied. Check the current project state before trying again.');
+    }
   };
   return <ModalViewport className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"><section role="dialog" aria-label="Project Reverify" className="max-h-[90vh] w-full max-w-3xl overflow-auto rounded-xl border border-slate-200 bg-white shadow-xl dark:border-slate-700 dark:bg-slate-900">
     <header className="flex items-start justify-between border-b border-slate-200 p-4 dark:border-slate-700"><div><h2 className="text-sm font-bold">Project Reverify</h2><p className="text-xs text-slate-500">Live discovery is reconciled against saved physical identities. New devices are not added automatically.</p></div><button aria-label="Close" disabled={busy} onClick={onClose}><X className="h-5 w-5"/></button></header>
@@ -63,6 +75,6 @@ export const ProjectReverifyModal: React.FC<Props> = ({ isOpen, projectOwner, is
       {!!result.notVerifiedDevices?.length && <div><h3 className="mb-1 font-bold text-amber-700">Not Verified</h3>{result.notVerifiedDevices.map(device=><div key={device.id} className="border-t border-slate-100 py-1 dark:border-slate-800">{label(device)} · saved {device.network.ipAddress}</div>)}</div>}
       {!!result.newDevices?.length && <div><h3 className="mb-1 font-bold text-blue-700">New Devices · Not in Project</h3>{result.newDevices.map(device=><div key={device.id} className="border-t border-slate-100 py-1 dark:border-slate-800">{label(device)} · {device.network.ipAddress} · MAC …{tail(device.anchor.macAddress)}</div>)}</div>}
       {!!result.possibleReplacements.length && <div className="space-y-2"><h3 className="font-bold text-rose-700">Possible Replacements · Review Required</h3>{result.possibleReplacements.map(candidate=><div key={candidate.candidateId} className="rounded border border-rose-200 p-3 dark:border-rose-900"><div className="grid gap-2 sm:grid-cols-2"><div><strong>Original Project device</strong><p>{candidate.expectedName}</p><p>Saved IP {candidate.expectedIp} · MAC …{tail(candidate.expectedMac)}</p><p>{candidate.expectedVendor} {candidate.expectedModel} {candidate.expectedSerial ? `· Serial ${candidate.expectedSerial}` : ''}</p></div><div><strong>Possible replacement</strong><p>{candidate.foundVendor} {candidate.model}</p><p>Current IP {candidate.foundIp} · MAC …{tail(candidate.foundMac)}</p><p>{candidate.foundSerial ? `Serial ${candidate.foundSerial}` : 'Serial unknown'}</p></div></div><p className="mt-2 text-slate-500">{candidate.evidence?.join(' ')}</p>{candidate.decision === 'PENDING' ? <div className="mt-3 flex flex-wrap gap-2"><button onClick={()=>void decide(candidate.candidateId!,'CONFIRMED')} className="rounded bg-rose-700 px-3 py-2 font-bold text-white">Confirm Replacement</button><button onClick={()=>void decide(candidate.candidateId!,'REJECTED')} className="rounded border px-3 py-2">Keep Original / Do Not Replace</button><button onClick={()=>void decide(candidate.candidateId!,'DEFERRED')} className="rounded border px-3 py-2">Decide Later</button></div> : <p className="mt-2 font-bold"><CheckCircle className="mr-1 inline h-4 w-4"/>{candidate.decision === 'CONFIRMED' ? 'Replacement confirmed; Project has unsaved changes.' : candidate.decision === 'REJECTED' ? 'Original retained.' : 'Decision deferred.'}</p>}</div>)}</div>}
-    </>}</div><footer className="flex justify-end gap-2 border-t border-slate-200 p-4 dark:border-slate-700">{busy ? <button onClick={()=>void cancel()} className="rounded border px-4 py-2 text-xs font-bold">Cancel Reverify</button> : <>{error && <button onClick={()=>void start()} className="rounded bg-blue-600 px-4 py-2 text-xs font-bold text-white">Retry</button>}<button onClick={onClose} className="rounded border px-4 py-2 text-xs font-bold">Done</button></>}</footer>
+    </>}</div><footer className="flex justify-end gap-2 border-t border-slate-200 p-4 dark:border-slate-700">{busy ? <button onClick={()=>void cancel()} className="rounded border px-4 py-2 text-xs font-bold">Cancel Reverify</button> : <>{error && !decisionUncertain && <button onClick={()=>void start()} className="rounded bg-blue-600 px-4 py-2 text-xs font-bold text-white">Retry</button>}<button onClick={onClose} className="rounded border px-4 py-2 text-xs font-bold">Done</button></>}</footer>
   </section></ModalViewport>;
 };
