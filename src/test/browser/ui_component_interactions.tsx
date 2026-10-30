@@ -4,6 +4,7 @@ import {DeviceInspectorDrawer} from '../../ui/components/DeviceInspectorDrawer.t
 import {SiteSurveyReportModal} from '../../ui/components/SiteSurveyReportModal.tsx';
 import {MasterDeviceTable} from '../../ui/components/MasterDeviceTable.tsx';
 import {Tasks} from '../../ui/components/Tasks.tsx';
+import {ProjectReverifyModal} from '../../ui/components/ProjectReverifyModal.tsx';
 import {toggleVisibleSelection} from '../../shared/device_selection.ts';
 import {diagnosticPresentation,type DiagnosticRequest} from '../../shared/technician_attention.ts';
 import type {TaskSnapshot} from '../../shared/tasks.ts';
@@ -22,6 +23,7 @@ function Harness(){
  const [diagnosticDevice,setDiagnosticDevice]=useState<Device|null>(null);
  const [diagnosticOperation,setDiagnosticOperation]=useState<{snapshot:TaskSnapshot;request?:DiagnosticRequest}|undefined>();
  const [diagnosticTasks,setDiagnosticTasks]=useState(false);
+ const [reverifyOpen,setReverifyOpen]=useState(false);
  const observeTasks=useCallback((snapshot:TaskSnapshot&{unavailable?:boolean})=>{
    setDiagnosticOperation(current=>current?{...current,snapshot}:current);
  },[]);
@@ -31,7 +33,8 @@ function Harness(){
      setDiagnosticDevice(next);setDiagnosticOperation(operation);setPane('diagnostic');setOpen(true);
    };
    window.__interaction.enableDiagnosticTasks=()=>{setOpen(false);setDiagnosticTasks(true);};
-   return()=>{window.__interaction.setDiagnosticDevice=null;window.__interaction.enableDiagnosticTasks=null;};
+   window.__interaction.openReverify=()=>{setOpen(false);setReverifyOpen(true);};
+   return()=>{window.__interaction.setDiagnosticDevice=null;window.__interaction.enableDiagnosticTasks=null;window.__interaction.openReverify=null;};
  },[]);
  const visible=devices.filter(d=>filter==='all'||d.id===filter);
  const updateLocation=(id:string,value:string)=>new Promise<void>((resolve,reject)=>{
@@ -53,6 +56,7 @@ function Harness(){
    <output data-testid="selection">{[...selected].sort().join(',')}</output>
   </nav>
   <main style={{paddingTop:70}}>
+   <ProjectReverifyModal isOpen={reverifyOpen} onClose={()=>setReverifyOpen(false)} onChanged={async()=>forbidden()}/ >
    {diagnosticTasks&&<Tasks onResult={forbidden} onSnapshot={observeTasks} onDiagnostic={(id,taskId)=>{
      if(id!==diagnosticDevice?.id)return forbidden();
      setDiagnosticOperation(current=>current?{...current,request:{taskId}}:current);

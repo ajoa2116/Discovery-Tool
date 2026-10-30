@@ -4,7 +4,7 @@ const {chromium}=require('playwright-core');
 const ts=require('typescript');
 const repo=path.resolve(__dirname,'../../..'),entry='/src/test/browser/ui_component_interactions.html';
 const selectedGroups=new Set((process.env.UI_INTERACTION_GROUPS||'ABCDEFGHIJKL').replaceAll(',','').split(''));
-assert.ok(selectedGroups.size>0&&[...selectedGroups].every(g=>'ABCDEFGHIJKLMNOPQ'.includes(g)),'Invalid group selection');
+assert.ok(selectedGroups.size>0&&[...selectedGroups].every(g=>'ABCDEFGHIJKLMNOPQR'.includes(g)),'Invalid group selection');
 const results=[],boundary=[],contexts=[],sourcePaths=new Set(['/src/ui/index.css']);let vite,server,browser,root,origin,port,closed=false,removedFiles=0;
 function checked(p){assert.equal(fs.realpathSync(p),p);for(let q=p;;q=path.dirname(q)){assert.equal(fs.lstatSync(q).isSymbolicLink(),false);if(path.dirname(q)===q)break;}}
 function sourceGraph(file){
@@ -55,11 +55,15 @@ async function pageFixture(){
    if(!allowed(req.url(),req.method())){boundary.push('browser-denied:'+req.url());await route.abort('blockedbyclient');return;}await route.continue();});
  await context.routeWebSocket('**',socket=>{boundary.push('browser-websocket-denied:'+socket.url());socket.close();});
  await context.addInitScript(()=>{
-   const state=window.__interaction={locations:[],previews:[],exports:[],downloads:[],violations:[],taskReads:0,unmount:null};
+   const state=window.__interaction={locations:[],previews:[],exports:[],downloads:[],violations:[],taskReads:0,reverifyRequests:[],reverifyCancels:[],unmount:null};
    window.WebSocket=class{constructor(){state.violations.push('WebSocket');throw Error('Fixture forbids WebSocket');}};
    window.EventSource=class{constructor(){state.violations.push('EventSource');throw Error('Fixture forbids EventSource');}};
    window.fetch=async(url,options={})=>{
      const u=new URL(typeof url==='string'?url:url.url,location.href),method=options.method||'GET';
+     if(state.reverifyEnabled&&method==='POST'&&u.href==='http://localhost:3001/api/project/reverify'&&options.body==='{}')
+       return new Promise(resolve=>state.reverifyRequests.push({resolve}));
+     if(state.reverifyEnabled&&method==='POST'&&u.href==='http://localhost:3001/api/project/reverify/cancel'&&options.body===undefined)
+       return new Promise(resolve=>state.reverifyCancels.push({resolve}));
      // Tasks navigation observes a supplied snapshot entirely in memory. No API listener.
      if(method==='GET'&&u.href==='http://localhost:3001/api/tasks'&&state.taskSnapshot){
        state.taskReads++;if(state.taskPollFailure)throw Error('Injected task observation failure');
@@ -124,6 +128,66 @@ async function check(name,group,run){
  return !error;
 }
 async function suite(){
+ await check('reopened saved details stay unverified after rejected and cancelled Reverify','R',async p=>{
+   const {SiteProjectDatabase}=await import('../../core/storage/project_db.ts');
+   const {technicianErrorResponse}=await import('../../shared/error_presentation.ts');
+   const stamp='2000-01-01T12:00:00.000Z',ip='192.0.2.50';
+   const saved=new SiteProjectDatabase('ISOLATED_TEST');saved.createNewProject('Synthetic reopened Reverify');
+   saved.upsertDevice({id:'reverify-camera',anchor:{macAddress:'00:11:22:33:44:50',onvifEndpointUuid:'uuid-reverify',serialNumber:'serial-reverify',vendor:'Synthetic'},
+     network:{ipAddress:ip,ipAddressHistory:[ip],subnetMask:'255.255.255.0',port:80,protocol:'ONVIF'},
+     technician:{name:'Saved Camera',location:'Saved North Door',notes:'  Retained notes\nSecond line  '},status:'ONLINE',sessionVerification:'VERIFIED',
+     evidenceProvenance:'SYNTHETIC_TEST',discoveredPhase:3,firstSeenAt:stamp,lastSeenAt:stamp,
+     reachability:{lastSuccessfulResponseAt:stamp},diagnostics:{lastSuccessfulContactAt:stamp,checks:[{type:'HTTP',targetIp:ip,success:true,timestamp:stamp}]}});
+   const db=new SiteProjectDatabase('ISOLATED_TEST');db.importProjectJson(saved.exportProjectJson());
+   const device=db.getDevices()[0],before=JSON.stringify(db.getSession());
+   assert.equal(device.status,'UNKNOWN');assert.equal(device.sessionVerification,'NOT_VERIFIED');assert.equal(device.savedStatusSnapshot,'ONLINE');
+   assert.equal(device.diagnostics,undefined);assert.equal(device.reachability,undefined);
+   const inspector=p.getByRole('dialog',{name:'Device Inspector',exact:true}),modal=p.getByRole('dialog',{name:'Project Reverify',exact:true});
+   await p.waitForFunction(()=>typeof window.__interaction.openReverify==='function');
+   const inspect=async()=>{
+     await p.evaluate(device=>window.__interaction.setDiagnosticDevice(device),device);await inspector.waitFor();
+     assert.equal(await inspector.getByText('Current status',{exact:true}).locator('..').locator('p').textContent(),'Unknown');
+     assert.equal(await inspector.getByText('Current IP: '+ip+' · Subnet: Unknown',{exact:true}).count(),1);
+     assert.equal(await inspector.locator('h3 + p').textContent(),device.technician.name);
+     assert.equal(await locationSection(p).locator('p').first().textContent(),device.technician.location);
+     assert.equal(await inspector.getByText('Last successful contact',{exact:true}).locator('..').locator('p').textContent(),'Unknown');
+     assert.equal(await inspector.getByText('No diagnostic checks are available for the current IP address.',{exact:true}).count(),1);
+     for(const name of ['Latest diagnostic run','Earlier observations'])assert.equal(await inspector.getByRole('region',{name,exact:true}).count(),0);
+     for(const text of ['Responded','Online','Unreachable'])assert.equal(await inspector.getByText(text,{exact:true}).count(),0);
+     await inspector.getByRole('button',{name:'Identity & Network',exact:true}).click();
+     for(const [label,value] of [['MAC',device.anchor.macAddress],['ONVIF UUID',device.anchor.onvifEndpointUuid],['Serial',device.anchor.serialNumber]])
+       assert.equal(await inspector.getByText(label,{exact:true}).locator('..').locator('p').textContent(),value);
+     await inspector.getByRole('button',{name:'Diagnostics',exact:true}).click();
+     assert.deepEqual(await p.evaluate(()=>window.__interaction.diagnosticDevice),device); // Notes/verification/snapshot: props, not DOM.
+   };
+   const noResults=async()=>{
+     assert.equal(await modal.locator('strong').count(),0);assert.equal(await modal.getByRole('heading',{name:'Verified',exact:true}).count(),0);
+     assert.equal(await modal.getByText('Verified',{exact:true}).count(),0);
+   };
+   const open=async n=>{await p.evaluate(()=>{window.__interaction.reverifyEnabled=true;window.__interaction.openReverify();});
+     await modal.waitFor();await p.waitForFunction(n=>window.__interaction.reverifyRequests.length===n,n);};
+   const finish=async(index,status,body)=>{await p.evaluate(({index,status,body})=>window.__interaction.reverifyRequests[index].resolve(
+     new Response(JSON.stringify(body),{status,headers:{'Content-Type':'application/json'}})),{index,status,body});};
+   await inspect();await open(1);
+   // Actual route's preflight rejection contract: no discovery or backend is invoked here.
+   const rejected='Project reverification cannot start while a foreground scan is active.';
+   await finish(0,409,{error:rejected});await modal.getByText(rejected,{exact:true}).waitFor();await noResults();
+   await modal.getByRole('button',{name:'Done',exact:true}).click();await modal.waitFor({state:'hidden'});await inspect();
+   await open(2);await modal.getByRole('button',{name:'Cancel Reverify',exact:true}).click();
+   await p.waitForFunction(()=>window.__interaction.reverifyCancels.length===1);
+   await p.evaluate(()=>window.__interaction.reverifyCancels[0].resolve(new Response(JSON.stringify({cancelled:true}),{status:202})));
+   await settle(p);await noResults();assert.equal(await modal.getByRole('button',{name:'Done',exact:true}).count(),0);
+   assert.equal(await modal.getByText('Discovering and reconciling Project identities…',{exact:true}).count(),1);
+   // Acknowledgment is not termination. Only the separately delivered terminal response ends this operation.
+   const cancelled=technicianErrorResponse(Error('Project reverification was cancelled.'),{operation:'PROJECT_REVERIFY',fallbackCode:'OPERATION_FAILED'});
+   assert.equal(cancelled.code,'CANCELLED');await finish(1,400,cancelled);
+   await modal.getByText(cancelled.error,{exact:true}).waitFor();assert.ok(/cancelled/i.test(cancelled.error));await noResults();
+   assert.equal(await modal.getByText(rejected,{exact:true}).count(),0);
+   await modal.getByRole('button',{name:'Done',exact:true}).click();await modal.waitFor({state:'hidden'});await inspect();
+   assert.equal(JSON.stringify(db.getSession()),before);assert.equal(device.technician.notes,'  Retained notes\nSecond line  ');
+   assert.equal(await p.evaluate(()=>window.__interaction.reverifyRequests.length),2);assert.equal(await p.evaluate(()=>window.__interaction.reverifyCancels.length),1);
+   await locCount(p,0);assert.equal(await p.evaluate(()=>window.__interaction.previews.length+window.__interaction.exports.length),0);
+ });
  await check('selected task notices and keyboard focus survive disappearance and reappearance','Q',async p=>{
    const stamp='2000-01-01T12:00:00.000Z';
    const task={id:'DIAGNOSTICS:fixture-observation',correlationId:'fixture-observation',kind:'DIAGNOSTICS',title:'Run Diagnostics',
@@ -486,7 +550,7 @@ async function cleanup(){
 (async()=>{let fatal;
  try{await setup();await suite();}catch(e){fatal=e;console.error(e.stack);}
  finally{try{await cleanup();}catch(e){fatal=e;console.error('CLEANUP UNCERTAIN; preserve root '+root+': '+e.stack);}}
- const groups=Object.fromEntries('ABCDEFGHIJKLMNOPQ'.split('').map(group=>{const rows=results.filter(r=>r.group===group);return[group,{passed:rows.filter(r=>r.status==='passed').length,failed:rows.filter(r=>r.status==='failed').length,status:rows.length?(rows.some(r=>r.status==='failed')?'failed':'passed'):(selectedGroups.has(group)?'blocked':'not-executed-filter')}];}));
+ const groups=Object.fromEntries('ABCDEFGHIJKLMNOPQR'.split('').map(group=>{const rows=results.filter(r=>r.group===group);return[group,{passed:rows.filter(r=>r.status==='passed').length,failed:rows.filter(r=>r.status==='failed').length,status:rows.length?(rows.some(r=>r.status==='failed')?'failed':'passed'):(selectedGroups.has(group)?'blocked':'not-executed-filter')}];}));
  console.log(JSON.stringify({groups,results,boundary,cleanupConfirmed:closed,listenerClosed:server?!server.listening:null,browserDisconnected:browser?!browser.isConnected():null,
    remainingFixtureRoot:root?fs.existsSync(root):false,removedOwnedFiles:removedFiles,fatal:fatal?String(fatal.message):null},null,2));
  if(fatal||results.some(r=>r.status==='failed')||Object.values(groups).some(r=>r.status==='blocked'))process.exitCode=1;
