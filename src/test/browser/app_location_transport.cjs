@@ -274,7 +274,7 @@ async function suite(){
  const modalFor=p=>p.getByRole('dialog',{name:'Project Reverify',exact:true});
  const decisionButtons={CONFIRMED:'Confirm Replacement',REJECTED:'Keep Original / Do Not Replace',DEFERRED:'Decide Later'};
  const decisionMessages={CONFIRMED:'Replacement confirmed; Project has unsaved changes.',REJECTED:'Original retained.',DEFERRED:'Decision deferred.'};
- const uncertainDecision='Replacement decision outcome unavailable. The decision may have been applied. Check the current project state before trying again.';
+ const uncertainDecision='Replacement decision outcome unavailable. The decision may have been applied. Select Done, then Project → History to inspect recorded changes. Project history or displayed device details may not establish whether the decision was applied; device details may be cached. Do not resubmit while the outcome is uncertain.';
  const closePendingDecision='Closing this panel does not cancel the decision request. It may still be applied. Check the current project state before trying again.';
  const candidateCard=(p,name='Camera A')=>modalFor(p).locator('div.rounded.border-rose-200').filter({has:p.getByText(name,{exact:true})});
  const candidateReady=async(p,two=false)=>{
@@ -336,6 +336,108 @@ async function suite(){
    assert.equal(posts.filter(path=>path==='/api/project/reverify').length,reverifyCount);
    assert.ok(posts.every(path=>['/api/monitoring/preferences','/api/project/reverify','/api/project/reverify/replacements/fixture-candidate'].includes(path)));
  };
+ for(const transition of ['B','same-project-reopen'])for(const outcome of ['recorded','empty','failed'])
+ await check(11,'History owner '+transition+' invalidates late '+outcome+' read',async p=>{
+   const inventoryReads=await readCount(p);
+   const openHistory=async()=>{
+     const previous=await p.evaluate(()=>window.__appTransport.requests.filter(r=>r.path==='/api/project/history').map(r=>r.id));
+     await p.evaluate(()=>{window.__appTransport.expectedHistoryReads=2;});await button(p,'Project').click();await button(p,'History').click();
+     const history=p.getByRole('dialog',{name:'Project History',exact:true});await history.waitFor();
+     await p.waitForFunction(previous=>window.__appTransport.expectedHistoryReads===0&&window.__appTransport.requests.some(r=>r.path==='/api/project/history'&&r.state==='pending'&&!previous.includes(r.id)),previous);
+     await history.getByText('Loading project history...',{exact:true}).waitFor();
+     return p.evaluate(previous=>window.__appTransport.requests.find(r=>r.path==='/api/project/history'&&r.state==='pending'&&!previous.includes(r.id)).id,previous);
+   };
+   const old=await openHistory();
+   // Only this authorized read ignores transport abort, so we can deliver a genuinely late response.
+   await p.evaluate(id=>{window.__appTransport.requests.find(r=>r.id===id).ignoreHistoryAbort=true;},old);
+   if(transition==='B')await eventProject(p,true);
+   else{await p.evaluate(()=>{const s=window.__appTransport;s.session.metadataWriteContext.generation='33333333-3333-4333-8333-333333333333';s.session.project.devices[0].technician.location='Reopened location';s.emit('PROJECT_SESSION_CHANGED',{session:s.snapshot()});});await pause(p);}
+   const history=p.getByRole('dialog',{name:'Project History',exact:true});await history.waitFor({state:'hidden'});await pause(p);
+   assert.equal(await p.evaluate(id=>window.__appTransport.requests.find(r=>r.id===id).abortObserved,old),true,'Old History unmount must abort its read');
+   assert.equal(await p.evaluate(()=>window.__appTransport.requests.filter(r=>r.path==='/api/project/history').length),2,'No automatic new-owner History read');
+   const session=await p.evaluate(()=>window.__appTransport.snapshot()),current=await openHistory();assert.notEqual(old,current);
+   const oldRecord={id:'old-owner-event',timestamp:'2026-10-31T12:00:00Z',title:'Obsolete Project A record',summary:'Old owner only',deviceId:'camera/A'};
+   await p.evaluate(({old,outcome,oldRecord})=>window.__appTransport.requests.find(r=>r.id===old).resolve(outcome==='failed'?{error:'Old owner failure'}:{events:outcome==='recorded'?[oldRecord]:[]},outcome==='failed'?503:200),{old,outcome,oldRecord});await pause(p);
+   await history.getByText('Loading project history...',{exact:true}).waitFor();assert.equal(await history.locator('li').count(),0);
+   for(const text of ['Obsolete Project A record','Old owner failure','No Project history matches this view.','Project history could not be loaded.'])assert.equal(await history.getByText(text,{exact:true}).count(),0);
+   await p.evaluate(id=>window.__appTransport.requests.find(r=>r.id===id).resolve({events:[{id:'current-owner-event',timestamp:'2026-10-31T13:00:00Z',title:'Current owner history record',summary:'Explicitly opened current project',deviceId:'camera/A'}]}),current);await pause(p);
+   await history.getByText('Current owner history record',{exact:true}).waitFor();assert.equal(await history.locator('li').count(),1);
+   assert.equal(await history.getByText('Obsolete Project A record',{exact:true}).count(),0);assert.equal(await history.getByText('Loading project history...',{exact:true}).count(),0);
+   await history.getByRole('button',{name:'Close Project History',exact:true}).click();await history.waitFor({state:'hidden'});
+   await inspect(p);assert.equal(await confirmed(p),transition==='B'?'New project location':'Reopened location');await close(p);
+   const requests=await p.evaluate(()=>window.__appTransport.requests.map(({path,method,state,abortObserved})=>({path,method,state,abortObserved})));
+   const reads=requests.filter(r=>r.path==='/api/project/history');assert.equal(reads.length,4);assert.deepEqual(reads.map(r=>r.state),['aborted','resolved','aborted','resolved']);
+   assert.ok(reads.every(r=>r.method==='GET'));assert.equal(reads[1].abortObserved,true);
+   assert.ok(requests.filter(r=>r.method==='POST').every(r=>r.path==='/api/monitoring/preferences'),'No Reverify, decision or cancellation submission');
+   assert.equal(await readCount(p),inventoryReads);assert.deepEqual(await p.evaluate(()=>window.__appTransport.snapshot()),session);
+ });
+ for(const outcome of ['empty','failed','recorded'])await check(11,'uncertain decision History inspection with '+outcome+' read does not establish outcome',async p=>{
+   const session=await candidateReady(p,4),initialReads=await readCount(p);
+   const a=await submitDecision(p,'CONFIRMED');await respondDecision(p,a,'success','CONFIRMED');let read=(await heldSessions(p))[0];await release(p,read,session);
+   const b=await submitDecision(p,'CONFIRMED','Camera B','fixture-candidate-two');await respondDecision(p,b,'rejection','CONFIRMED');
+   const c=await submitDecision(p,'CONFIRMED','Camera C','fixture-candidate-three'),d=await submitDecision(p,'CONFIRMED','Camera D','fixture-candidate-four');
+   await respondDecision(p,d,outcome==='empty'?'transport':'json','CONFIRMED');
+   const guidance=candidateCard(p,'Camera D').getByText(uncertainDecision,{exact:true});await guidance.waitFor();
+   assert.ok((await guidance.textContent()).includes('Select Done, then Project → History'));
+   assert.ok((await guidance.textContent()).includes('may not establish whether the decision was applied; device details may be cached'));
+   assert.ok((await guidance.textContent()).includes('Do not resubmit while the outcome is uncertain.'));
+   assert.equal(await candidateCard(p).getByText(decisionMessages.CONFIRMED,{exact:true}).count(),1);
+   await candidateCard(p,'Camera B').getByText('This replacement candidate is no longer available. Run Reverify again.',{exact:true}).waitFor();
+   await candidateCard(p,'Camera C').getByText('Awaiting acknowledgment...',{exact:true}).waitFor();
+   for(const label of Object.values(decisionButtons)){
+     assert.equal(await candidateCard(p,'Camera B').getByRole('button',{name:label,exact:true}).isEnabled(),true);
+     assert.equal(await candidateCard(p,'Camera C').getByRole('button',{name:label,exact:true}).isDisabled(),true);
+     assert.equal(await candidateCard(p,'Camera D').getByRole('button',{name:label,exact:true}).count(),0);
+   }
+   assert.equal(await p.evaluate(()=>window.__appTransport.requests.filter(r=>r.path==='/api/project/history').length),0);
+   await modalFor(p).getByRole('button',{name:'Done',exact:true}).click();await modalFor(p).waitFor({state:'hidden'});
+   await p.evaluate(()=>{window.__appTransport.expectedHistoryReads=2;});
+   await button(p,'Project').click();await button(p,'History').click();
+   const history=p.getByRole('dialog',{name:'Project History',exact:true});await history.waitFor();
+   await p.waitForFunction(()=>window.__appTransport.requests.filter(r=>r.path==='/api/project/history'&&r.state==='pending').length===1&&window.__appTransport.expectedHistoryReads===0);
+   await history.getByText('Loading project history...',{exact:true}).waitFor();
+   assert.equal(await history.getByText('No Project history matches this view.',{exact:true}).count(),0);
+   assert.equal(await history.getByText('Project history could not be loaded.',{exact:true}).count(),0);
+   assert.equal(await history.locator('li').count(),0);
+   const recorded={id:'fixture-location-event',type:'LOCATION_CHANGED',timestamp:'2026-10-31T12:34:56Z',category:'PROVISIONING',level:'INFO',source:'SYNTHETIC_HISTORY_FIXTURE',deviceId:'camera/A',result:'SUCCESS',title:'Synthetic location record',summary:'Recorded synthetic location edit; unrelated to the replacement decision.',message:'Recorded synthetic location edit; unrelated to the replacement decision.'};
+   await p.evaluate(({outcome,recorded})=>{const request=window.__appTransport.requests.find(r=>r.path==='/api/project/history'&&r.state==='pending');request.resolve(outcome==='failed'?{error:'Replacement confirmed; Project has unsaved changes.'}:{events:outcome==='recorded'?[recorded]:[]},outcome==='failed'?503:200);},{outcome,recorded});
+   await pause(p);
+   if(outcome==='recorded'){
+     await history.getByText(recorded.title,{exact:true}).waitFor();assert.equal(await history.locator('li').count(),1);
+     assert.equal(await history.getByText(recorded.summary,{exact:true}).count(),1);assert.equal(await history.getByText('SUCCESS',{exact:true}).count(),1);
+     const rowText=await history.locator('li').textContent();assert.ok(rowText.includes('Device camera/A'));assert.ok(rowText.includes(await p.evaluate(timestamp=>new Date(timestamp).toLocaleString(),recorded.timestamp)));
+     assert.equal(await history.getByText('Loading project history...',{exact:true}).count(),0);
+     assert.equal(await history.getByText('No Project history matches this view.',{exact:true}).count(),0);
+     // Replacing a held filter read must leave the newer read loading after the old abort settles.
+     await p.evaluate(()=>{window.__appTransport.expectedHistoryReads=1;});await history.getByRole('button',{name:'Verification',exact:true}).click();
+     await p.waitForFunction(()=>window.__appTransport.requests.some(r=>r.path==='/api/project/history'&&r.url.endsWith('?filter=VERIFICATION')&&r.state==='pending'));
+     await history.getByText('Loading project history...',{exact:true}).waitFor();assert.equal(await history.getByText(recorded.title,{exact:true}).count(),0);
+     await p.evaluate(()=>{window.__appTransport.expectedHistoryReads=1;});await history.getByRole('button',{name:'All',exact:true}).click();
+     await p.waitForFunction(()=>window.__appTransport.requests.some(r=>r.path==='/api/project/history'&&r.url.endsWith('?filter=VERIFICATION')&&r.state==='aborted')&&window.__appTransport.expectedHistoryReads===0);
+     await pause(p);await history.getByText('Loading project history...',{exact:true}).waitFor();
+     assert.equal(await history.getByText('No Project history matches this view.',{exact:true}).count(),0);
+     await p.evaluate(()=>window.__appTransport.requests.find(r=>r.path==='/api/project/history'&&r.state==='pending').resolve({events:[]}));await pause(p);
+   }
+   await history.getByText(outcome==='failed'?'Project history could not be loaded.':'No Project history matches this view.',{exact:true}).waitFor();
+   assert.equal(await history.getByText('Loading project history...',{exact:true}).count(),0);
+   assert.equal(await history.getByText(outcome==='failed'?'No Project history matches this view.':'Project history could not be loaded.',{exact:true}).count(),0);
+   assert.equal(await history.locator('li').count(),0);
+   for(const text of Object.values(decisionMessages))assert.equal(await history.getByText(text,{exact:true}).count(),0);
+   assert.equal(await modalFor(p).count(),0);
+   // A late response from the closed UI run must not refresh inventory or reopen results.
+   await respondDecision(p,c,'success','CONFIRMED');assert.equal(await modalFor(p).count(),0);
+   await history.getByRole('button',{name:'Close Project History',exact:true}).click();await history.waitFor({state:'hidden'});
+   await inspect(p,'Camera D');assert.equal(await p.getByRole('dialog',{name:'Device Inspector'}).getByText('Current status',{exact:true}).locator('..').locator('p').textContent(),'Unknown');await close(p);
+   const requests=await p.evaluate(()=>window.__appTransport.requests.map(({path,url,method,body,state})=>({path,url,method,body,state})));
+   const historyReads=requests.filter(r=>r.path==='/api/project/history');
+   assert.equal(historyReads.length,outcome==='recorded'?4:2);assert.deepEqual(historyReads.map(r=>r.state),outcome==='recorded'?['aborted','resolved','aborted','resolved']:['aborted','resolved']);
+   assert.ok(historyReads.every(r=>r.method==='GET'&&r.body===null));
+   assert.deepEqual(historyReads.map(r=>new URL(r.url).search),outcome==='recorded'?['?filter=ALL','?filter=ALL','?filter=VERIFICATION','?filter=ALL']:['?filter=ALL','?filter=ALL']);
+   const posts=requests.filter(r=>r.method==='POST'),decisions=posts.filter(r=>r.path.includes('/replacements/'));
+   assert.deepEqual(decisions.map(r=>[r.path.split('/').at(-1),r.body.decision]),[['fixture-candidate','CONFIRMED'],['fixture-candidate-two','CONFIRMED'],['fixture-candidate-three','CONFIRMED'],['fixture-candidate-four','CONFIRMED']]);
+   assert.equal(posts.filter(r=>r.path==='/api/project/reverify').length,1);assert.ok(posts.every(r=>r.path==='/api/monitoring/preferences'||r.path==='/api/project/reverify'||decisions.includes(r)));
+   assert.equal(await readCount(p),initialReads+1);assert.deepEqual(await p.evaluate(()=>window.__appTransport.snapshot()),session);
+ });
  await check(11,'readable rejection remains with its candidate across mixed peer activity',async p=>{
    const rejected='This replacement candidate is no longer available. Run Reverify again.',generic='Replacement review could not be completed.';
    const session=await candidateReady(p,4),initialReads=await readCount(p);
@@ -731,5 +833,5 @@ async function suite(){
  finally{try{await cleanup();}catch(e){fatal=String(e.stack);console.error('CLEANUP UNCERTAIN; preserve '+root+': '+fatal);}}
  const families=Object.fromEntries(Array.from({length:12},(_,i)=>{const rows=results.filter(r=>r.family===i+1);return[i+1,{passed:rows.filter(r=>r.status==='passed').length,failed:rows.filter(r=>r.status==='failed').length,status:!rows.length?(nameOwnerOnly||reverifyRefreshOnly||reverifyOwnerOnly||replacementOwnerOnly||cancelAckOnly||acceptedAfterCloseOnly?'not-executed-filter':'blocked'):rows.some(r=>r.status==='failed')?'failed':'passed'}];}));
  console.log(JSON.stringify({families,results,summaries,boundary,contextsCreated:contexts.length,cleanupConfirmed:closed,listenerClosed:server?!server.listening:null,browserDisconnected:browser?!browser.isConnected():null,fixtureRoot:root,remainingFixtureRoot:root?fs.existsSync(root):false,removedOwnedFiles:removedFiles,fatal},null,2));
- if(fatal||results.length!==(nameOwnerOnly?1:reverifyRefreshOnly?7:reverifyOwnerOnly?12:replacementOwnerOnly?32:cancelAckOnly?27:acceptedAfterCloseOnly?1:87)||results.some(r=>r.status==='failed'))process.exitCode=1;
+ if(fatal||results.length!==(nameOwnerOnly?1:reverifyRefreshOnly?7:reverifyOwnerOnly?12:replacementOwnerOnly?41:cancelAckOnly?27:acceptedAfterCloseOnly?1:96)||results.some(r=>r.status==='failed'))process.exitCode=1;
 })();

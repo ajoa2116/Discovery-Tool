@@ -29,11 +29,13 @@ module.exports=function installAppFixture(){
    let body=null;try{if(options.body!==undefined)body=JSON.parse(options.body);}catch{check(false,'non-json-body');}
    const record={id:state.requests.length+1,url:u.href,path:u.pathname,method,body,state:'pending',response:null,resolve:null,reject:null};
    state.requests.push(record);check(state.requests.length<=250,'request-budget');
-   check(u.origin==='http://localhost:3001'&&!u.search&&!u.hash,'unexpected-origin-or-query:'+u.href);
+   const historyRead=method==='GET'&&['/api/project/history?filter=ALL','/api/project/history?filter=VERIFICATION'].includes(href)&&u.origin===location.origin;
+   check((historyRead||(u.origin==='http://localhost:3001'&&!u.search))&&!u.hash,'unexpected-origin-or-query:'+u.href);
    let response,held=false;
    if(method==='GET'){
      check(body===null,'get-body');
      switch(u.pathname){
+       case '/api/project/history':check(historyRead&&state.expectedHistoryReads>0,'unissued-history-read');state.expectedHistoryReads--;held=true;break;
        case '/api/project/session':held=state.holdSessions;response=clone(state.session);break;
        case '/api/diagnostics/refresh':response=clone(monitoring);break;
        case '/api/pair/status':response=null;break;
@@ -62,9 +64,9 @@ module.exports=function installAppFixture(){
      const signal=options.signal;
      const detach=()=>signal?.removeEventListener('abort',abort);
      record.resolve=(data,status=200)=>{check(record.state==='pending','duplicate-response:'+record.id);detach();record.state='resolved';record.response=clone(data);resolve(new Response(JSON.stringify(data),{status,headers:{'Content-Type':'application/json'}}));};
-     record.resolveText=(text,status=200)=>{check(record.state==='pending'&&['/api/project/reverify/replacements/fixture-candidate','/api/project/reverify/replacements/fixture-candidate-two','/api/project/reverify/cancel'].includes(record.path),'unissued-text-response');detach();record.state='resolved';record.response=text;resolve(new Response(text,{status,headers:{'Content-Type':'application/json'}}));};
+     record.resolveText=(text,status=200)=>{check(record.state==='pending'&&['/api/project/reverify/replacements/fixture-candidate','/api/project/reverify/replacements/fixture-candidate-two','/api/project/reverify/replacements/fixture-candidate-four','/api/project/reverify/cancel'].includes(record.path),'unissued-text-response');detach();record.state='resolved';record.response=text;resolve(new Response(text,{status,headers:{'Content-Type':'application/json'}}));};
      record.reject=(message='Injected transport failure')=>{check(record.state==='pending','duplicate-rejection:'+record.id);detach();record.state='rejected';reject(Error(message));};
-     const abort=()=>{if(record.state==='pending'){detach();record.state='aborted';reject(new DOMException('Fixture request aborted','AbortError'));}};
+     const abort=()=>{if(record.state==='pending'){detach();if(historyRead&&record.ignoreHistoryAbort===true){record.abortObserved=true;return;}record.state='aborted';reject(new DOMException('Fixture request aborted','AbortError'));}};
      if(signal?.aborted){abort();return;}signal?.addEventListener('abort',abort,{once:true});
      if(!held)record.resolve(response);
    });
