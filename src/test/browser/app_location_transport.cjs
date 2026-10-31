@@ -278,11 +278,12 @@ async function suite(){
  const closePendingDecision='Closing this panel does not cancel the decision request. It may still be applied. Check the current project state before trying again.';
  const candidateCard=(p,name='Camera A')=>modalFor(p).locator('div.rounded.border-rose-200').filter({has:p.getByText(name,{exact:true})});
  const candidateReady=async(p,two=false)=>{
-   if(two===3){
-     await p.evaluate(()=>{const s=window.__appTransport,device=structuredClone(s.session.project.devices[1]);
-       device.id='camera/C';device.anchor.macAddress='00:11:22:33:44:54';device.anchor.model='Camera C';device.technician.name='Camera C';
-       device.network.ipAddress='192.0.2.51';device.network.ipAddressHistory=['192.0.2.51'];s.session.project.devices.push(device);s.session.project.totalDevices=3;
-       s.emit('PROJECT_SESSION_CHANGED',{session:s.snapshot()});});
+   if(two>=3){
+     await p.evaluate(count=>{const s=window.__appTransport;
+       for(const [id,mac,ip] of (count===4?[['C','54','192.0.2.51'],['D','56','192.0.2.52']]:[['C','54','192.0.2.51']])){
+         const device=structuredClone(s.session.project.devices[1]);device.id='camera/'+id;device.anchor.macAddress='00:11:22:33:44:'+mac;device.anchor.model='Camera '+id;device.technician.name='Camera '+id;
+         device.network.ipAddress=ip;device.network.ipAddressHistory=[ip];s.session.project.devices.push(device);
+       }s.session.project.totalDevices=count;s.emit('PROJECT_SESSION_CHANGED',{session:s.snapshot()});},two);
      await p.getByRole('button',{name:'Edit name for Camera C',exact:true}).waitFor();
    }
    const request=await startReverify(p),session=await p.evaluate(()=>window.__appTransport.snapshot());
@@ -291,8 +292,9 @@ async function suite(){
    await p.evaluate(({request,candidate,two})=>{
      const candidates=[candidate];
      if(two)candidates.push({...candidate,candidateId:'fixture-candidate-two',originalDeviceId:'camera/B',expectedName:'Camera B',expectedMac:'00:11:22:33:44:52',foundMac:'00:11:22:33:44:98'});
-     if(two===3)candidates.push({...candidate,candidateId:'fixture-candidate-three',originalDeviceId:'camera/C',expectedName:'Camera C',expectedIp:'192.0.2.51',expectedMac:'00:11:22:33:44:54',foundMac:'00:11:22:33:44:97',foundIp:'192.0.2.51'});
-     window.__appTransport.requests.find(r=>r.id===request).resolve({result:{totalKnown:two===3?3:2,recognizedCount:0,changedIpCount:0,newDevicesCount:1,notVerifiedCount:two===3?3:2,possibleReplacements:candidates}});
+     if(two>=3)candidates.push({...candidate,candidateId:'fixture-candidate-three',originalDeviceId:'camera/C',expectedName:'Camera C',expectedIp:'192.0.2.51',expectedMac:'00:11:22:33:44:54',foundMac:'00:11:22:33:44:97',foundIp:'192.0.2.51'});
+     if(two===4)candidates.push({...candidate,candidateId:'fixture-candidate-four',originalDeviceId:'camera/D',expectedName:'Camera D',expectedIp:'192.0.2.52',expectedMac:'00:11:22:33:44:56',foundMac:'00:11:22:33:44:96',foundIp:'192.0.2.52'});
+     window.__appTransport.requests.find(r=>r.id===request).resolve({result:{totalKnown:two>=3?two:2,recognizedCount:0,changedIpCount:0,newDevicesCount:1,notVerifiedCount:two>=3?two:2,possibleReplacements:candidates}});
    },{request,candidate,two});
    const [read]=await heldSessions(p);await release(p,read,session);await button(p,'Done').waitFor();
    await candidateCard(p).getByRole('button',{name:'Confirm Replacement',exact:true}).waitFor();return session;
@@ -321,7 +323,9 @@ async function suite(){
      if(mode==='transport')r.reject('Injected decision transport failure');
      else if(mode==='json')r.resolveText('incomplete JSON');
      else if(mode==='unusable')r.resolve({});
-     else if(mode==='rejection')r.resolve({error:'Fixture replacement review rejected'},400);
+     else if(mode==='rejection')r.resolve({error:'This replacement candidate is no longer available. Run Reverify again.'},400);
+     else if(mode==='sensitive-rejection')r.resolve({error:'Unexpected internal detail authorization=fixture-redaction-marker C:\\fixture-private\\stack'},400);
+     else if(mode==='empty-rejection')r.resolve({},400);
      else r.resolve({decision});
    },{id,mode,decision});await pause(p);
  };
@@ -332,6 +336,44 @@ async function suite(){
    assert.equal(posts.filter(path=>path==='/api/project/reverify').length,reverifyCount);
    assert.ok(posts.every(path=>['/api/monitoring/preferences','/api/project/reverify','/api/project/reverify/replacements/fixture-candidate'].includes(path)));
  };
+ await check(11,'readable rejection remains with its candidate across mixed peer activity',async p=>{
+   const rejected='This replacement candidate is no longer available. Run Reverify again.',generic='Replacement review could not be completed.';
+   const session=await candidateReady(p,4),initialReads=await readCount(p);
+   const a=await submitDecision(p,'CONFIRMED');await respondDecision(p,a,'success','CONFIRMED');let read=(await heldSessions(p))[0];await release(p,read,session);
+   const b=await submitDecision(p,'CONFIRMED','Camera B','fixture-candidate-two'),c=await submitDecision(p,'CONFIRMED','Camera C','fixture-candidate-three');
+   const d=await submitDecision(p,'CONFIRMED','Camera D','fixture-candidate-four');await respondDecision(p,d,'transport','CONFIRMED');
+   await respondDecision(p,b,'rejection','CONFIRMED');await candidateCard(p,'Camera B').getByText(rejected,{exact:true}).waitFor();
+   assert.equal(await modalFor(p).getByText(rejected,{exact:true}).count(),1);
+   for(const name of ['Camera A','Camera C','Camera D'])assert.equal(await candidateCard(p,name).getByText(rejected,{exact:true}).count(),0);
+   assert.equal(await candidateCard(p).getByText(decisionMessages.CONFIRMED,{exact:true}).count(),1);
+   await candidateCard(p,'Camera C').getByText('Awaiting acknowledgment...',{exact:true}).waitFor();
+   await candidateCard(p,'Camera D').getByText(uncertainDecision,{exact:true}).waitFor();
+   for(const label of Object.values(decisionButtons)){
+     assert.equal(await candidateCard(p,'Camera B').getByRole('button',{name:label,exact:true}).isEnabled(),true);
+     const control=candidateCard(p,'Camera C').getByRole('button',{name:label,exact:true});assert.equal(await control.isDisabled(),true);await control.evaluate(element=>element.click());
+     assert.equal(await candidateCard(p,'Camera D').getByRole('button',{name:label,exact:true}).count(),0);
+   }
+   assert.equal(await readCount(p),initialReads+1);
+   await respondDecision(p,c,'empty-rejection','CONFIRMED');await candidateCard(p,'Camera C').getByText(generic,{exact:true}).waitFor();
+   assert.equal(await candidateCard(p,'Camera B').getByText(rejected,{exact:true}).count(),1);
+   const laterC=await submitDecision(p,'DEFERRED','Camera C','fixture-candidate-three');
+   assert.equal(await candidateCard(p,'Camera C').getByText(generic,{exact:true}).count(),0);
+   assert.equal(await candidateCard(p,'Camera B').getByText(rejected,{exact:true}).count(),1);
+   await respondDecision(p,laterC,'success','DEFERRED');read=(await heldSessions(p))[0];await release(p,read,session);
+   assert.equal(await candidateCard(p,'Camera B').getByText(rejected,{exact:true}).count(),1);
+   const laterB=await submitDecision(p,'REJECTED','Camera B','fixture-candidate-two');
+   assert.equal(await candidateCard(p,'Camera B').getByText(rejected,{exact:true}).count(),0);
+   assert.equal(await candidateCard(p).getByText(decisionMessages.CONFIRMED,{exact:true}).count(),1);
+   assert.equal(await candidateCard(p,'Camera C').getByText(decisionMessages.DEFERRED,{exact:true}).count(),1);
+   assert.equal(await candidateCard(p,'Camera D').getByText(uncertainDecision,{exact:true}).count(),1);
+   await respondDecision(p,laterB,'success','REJECTED');read=(await heldSessions(p))[0];await release(p,read,session);
+   await candidateCard(p,'Camera B').getByText(decisionMessages.REJECTED,{exact:true}).waitFor();
+   const posts=await p.evaluate(()=>window.__appTransport.requests.filter(r=>r.method==='POST').map(r=>({path:r.path,body:r.body})));
+   const decisions=posts.filter(r=>r.path.includes('/replacements/'));
+   assert.deepEqual(decisions.map(r=>[r.path.split('/').at(-1),r.body.decision]),[['fixture-candidate','CONFIRMED'],['fixture-candidate-two','CONFIRMED'],['fixture-candidate-three','CONFIRMED'],['fixture-candidate-four','CONFIRMED'],['fixture-candidate-three','DEFERRED'],['fixture-candidate-two','REJECTED']]);
+   assert.equal(posts.filter(r=>r.path==='/api/project/reverify').length,1);assert.ok(posts.every(r=>r.path==='/api/monitoring/preferences'||r.path==='/api/project/reverify'||decisions.includes(r)));
+   assert.equal(await readCount(p),initialReads+3);assert.deepEqual(await p.evaluate(()=>window.__appTransport.snapshot()),session);
+ });
  for(const mode of ['transport','json'])await check(11,'candidate uncertainty '+mode+' preserves accepted and pending peers',async p=>{
    const session=await candidateReady(p,3),initialReads=await readCount(p);
    const accepted=await submitDecision(p,'CONFIRMED');await respondDecision(p,accepted,'success','CONFIRMED');
@@ -354,7 +396,7 @@ async function suite(){
    assert.equal(await readCount(p),reads);assert.deepEqual(await p.evaluate(()=>window.__appTransport.snapshot()),session);
    assert.equal(await p.evaluate(()=>window.__appTransport.requests.filter(r=>r.path.includes('/replacements/')).length),3);
    await respondDecision(p,pending,'rejection','CONFIRMED');
-   await modalFor(p).getByText('Fixture replacement review rejected',{exact:true}).waitFor();
+   await modalFor(p).getByText('This replacement candidate is no longer available. Run Reverify again.',{exact:true}).waitFor();
    for(const label of Object.values(decisionButtons))assert.equal(await candidateCard(p,'Camera C').getByRole('button',{name:label,exact:true}).isEnabled(),true);
    assert.equal(await candidateCard(p,'Camera B').getByText(uncertainDecision,{exact:true}).count(),1);
    assert.equal(await candidateCard(p).getByText(decisionMessages.CONFIRMED,{exact:true}).count(),1);assert.equal(await readCount(p),reads);
@@ -386,7 +428,7 @@ async function suite(){
    if(timing==='reopened')reopened=await startReverify(p);
    await respondDecision(p,old,mode,'CONFIRMED');
    assert.equal(await readCount(p),reads);await oneDecision(p,timing==='reopened'?2:1);
-   for(const text of [closePendingDecision,uncertainDecision,'Fixture replacement review rejected',...Object.values(decisionMessages)])assert.equal(await p.getByText(text,{exact:true}).count(),0);
+   for(const text of [closePendingDecision,uncertainDecision,'This replacement candidate is no longer available. Run Reverify again.',...Object.values(decisionMessages)])assert.equal(await p.getByText(text,{exact:true}).count(),0);
    assert.deepEqual(await p.evaluate(()=>window.__appTransport.snapshot()),session);
    if(timing==='closed'){assert.equal(await modalFor(p).count(),0);reopened=await startReverify(p);}
    assert.equal(await modalFor(p).locator('strong').count(),0);
@@ -422,7 +464,7 @@ async function suite(){
    await respondDecision(p,old,'rejection','CONFIRMED');
    await candidateCard(p).getByText('Awaiting acknowledgment...',{exact:true}).waitFor();
    for(const label of Object.values(decisionButtons))assert.equal(await candidateCard(p).getByRole('button',{name:label,exact:true}).isDisabled(),true);
-   assert.equal(await modalFor(p).getByText('Fixture replacement review rejected',{exact:true}).count(),0);
+   assert.equal(await modalFor(p).getByText('This replacement candidate is no longer available. Run Reverify again.',{exact:true}).count(),0);
    assert.equal(await readCount(p),reads);assert.deepEqual(await p.evaluate(()=>window.__appTransport.snapshot()),session);
    await respondDecision(p,newRequest,'success','REJECTED');const [read]=await heldSessions(p);await release(p,read,session);
    await candidateCard(p).getByText(decisionMessages.REJECTED,{exact:true}).waitFor();
@@ -435,12 +477,12 @@ async function suite(){
    await candidateReady(p);const id=await submitDecision(p,'CONFIRMED');await switchReverifyOwner(p,transition);
    const session=await p.evaluate(()=>window.__appTransport.snapshot()),reads=await readCount(p);
    await respondDecision(p,id,mode,'CONFIRMED');assert.equal(await modalFor(p).count(),0);
-   for(const text of [uncertainDecision,'Fixture replacement review rejected',...Object.values(decisionMessages)])assert.equal(await p.getByText(text,{exact:true}).count(),0);
+   for(const text of [uncertainDecision,'This replacement candidate is no longer available. Run Reverify again.',...Object.values(decisionMessages)])assert.equal(await p.getByText(text,{exact:true}).count(),0);
    assert.equal(await readCount(p),reads);assert.deepEqual(await p.evaluate(()=>window.__appTransport.snapshot()),session);await oneDecision(p);
    await inspect(p);assert.equal(await confirmed(p),transition==='B'?'New project location':'Reopened location');
    assert.equal(await p.getByRole('dialog',{name:'Device Inspector'}).getByText('Current status',{exact:true}).locator('..').locator('p').textContent(),'Unknown');await close(p);
  });
- for(const mode of ['transport','json','unusable','rejection','CONFIRMED','REJECTED','DEFERRED'])
+ for(const mode of ['transport','json','unusable','rejection','sensitive-rejection','empty-rejection','CONFIRMED','REJECTED','DEFERRED'])
  await check(11,'current-owner replacement '+mode+' remains truthful',async p=>{
    const session=await candidateReady(p),decision=mode in decisionButtons?mode:'CONFIRMED';
    const id=await submitDecision(p,decision),reads=await readCount(p);await respondDecision(p,id,mode,decision);
@@ -451,8 +493,9 @@ async function suite(){
      for(const label of Object.values(decisionButtons))assert.equal(await modal.getByRole('button',{name:label,exact:true}).count(),0);
      for(const text of Object.values(decisionMessages))assert.equal(await modal.getByText(text,{exact:true}).count(),0);
      assert.equal(await readCount(p),reads);
-   }else if(mode==='rejection'){
-     await modal.getByText('Fixture replacement review rejected',{exact:true}).waitFor();
+   }else if(['rejection','sensitive-rejection','empty-rejection'].includes(mode)){
+     await candidateCard(p).getByText(mode==='rejection'?'This replacement candidate is no longer available. Run Reverify again.':'Replacement review could not be completed.',{exact:true}).waitFor();
+     assert.ok(!(await modal.textContent()).includes('fixture-redaction-marker'));assert.ok(!(await modal.textContent()).includes('fixture-private'));
      assert.equal(await modal.getByText(uncertainDecision,{exact:true}).count(),0);
      assert.equal(await modal.getByRole('button',{name:'Confirm Replacement',exact:true}).count(),1);assert.equal(await readCount(p),reads);
      for(const label of Object.values(decisionButtons))assert.equal(await candidateCard(p).getByRole('button',{name:label,exact:true}).isEnabled(),true);
@@ -688,5 +731,5 @@ async function suite(){
  finally{try{await cleanup();}catch(e){fatal=String(e.stack);console.error('CLEANUP UNCERTAIN; preserve '+root+': '+fatal);}}
  const families=Object.fromEntries(Array.from({length:12},(_,i)=>{const rows=results.filter(r=>r.family===i+1);return[i+1,{passed:rows.filter(r=>r.status==='passed').length,failed:rows.filter(r=>r.status==='failed').length,status:!rows.length?(nameOwnerOnly||reverifyRefreshOnly||reverifyOwnerOnly||replacementOwnerOnly||cancelAckOnly||acceptedAfterCloseOnly?'not-executed-filter':'blocked'):rows.some(r=>r.status==='failed')?'failed':'passed'}];}));
  console.log(JSON.stringify({families,results,summaries,boundary,contextsCreated:contexts.length,cleanupConfirmed:closed,listenerClosed:server?!server.listening:null,browserDisconnected:browser?!browser.isConnected():null,fixtureRoot:root,remainingFixtureRoot:root?fs.existsSync(root):false,removedOwnedFiles:removedFiles,fatal},null,2));
- if(fatal||results.length!==(nameOwnerOnly?1:reverifyRefreshOnly?7:reverifyOwnerOnly?12:replacementOwnerOnly?29:cancelAckOnly?27:acceptedAfterCloseOnly?1:84)||results.some(r=>r.status==='failed'))process.exitCode=1;
+ if(fatal||results.length!==(nameOwnerOnly?1:reverifyRefreshOnly?7:reverifyOwnerOnly?12:replacementOwnerOnly?32:cancelAckOnly?27:acceptedAfterCloseOnly?1:87)||results.some(r=>r.status==='failed'))process.exitCode=1;
 })();
