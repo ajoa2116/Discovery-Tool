@@ -261,20 +261,31 @@ async function suite(){
  const decisionButtons={CONFIRMED:'Confirm Replacement',REJECTED:'Keep Original / Do Not Replace',DEFERRED:'Decide Later'};
  const decisionMessages={CONFIRMED:'Replacement confirmed; Project has unsaved changes.',REJECTED:'Original retained.',DEFERRED:'Decision deferred.'};
  const uncertainDecision='Replacement decision outcome unavailable. The decision may have been applied. Check the current project state before trying again.';
- const candidateReady=async p=>{
+ const candidateCard=(p,name='Camera A')=>modalFor(p).locator('div.rounded.border-rose-200').filter({has:p.getByText(name,{exact:true})});
+ const candidateReady=async(p,two=false)=>{
    const request=await startReverify(p),session=await p.evaluate(()=>window.__appTransport.snapshot());
    const candidate={candidateId:'fixture-candidate',originalDeviceId:'camera/A',expectedName:'Camera A',expectedMac:'00:11:22:33:44:50',
      expectedIp:'192.0.2.50',foundIp:'192.0.2.50',foundMac:'00:11:22:33:44:99',foundVendor:'Synthetic',model:'Replacement fixture',decision:'PENDING'};
-   await p.evaluate(({request,candidate})=>window.__appTransport.requests.find(r=>r.id===request).resolve({result:{
-     totalKnown:2,recognizedCount:0,changedIpCount:0,newDevicesCount:1,notVerifiedCount:2,possibleReplacements:[candidate]}}),{request,candidate});
+   await p.evaluate(({request,candidate,two})=>window.__appTransport.requests.find(r=>r.id===request).resolve({result:{
+     totalKnown:2,recognizedCount:0,changedIpCount:0,newDevicesCount:1,notVerifiedCount:2,possibleReplacements:two?[candidate,{...candidate,candidateId:'fixture-candidate-two',originalDeviceId:'camera/B',expectedName:'Camera B'}]:[candidate]}}),{request,candidate,two});
    const [read]=await heldSessions(p);await release(p,read,session);await button(p,'Done').waitFor();
-   await modalFor(p).getByRole('button',{name:'Confirm Replacement',exact:true}).waitFor();return session;
+   await candidateCard(p).getByRole('button',{name:'Confirm Replacement',exact:true}).waitFor();return session;
  };
- const submitDecision=async(p,decision)=>{
-   await p.evaluate(decision=>{window.__appTransport.expectedDecision=decision;},decision);
-   await modalFor(p).getByRole('button',{name:decisionButtons[decision],exact:true}).click();
-   await p.waitForFunction(()=>window.__appTransport.requests.some(r=>r.path.includes('/replacements/')&&r.state==='pending'));
-   return p.evaluate(()=>window.__appTransport.requests.find(r=>r.path.includes('/replacements/')&&r.state==='pending').id);
+ const submitDecision=async(p,decision,name='Camera A',candidate='fixture-candidate')=>{
+   const previous=await p.evaluate(()=>window.__appTransport.requests.filter(r=>r.path.includes('/replacements/')).map(r=>r.id));
+   await p.evaluate(({decision,candidate})=>{window.__appTransport.expectedDecision=decision;window.__appTransport.expectedCandidate=candidate;},{decision,candidate});
+   const card=candidateCard(p,name);
+   // Same-turn native DOM clicks exercise the real controls before awaiting a response.
+   await card.evaluate((element,label)=>{
+     const buttons=[...element.querySelectorAll('button')],chosen=buttons.find(b=>b.textContent===label);
+     chosen.click();chosen.click();for(const button of buttons)button.click();
+   },decisionButtons[decision]);
+   const target='/api/project/reverify/replacements/'+candidate;
+   await p.waitForFunction(({target,previous})=>window.__appTransport.requests.some(r=>r.path===target&&r.state==='pending'&&!previous.includes(r.id)),{target,previous});
+   await card.getByText('Awaiting acknowledgment...',{exact:true}).waitFor();
+   for(const label of Object.values(decisionButtons))assert.equal(await card.getByRole('button',{name:label,exact:true}).isDisabled(),true);
+   for(const text of Object.values(decisionMessages))assert.equal(await card.getByText(text,{exact:true}).count(),0);
+   return p.evaluate(({target,previous})=>window.__appTransport.requests.find(r=>r.path===target&&r.state==='pending'&&!previous.includes(r.id)).id,{target,previous});
  };
  const respondDecision=async(p,id,mode,decision)=>{
    await p.evaluate(({id,mode,decision})=>{const r=window.__appTransport.requests.find(r=>r.id===id);
@@ -292,6 +303,37 @@ async function suite(){
    assert.equal(posts.filter(path=>path==='/api/project/reverify').length,1);
    assert.ok(posts.every(path=>['/api/monitoring/preferences','/api/project/reverify','/api/project/reverify/replacements/fixture-candidate'].includes(path)));
  };
+ await check(11,'pending replacement candidates remain independently actionable',async p=>{
+   const session=await candidateReady(p,true),reads=await readCount(p),first=await submitDecision(p,'CONFIRMED');
+   for(const label of Object.values(decisionButtons))assert.equal(await candidateCard(p,'Camera B').getByRole('button',{name:label,exact:true}).isEnabled(),true);
+   const second=await submitDecision(p,'DEFERRED','Camera B','fixture-candidate-two');
+   assert.equal(await modalFor(p).getByText('Awaiting acknowledgment...',{exact:true}).count(),2);
+   assert.equal(await readCount(p),reads);assert.deepEqual(await p.evaluate(()=>window.__appTransport.snapshot()),session);
+   await respondDecision(p,second,'success','DEFERRED');let read=(await heldSessions(p))[0];await release(p,read,session);
+   await candidateCard(p,'Camera B').getByText(decisionMessages.DEFERRED,{exact:true}).waitFor();
+   await candidateCard(p).getByText('Awaiting acknowledgment...',{exact:true}).waitFor();
+   await respondDecision(p,first,'success','CONFIRMED');read=(await heldSessions(p))[0];await release(p,read,session);
+   await candidateCard(p).getByText(decisionMessages.CONFIRMED,{exact:true}).waitFor();
+   assert.equal(await modalFor(p).getByText('Awaiting acknowledgment...',{exact:true}).count(),0);
+   const posts=await p.evaluate(()=>window.__appTransport.requests.filter(r=>r.method==='POST').map(r=>r.path));
+   assert.equal(posts.filter(path=>path.includes('/replacements/')).length,2);assert.equal(posts.filter(path=>path==='/api/project/reverify').length,1);
+   assert.ok(posts.every(path=>['/api/monitoring/preferences','/api/project/reverify','/api/project/reverify/replacements/fixture-candidate','/api/project/reverify/replacements/fixture-candidate-two'].includes(path)));
+   assert.equal(await readCount(p),reads+2);assert.deepEqual(await p.evaluate(()=>window.__appTransport.snapshot()),session);
+ });
+ for(const transition of ['B','same-project-reopen'])await check(11,'obsolete decision cannot clear new pending candidate after '+transition,async p=>{
+   await candidateReady(p);const old=await submitDecision(p,'CONFIRMED');await switchReverifyOwner(p,transition);
+   const session=await candidateReady(p),newRequest=await submitDecision(p,'REJECTED'),reads=await readCount(p);
+   await respondDecision(p,old,'rejection','CONFIRMED');
+   await candidateCard(p).getByText('Awaiting acknowledgment...',{exact:true}).waitFor();
+   for(const label of Object.values(decisionButtons))assert.equal(await candidateCard(p).getByRole('button',{name:label,exact:true}).isDisabled(),true);
+   assert.equal(await modalFor(p).getByText('Fixture replacement review rejected',{exact:true}).count(),0);
+   assert.equal(await readCount(p),reads);assert.deepEqual(await p.evaluate(()=>window.__appTransport.snapshot()),session);
+   await respondDecision(p,newRequest,'success','REJECTED');const [read]=await heldSessions(p);await release(p,read,session);
+   await candidateCard(p).getByText(decisionMessages.REJECTED,{exact:true}).waitFor();
+   assert.equal(await modalFor(p).getByText('Awaiting acknowledgment...',{exact:true}).count(),0);
+   assert.equal(await p.evaluate(()=>window.__appTransport.requests.filter(r=>r.path.includes('/replacements/')).length),2);
+   assert.deepEqual(await p.evaluate(()=>window.__appTransport.snapshot()),session);
+ });
  for(const transition of ['B','same-project-reopen'])for(const mode of ['success','transport','json','rejection'])
  await check(11,'obsolete replacement '+mode+' after '+transition+' is consumed',async p=>{
    await candidateReady(p);const id=await submitDecision(p,'CONFIRMED');await switchReverifyOwner(p,transition);
@@ -317,11 +359,13 @@ async function suite(){
      await modal.getByText('Fixture replacement review rejected',{exact:true}).waitFor();
      assert.equal(await modal.getByText(uncertainDecision,{exact:true}).count(),0);
      assert.equal(await modal.getByRole('button',{name:'Confirm Replacement',exact:true}).count(),1);assert.equal(await readCount(p),reads);
+     for(const label of Object.values(decisionButtons))assert.equal(await candidateCard(p).getByRole('button',{name:label,exact:true}).isEnabled(),true);
    }else{
      await modal.getByText(decisionMessages[decision],{exact:true}).waitFor();
      const [read]=await heldSessions(p);await release(p,read,session);
      assert.equal(await modal.getByText(uncertainDecision,{exact:true}).count(),0);assert.equal(await readCount(p),reads+1);
    }
+   assert.equal(await modal.getByText('Awaiting acknowledgment...',{exact:true}).count(),0);
    await oneDecision(p);assert.deepEqual(await p.evaluate(()=>window.__appTransport.snapshot()),session);
    await button(p,'Done').click();await modal.waitFor({state:'hidden'});await inspect(p);assert.equal(await confirmed(p),'Lobby');
    assert.equal(await p.getByRole('dialog',{name:'Device Inspector'}).getByText('Current status',{exact:true}).locator('..').locator('p').textContent(),'Unknown');await close(p);
@@ -547,5 +591,5 @@ async function suite(){
  finally{try{await cleanup();}catch(e){fatal=String(e.stack);console.error('CLEANUP UNCERTAIN; preserve '+root+': '+fatal);}}
  const families=Object.fromEntries(Array.from({length:12},(_,i)=>{const rows=results.filter(r=>r.family===i+1);return[i+1,{passed:rows.filter(r=>r.status==='passed').length,failed:rows.filter(r=>r.status==='failed').length,status:!rows.length?(nameOwnerOnly||reverifyRefreshOnly||reverifyOwnerOnly||replacementOwnerOnly||cancelAckOnly?'not-executed-filter':'blocked'):rows.some(r=>r.status==='failed')?'failed':'passed'}];}));
  console.log(JSON.stringify({families,results,summaries,boundary,contextsCreated:contexts.length,cleanupConfirmed:closed,listenerClosed:server?!server.listening:null,browserDisconnected:browser?!browser.isConnected():null,fixtureRoot:root,remainingFixtureRoot:root?fs.existsSync(root):false,removedOwnedFiles:removedFiles,fatal},null,2));
- if(fatal||results.length!==(nameOwnerOnly?1:reverifyRefreshOnly?7:reverifyOwnerOnly?12:replacementOwnerOnly?18:cancelAckOnly?27:73)||results.some(r=>r.status==='failed'))process.exitCode=1;
+ if(fatal||results.length!==(nameOwnerOnly?1:reverifyRefreshOnly?7:reverifyOwnerOnly?12:replacementOwnerOnly?21:cancelAckOnly?27:76)||results.some(r=>r.status==='failed'))process.exitCode=1;
 })();

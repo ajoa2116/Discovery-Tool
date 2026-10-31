@@ -50,8 +50,8 @@ module.exports=function installAppFixture(){
      check(state.expectedReverify===true&&JSON.stringify(body)==='{}','unissued-reverify');state.expectedReverify=false;held=true;
    }else if(method==='POST'&&u.pathname==='/api/project/reverify/cancel'){
      check(state.expectedCancel===true&&body===null,'unissued-reverify-cancel');state.expectedCancel=false;held=true;
-   }else if(method==='POST'&&u.pathname==='/api/project/reverify/replacements/fixture-candidate'){
-     check(state.expectedDecision!==undefined&&JSON.stringify(body)===JSON.stringify({decision:state.expectedDecision}),'unissued-replacement-decision');state.expectedDecision=undefined;held=true;
+   }else if(method==='POST'&&['/api/project/reverify/replacements/fixture-candidate','/api/project/reverify/replacements/fixture-candidate-two'].includes(u.pathname)){
+     check(u.pathname==='/api/project/reverify/replacements/'+(state.expectedCandidate||'fixture-candidate')&&state.expectedDecision!==undefined&&JSON.stringify(body)===JSON.stringify({decision:state.expectedDecision}),'unissued-replacement-decision');state.expectedDecision=undefined;state.expectedCandidate=undefined;held=true;
    }else if(method==='POST'&&/^\/api\/device\/[^/]+\/config$/.test(u.pathname)){
      const expected=state.expectedWrites.shift();check(!!expected,'unissued-write');
      check(u.pathname==='/api/device/'+encodeURIComponent(expected.id)+'/config','wrong-write-id');

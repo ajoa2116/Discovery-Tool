@@ -12,8 +12,9 @@ export const ProjectReverifyModal: React.FC<Props> = ({ isOpen, projectOwner, is
   const [inventoryUnconfirmed, setInventoryUnconfirmed] = useState(false);
   const [decisionUncertain, setDecisionUncertain] = useState(false);
   const [cancellationNotice, setCancellationNotice] = useState('');
+  const [pendingDecisions, setPendingDecisions] = useState<ReadonlySet<string>>(new Set());
   const started = useRef(false);
-  const activeRun = useRef<{owner:object;settled?:boolean;cancellationSubmission?:object}|null>(null), previousOwner = useRef(projectOwner), mounted = useRef(false);
+  const activeRun = useRef<{owner:object;settled?:boolean;cancellationSubmission?:object;decisions:Map<string,object>}|null>(null), previousOwner = useRef(projectOwner), mounted = useRef(false);
   const context = useRef({isOpen,projectOwner,isOwnerCurrent});context.current={isOpen,projectOwner,isOwnerCurrent};
   const current = (run:{owner:object}) => mounted.current && activeRun.current===run && context.current.isOpen
     && context.current.projectOwner===run.owner && context.current.isOwnerCurrent(run.owner);
@@ -21,6 +22,7 @@ export const ProjectReverifyModal: React.FC<Props> = ({ isOpen, projectOwner, is
   useEffect(()=>{
     if(previousOwner.current===projectOwner)return;
     previousOwner.current=projectOwner;activeRun.current=null;
+    setPendingDecisions(new Set());
     setBusy(false);setResult(null);setError('');setInventoryUnconfirmed(false);setDecisionUncertain(false);setCancellationNotice('');
     // Invalidate the UI only. Do not cancel backend work or start a run for the new owner.
     if(isOpen){started.current=true;onClose();}
@@ -32,7 +34,8 @@ export const ProjectReverifyModal: React.FC<Props> = ({ isOpen, projectOwner, is
   };
   const start = async () => {
     if(!isOwnerCurrent(projectOwner))return;
-    const run:{owner:object;settled?:boolean;cancellationSubmission?:object}={owner:projectOwner};activeRun.current=run;
+    const run:{owner:object;settled?:boolean;cancellationSubmission?:object;decisions:Map<string,object>}={owner:projectOwner,decisions:new Map()};activeRun.current=run;
+    setPendingDecisions(new Set());
     setBusy(true); setError(''); setResult(null); setInventoryUnconfirmed(false);setDecisionUncertain(false);setCancellationNotice('');
     let responseUnderstood = false;
     try {
@@ -48,7 +51,7 @@ export const ProjectReverifyModal: React.FC<Props> = ({ isOpen, projectOwner, is
     catch (reason) { if(current(run))setError(responseUnderstood ? (reason instanceof Error ? reason.message : 'Project reverification could not complete.') : 'Reverify outcome unavailable. The operation may still be running. Check Tasks before retrying.'); }
     finally { if(current(run)){run.settled=true;setCancellationNotice('');setBusy(false);} }
   };
-  useEffect(() => { if (isOpen && !started.current) { started.current = true; void start(); } if (!isOpen) { activeRun.current=null;started.current = false;setBusy(false);setResult(null);setError('');setInventoryUnconfirmed(false);setDecisionUncertain(false);setCancellationNotice(''); } }, [isOpen]);
+  useEffect(() => { if (isOpen && !started.current) { started.current = true; void start(); } if (!isOpen) { activeRun.current=null;started.current = false;setBusy(false);setResult(null);setError('');setInventoryUnconfirmed(false);setDecisionUncertain(false);setCancellationNotice('');setPendingDecisions(new Set()); } }, [isOpen]);
   if (!isOpen || !activeRun.current || !current(activeRun.current)) return null;
   const cancel = async () => {
     const run=activeRun.current;if(!run||!current(run)||run.settled)return;
@@ -68,20 +71,28 @@ export const ProjectReverifyModal: React.FC<Props> = ({ isOpen, projectOwner, is
     }
   };
   const decide = async (candidateId: string, decision: 'CONFIRMED'|'REJECTED'|'DEFERRED') => {
-    const run=activeRun.current;if(!run||!current(run))return;
+    const run=activeRun.current;if(!candidateId||!run||!current(run)||run.decisions.has(candidateId))return;
+    const submission={};run.decisions.set(candidateId,submission);
+    const matching=()=>current(run)&&run.decisions.get(candidateId)===submission;
+    setPendingDecisions(value=>new Set(value).add(candidateId));
     setError('');setDecisionUncertain(false);
     try {
-      const response = await fetch(`http://localhost:3001/api/project/reverify/replacements/${encodeURIComponent(candidateId)}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ decision }) });if(!current(run))return;
-      const body = await response.json();if(!current(run))return;
+      const response = await fetch(`http://localhost:3001/api/project/reverify/replacements/${encodeURIComponent(candidateId)}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ decision }) });if(!matching())return;
+      const body = await response.json();if(!matching())return;
       if(!body||typeof body!=='object'||Array.isArray(body))throw new Error('Unusable replacement response');
       if (!response.ok) { setError(typeof body.error==='string'&&body.error ? body.error : 'Replacement review could not be completed.'); return; }
       if(body.decision!==decision)throw new Error('Unconfirmed replacement decision');
       setResult(value => value ? { ...value, possibleReplacements: value.possibleReplacements.map(candidate => candidate.candidateId === candidateId ? { ...candidate, decision } : candidate) } : value); await refreshInventory(run);
     } catch {
-      if(!current(run))return;
+      if(!matching())return;
       // Earlier Reverify results do not confirm what happened to this decision.
       setResult(null);setInventoryUnconfirmed(false);setDecisionUncertain(true);
       setError('Replacement decision outcome unavailable. The decision may have been applied. Check the current project state before trying again.');
+    } finally {
+      if(matching()){
+        run.decisions.delete(candidateId);
+        setPendingDecisions(value=>{const next=new Set(value);next.delete(candidateId);return next;});
+      }
     }
   };
   return <ModalViewport className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"><section role="dialog" aria-label="Project Reverify" className="max-h-[90vh] w-full max-w-3xl overflow-auto rounded-xl border border-slate-200 bg-white shadow-xl dark:border-slate-700 dark:bg-slate-900">
@@ -92,7 +103,7 @@ export const ProjectReverifyModal: React.FC<Props> = ({ isOpen, projectOwner, is
       {!!result.verifiedDevices?.length && <div><h3 className="mb-1 font-bold text-emerald-700">Verified</h3>{result.verifiedDevices.map(device=><div key={device.id} className="border-t border-slate-100 py-1 dark:border-slate-800">{label(device)} · {device.network.ipAddress}</div>)}</div>}
       {!!result.notVerifiedDevices?.length && <div><h3 className="mb-1 font-bold text-amber-700">Not Verified</h3>{result.notVerifiedDevices.map(device=><div key={device.id} className="border-t border-slate-100 py-1 dark:border-slate-800">{label(device)} · saved {device.network.ipAddress}</div>)}</div>}
       {!!result.newDevices?.length && <div><h3 className="mb-1 font-bold text-blue-700">New Devices · Not in Project</h3>{result.newDevices.map(device=><div key={device.id} className="border-t border-slate-100 py-1 dark:border-slate-800">{label(device)} · {device.network.ipAddress} · MAC …{tail(device.anchor.macAddress)}</div>)}</div>}
-      {!!result.possibleReplacements.length && <div className="space-y-2"><h3 className="font-bold text-rose-700">Possible Replacements · Review Required</h3>{result.possibleReplacements.map(candidate=><div key={candidate.candidateId} className="rounded border border-rose-200 p-3 dark:border-rose-900"><div className="grid gap-2 sm:grid-cols-2"><div><strong>Original Project device</strong><p>{candidate.expectedName}</p><p>Saved IP {candidate.expectedIp} · MAC …{tail(candidate.expectedMac)}</p><p>{candidate.expectedVendor} {candidate.expectedModel} {candidate.expectedSerial ? `· Serial ${candidate.expectedSerial}` : ''}</p></div><div><strong>Possible replacement</strong><p>{candidate.foundVendor} {candidate.model}</p><p>Current IP {candidate.foundIp} · MAC …{tail(candidate.foundMac)}</p><p>{candidate.foundSerial ? `Serial ${candidate.foundSerial}` : 'Serial unknown'}</p></div></div><p className="mt-2 text-slate-500">{candidate.evidence?.join(' ')}</p>{candidate.decision === 'PENDING' ? <div className="mt-3 flex flex-wrap gap-2"><button onClick={()=>void decide(candidate.candidateId!,'CONFIRMED')} className="rounded bg-rose-700 px-3 py-2 font-bold text-white">Confirm Replacement</button><button onClick={()=>void decide(candidate.candidateId!,'REJECTED')} className="rounded border px-3 py-2">Keep Original / Do Not Replace</button><button onClick={()=>void decide(candidate.candidateId!,'DEFERRED')} className="rounded border px-3 py-2">Decide Later</button></div> : <p className="mt-2 font-bold"><CheckCircle className="mr-1 inline h-4 w-4"/>{candidate.decision === 'CONFIRMED' ? 'Replacement confirmed; Project has unsaved changes.' : candidate.decision === 'REJECTED' ? 'Original retained.' : 'Decision deferred.'}</p>}</div>)}</div>}
+      {!!result.possibleReplacements.length && <div className="space-y-2"><h3 className="font-bold text-rose-700">Possible Replacements · Review Required</h3>{result.possibleReplacements.map(candidate=><div key={candidate.candidateId} className="rounded border border-rose-200 p-3 dark:border-rose-900"><div className="grid gap-2 sm:grid-cols-2"><div><strong>Original Project device</strong><p>{candidate.expectedName}</p><p>Saved IP {candidate.expectedIp} · MAC …{tail(candidate.expectedMac)}</p><p>{candidate.expectedVendor} {candidate.expectedModel} {candidate.expectedSerial ? `· Serial ${candidate.expectedSerial}` : ''}</p></div><div><strong>Possible replacement</strong><p>{candidate.foundVendor} {candidate.model}</p><p>Current IP {candidate.foundIp} · MAC …{tail(candidate.foundMac)}</p><p>{candidate.foundSerial ? `Serial ${candidate.foundSerial}` : 'Serial unknown'}</p></div></div><p className="mt-2 text-slate-500">{candidate.evidence?.join(' ')}</p>{candidate.decision === 'PENDING' ? <div className="mt-3 flex flex-wrap gap-2">{pendingDecisions.has(candidate.candidateId!) && <p role="status" className="w-full text-slate-500">Awaiting acknowledgment...</p>}<button disabled={pendingDecisions.has(candidate.candidateId!)} onClick={()=>void decide(candidate.candidateId!,'CONFIRMED')} className="rounded bg-rose-700 px-3 py-2 font-bold text-white">Confirm Replacement</button><button disabled={pendingDecisions.has(candidate.candidateId!)} onClick={()=>void decide(candidate.candidateId!,'REJECTED')} className="rounded border px-3 py-2">Keep Original / Do Not Replace</button><button disabled={pendingDecisions.has(candidate.candidateId!)} onClick={()=>void decide(candidate.candidateId!,'DEFERRED')} className="rounded border px-3 py-2">Decide Later</button></div> : <p className="mt-2 font-bold"><CheckCircle className="mr-1 inline h-4 w-4"/>{candidate.decision === 'CONFIRMED' ? 'Replacement confirmed; Project has unsaved changes.' : candidate.decision === 'REJECTED' ? 'Original retained.' : 'Decision deferred.'}</p>}</div>)}</div>}
     </>}</div><footer className="flex justify-end gap-2 border-t border-slate-200 p-4 dark:border-slate-700">{busy ? <button onClick={()=>void cancel()} className="rounded border px-4 py-2 text-xs font-bold">Cancel Reverify</button> : <>{error && !decisionUncertain && <button onClick={()=>void start()} className="rounded bg-blue-600 px-4 py-2 text-xs font-bold text-white">Retry</button>}<button onClick={onClose} className="rounded border px-4 py-2 text-xs font-bold">Done</button></>}</footer>
   </section></ModalViewport>;
 };
