@@ -8,7 +8,9 @@ const reverifyOwnerOnly=process.argv[2]==='--reverify-owner-only';
 const replacementOwnerOnly=process.argv[2]==='--replacement-owner-only';
 const cancelAckOnly=process.argv[2]==='--cancel-ack-only';
 const acceptedAfterCloseOnly=process.argv[2]==='--accepted-after-close-only';
-assert.deepEqual(process.argv.slice(2),nameOwnerOnly?['--open-name-owner-only']:reverifyRefreshOnly?['--reverify-refresh-only']:reverifyOwnerOnly?['--reverify-owner-only']:replacementOwnerOnly?['--replacement-owner-only']:cancelAckOnly?['--cancel-ack-only']:acceptedAfterCloseOnly?['--accepted-after-close-only']:[],'Unsupported fixture selector');
+const saveOwnerOnly=process.argv[2]==='--save-owner-only';
+const savedEventOnly=process.argv[2]==='--stale-saved-event-only';
+assert.deepEqual(process.argv.slice(2),savedEventOnly?['--stale-saved-event-only']:saveOwnerOnly?['--save-owner-only']:nameOwnerOnly?['--open-name-owner-only']:reverifyRefreshOnly?['--reverify-refresh-only']:reverifyOwnerOnly?['--reverify-owner-only']:replacementOwnerOnly?['--replacement-owner-only']:cancelAckOnly?['--cancel-ack-only']:acceptedAfterCloseOnly?['--accepted-after-close-only']:[],'Unsupported fixture selector');
 const repo=path.resolve(__dirname,'../../..'),entry='/src/test/browser/app_location_transport.html';
 
 
@@ -139,6 +141,9 @@ async function pageFixture(){
  await pause(p);return f;
 }
 async function check(family,name,run,expectedConsole=false){
+ if(savedEventOnly&&(family!==14||name!=='saved event cannot replace newer metadata; applied'))return;
+ if(saveOwnerOnly&&![13,14].includes(family))return;
+ if([13,14].includes(family)&&!saveOwnerOnly&&!savedEventOnly&&process.argv.length>2)return;
  if(acceptedAfterCloseOnly&&(family!==11||name!=='closed pending decision success after closed cannot affect UI'))return;
  if(nameOwnerOnly&&family>=9)return;
  if(reverifyRefreshOnly&&![7,9].includes(family))return;
@@ -172,6 +177,204 @@ async function check(family,name,run,expectedConsole=false){
  // Independent application assertions may fail; remaining cases use fresh isolated contexts.
 }
 async function suite(){
+ const submitSave=async(p,saveAs=false,filename='Chosen copy.cctvproj')=>{
+   const previous=await p.evaluate(()=>window.__appTransport.requests.filter(r=>r.path==='/api/project/save-content').map(r=>r.id));
+   await p.evaluate(({saveAs,filename})=>{const s=window.__appTransport;s.expectedExports=(s.expectedExports||0)+1;if(saveAs)s.savePrompts=[filename];},{saveAs,filename});
+   await button(p,'Project').click();await button(p,saveAs?'Save As':'Save Project').click();
+   await p.waitForFunction(previous=>window.__appTransport.requests.some(r=>r.path==='/api/project/save-content'&&r.state==='pending'&&!previous.includes(r.id)),previous);
+   return p.evaluate(()=>window.__appTransport.requests.filter(r=>r.path==='/api/project/save-content'&&r.state==='pending').at(-1).id);
+ };
+ const exportResponse=async(p,id)=>{await p.evaluate(id=>window.__appTransport.requests.find(r=>r.id===id).resolve({content:'{"synthetic":true}'}),id);await pause(p);};
+ const waitDownloads=async(p,downloads,n)=>{await p.waitForEvent('download').catch(()=>{throw Error('Expected browser download event');});assert.equal(downloads.length,n);};
+ const saveFeedback=p=>p.getByRole('status',{name:'Project download',exact:true});
+ const preparingDownload='Preparing project download...';
+ const startedDownload='Project download started. Verify the file was saved.';
+ const rejectedDownload='Project export could not be completed. No project download was started.';
+ const uncertainDownload='Project export/download outcome unavailable. Verify whether the file was saved before trying again.';
+ for(const reconciliation of ['applied','failed','superseded'])
+ await check(14,'saved event cannot replace newer metadata; '+reconciliation,async p=>{
+   const downloads=[];p.on('download',d=>downloads.push(d.suggestedFilename()));
+   const snapshot=await p.evaluate(()=>window.__appTransport.snapshot()),reads=await readCount(p);
+   const save=await submitSave(p);
+   await inspect(p);await edit(p,'Newer Location');const location=await begin(p,'Newer Location');
+   await p.evaluate(()=>{const s=window.__appTransport;s.session.project.devices[0].technician.location='Newer Location';s.session.dirty=true;});
+   await ack(p,location);await refresh(p);assert.equal(await confirmed(p),'Newer Location');await close(p);
+   for(const [field,value] of [['name','Newer Name'],['notes','Newer Notes']]){
+     const name=field==='name'?'Camera A':'Newer Name',label=field==='name'?'Camera Name':'Camera Notes';
+     await p.getByRole('button',{name:'Edit '+field+' for '+name,exact:true}).click();await p.getByLabel(label,{exact:true}).fill(value);
+     await p.evaluate(({field,value})=>{window.__appTransport.expectedWrites.push({id:'camera/A',field,value});},{field,value});
+     await p.getByLabel(label,{exact:true}).press(field==='name'?'Enter':'Tab');
+     await p.waitForFunction(()=>window.__appTransport.requests.some(r=>r.path.includes('/api/device/')&&r.state==='pending'));
+     const write=await p.evaluate(({field,value})=>{const s=window.__appTransport;s.session.project.devices[0].technician[field]=value;s.session.dirty=true;return s.requests.find(r=>r.path.includes('/api/device/')&&r.state==='pending').id;},{field,value});
+     await ack(p,write);await refresh(p);
+   }
+   let current=await p.evaluate(()=>window.__appTransport.snapshot());await button(p,'Unsaved changes').waitFor();
+   await p.evaluate(snapshot=>window.__appTransport.emit('PROJECT_SAVED',{session:snapshot}),snapshot);await pause(p);
+   assert.equal(await p.getByRole('button',{name:'Edit name for Newer Name',exact:true}).count(),1,'Saved event must not replace a newer accepted Name');
+   await button(p,'Unsaved changes').waitFor();assert.ok((await p.locator('tbody').textContent()).includes('Newer Notes'));
+   const eventRead=(await heldSessions(p))[0];
+   if(reconciliation==='superseded'){
+     current=await p.evaluate(()=>{const s=window.__appTransport;s.session.project.devices[0].technician.notes='Even newer Notes';s.emit('PROJECT_SESSION_CHANGED',{session:s.snapshot()});return s.snapshot();});
+     await release(p,eventRead,snapshot);
+   }else if(reconciliation==='failed'){
+     await p.evaluate(id=>window.__appTransport.requests.find(r=>r.id===id).resolve({error:'Synthetic unavailable session'},503),eventRead);await pause(p);
+   }else await release(p,eventRead,current);
+   assert.ok((await p.locator('tbody').textContent()).includes(reconciliation==='superseded'?'Even newer Notes':'Newer Notes'));
+   await inspect(p,'Newer Name');assert.equal(await confirmed(p),'Newer Location');await close(p);await button(p,'Unsaved changes').waitFor();
+   await saveFeedback(p).getByText(preparingDownload,{exact:true}).waitFor();assert.equal(downloads.length,0);
+   const download=waitDownloads(p,downloads,1);
+   await p.evaluate(({save,snapshot})=>window.__appTransport.requests.find(r=>r.id===save).resolve({content:JSON.stringify(snapshot.project)}),{save,snapshot});
+   await refresh(p,current);await download;await pause(p);
+   await saveFeedback(p).getByText(startedDownload,{exact:true}).waitFor();await button(p,'Unsaved changes').waitFor();
+   assert.equal(downloads[0],'Project One.cctvproj');
+   const exported=await p.evaluate(id=>JSON.parse(window.__appTransport.requests.find(r=>r.id===id).response.content),save);
+   assert.deepEqual(exported.devices[0].technician,snapshot.project.devices[0].technician,'Export bytes remain the pre-edit synthetic snapshot');
+   assert.deepEqual(await p.evaluate(()=>window.__appTransport.snapshot()),current);
+   assert.equal(await readCount(p),reads+5);
+   const posts=await p.evaluate(()=>window.__appTransport.requests.filter(r=>r.method==='POST').map(r=>r.path));
+   assert.equal(posts.filter(path=>path==='/api/project/save-content').length,1);assert.equal(posts.filter(path=>path.includes('/api/device/')).length,3);
+   assert.ok(posts.every(path=>['/api/monitoring/preferences','/api/project/save-content','/api/device/camera%2FA/config'].includes(path)));
+ });
+ await check(14,'ordinary saved event reconciles without initiating a download',async p=>{
+   await p.evaluate(()=>{const s=window.__appTransport;s.session.dirty=true;s.emit('PROJECT_SESSION_CHANGED',{session:s.snapshot()});s.holdSessions=true;});await pause(p);
+   await button(p,'Unsaved changes').waitFor();const reads=await readCount(p),downloads=[];p.on('download',d=>downloads.push(d.suggestedFilename()));
+   const clean=await p.evaluate(()=>{const s=window.__appTransport;s.session.dirty=false;s.emit('PROJECT_SAVED',{session:s.snapshot()});return s.snapshot();});
+   await button(p,'Unsaved changes').waitFor();const read=(await heldSessions(p))[0];await release(p,read,clean);
+   assert.equal(await button(p,'Unsaved changes').count(),0);assert.equal(await saveFeedback(p).count(),0);assert.equal(downloads.length,0);
+   assert.equal(await readCount(p),reads+1);assert.deepEqual(await p.evaluate(()=>window.__appTransport.snapshot()),clean);
+   assert.ok((await p.evaluate(()=>window.__appTransport.requests.filter(r=>r.method==='POST').map(r=>r.path))).every(path=>path==='/api/monitoring/preferences'));
+ });
+ for(const transition of ['B','same-project-reopen'])for(const outcome of ['success','failed'])
+ await check(14,'saved-event read '+outcome+' invalidated by '+transition,async p=>{
+   const old=await p.evaluate(()=>{const s=window.__appTransport;s.holdSessions=true;const old=s.snapshot();s.emit('PROJECT_SAVED',{session:old});return old;});
+   const read=(await heldSessions(p))[0];
+   if(transition==='B')await eventProject(p,true);
+   else{await p.evaluate(()=>{const s=window.__appTransport;s.session.metadataWriteContext.generation='33333333-3333-4333-8333-333333333333';s.session.project.devices[0].technician.location='Reopened location';s.emit('PROJECT_SESSION_CHANGED',{session:s.snapshot()});});await pause(p);}
+   const current=await p.evaluate(()=>window.__appTransport.snapshot()),reads=await readCount(p);
+   await p.evaluate(old=>window.__appTransport.emit('PROJECT_SAVED',{session:old}),old);await pause(p);
+   assert.equal(await readCount(p),reads,'Obsolete saved-event owner must not initiate a current-project read');
+   await p.evaluate(({read,old,outcome})=>window.__appTransport.requests.find(r=>r.id===read).resolve(outcome==='failed'?{error:'Synthetic unavailable session'}:old,outcome==='failed'?503:200),{read,old,outcome});await pause(p);
+   await inspect(p);assert.equal(await confirmed(p),transition==='B'?'New project location':'Reopened location');await close(p);
+   assert.equal(await saveFeedback(p).count(),0);assert.equal(await readCount(p),reads);
+   assert.deepEqual(await p.evaluate(()=>window.__appTransport.snapshot()),current);
+   assert.ok((await p.evaluate(()=>window.__appTransport.requests.filter(r=>r.method==='POST').map(r=>r.path))).every(path=>path==='/api/monitoring/preferences'));
+ });
+ for(const [newer,older] of [['success','success'],['success','rejection'],['success','transport'],['success','json'],['rejection','success'],['transport','success'],['json','success']])
+ await check(13,'overlapping Save As newer '+newer+' before older '+older,async p=>{
+   const downloads=[];p.on('download',d=>downloads.push(d.suggestedFilename()));
+   const before=await p.evaluate(()=>window.__appTransport.snapshot()),reads=await readCount(p);
+   const first=await submitSave(p,true,'First.cctvproj'),second=await submitSave(p,true,'Second.cctvproj');assert.notEqual(first,second);
+   assert.equal(await p.evaluate(()=>window.__appTransport.requests.filter(r=>r.path==='/api/project/save-content'&&r.state==='pending').length),2);
+   const settle=async(id,outcome)=>{
+     const download=outcome==='success'?waitDownloads(p,downloads,downloads.length+1):null;
+     await p.evaluate(({id,outcome})=>{
+       const r=window.__appTransport.requests.find(r=>r.id===id);
+       if(outcome==='transport')r.reject('Synthetic old request failure');
+       else if(outcome==='json')r.resolveText('{');
+       else r.resolve(outcome==='rejection'?{error:'Synthetic rejection'}:{content:'{"synthetic":true}'},outcome==='rejection'?409:200);
+     },{id,outcome});
+     if(download)await download;await pause(p);
+   };
+   await settle(second,newer);
+   const latestNotice=newer==='success'?startedDownload:newer==='rejection'?rejectedDownload:uncertainDownload;
+   await saveFeedback(p).getByText(latestNotice,{exact:true}).waitFor();
+   await settle(first,older);
+   await saveFeedback(p).getByText(latestNotice,{exact:true}).waitFor();
+   assert.deepEqual(downloads,[...(newer==='success'?['Second.cctvproj']:[]),...(older==='success'?['First.cctvproj']:[])],'Each successful explicit export retains its requested download');
+   const requests=await p.evaluate(()=>window.__appTransport.requests.length);
+   await p.evaluate(()=>{window.__appTransport.savePrompts=[null];});await button(p,'Project').click();await button(p,'Save As').click();await pause(p);
+   assert.equal(await p.evaluate(()=>window.__appTransport.requests.length),requests);
+   await saveFeedback(p).getByText(latestNotice,{exact:true}).waitFor();
+   const next=await submitSave(p),download=waitDownloads(p,downloads,downloads.length+1);await exportResponse(p,next);await download;
+   assert.equal(downloads.at(-1),newer==='success'?'Second.cctvproj':'Project One.cctvproj','Only the latest successful submission may set the active filename');
+   assert.deepEqual(await p.evaluate(()=>window.__appTransport.snapshot()),before);
+   assert.equal(await readCount(p),reads+Number(newer==='success')+Number(older==='success')+1);
+   const posts=await p.evaluate(()=>window.__appTransport.requests.filter(r=>r.method==='POST').map(r=>r.path));
+   assert.equal(posts.filter(path=>path==='/api/project/save-content').length,3);
+   assert.ok(posts.every(path=>['/api/monitoring/preferences','/api/project/save-content'].includes(path)));
+ });
+ for(const saveAs of [false,true])for(const outcome of ['success','rejection','transport','json','unusable'])
+ await check(13,(saveAs?'Save As':'Save')+' feedback survives PROJECT_SAVED before '+outcome,async p=>{
+   const downloads=[];p.on('download',d=>downloads.push(d.suggestedFilename()));
+   await p.evaluate(()=>{const s=window.__appTransport;s.session.dirty=true;s.emit('PROJECT_SESSION_CHANGED',{session:s.snapshot()});});await pause(p);
+   await button(p,'Unsaved changes').click();
+   const dialog=p.getByRole('dialog',{name:'Unsaved project changes',exact:true});await dialog.waitFor();
+   await p.evaluate(saveAs=>{const s=window.__appTransport;s.expectedExports=1;if(saveAs)s.savePrompts=['Feedback copy.cctvproj'];},saveAs);
+   const reads=await readCount(p);
+   await dialog.getByRole('button',{name:saveAs?'Save As':'Save Project',exact:true}).click();
+   await saveFeedback(p).getByText(preparingDownload,{exact:true}).waitFor();
+   const id=await p.evaluate(()=>window.__appTransport.requests.find(r=>r.path==='/api/project/save-content'&&r.state==='pending').id);
+   await p.evaluate(()=>{const s=window.__appTransport;s.session.dirty=false;s.emit('PROJECT_SAVED',{session:s.snapshot()});});await pause(p);
+   const exported=await p.evaluate(()=>window.__appTransport.snapshot());
+   await dialog.waitFor({state:'hidden'});assert.equal(await button(p,'Unsaved changes').count(),0);
+   await saveFeedback(p).getByText(preparingDownload,{exact:true}).waitFor();assert.equal(downloads.length,0);
+   assert.equal(await p.getByText(startedDownload,{exact:true}).count(),0,'PROJECT_SAVED alone does not establish download initiation');
+   const download=outcome==='success'?waitDownloads(p,downloads,1):null;
+   await p.evaluate(({id,outcome})=>{
+     const r=window.__appTransport.requests.find(r=>r.id===id);
+     if(outcome==='transport')r.reject('Synthetic secret must not be displayed');
+     else if(outcome==='json')r.resolveText('{');
+     else if(outcome==='rejection')r.resolve({error:'Synthetic sensitive rejection'},409);
+     else r.resolve(outcome==='unusable'?{}:{content:'{"synthetic":true}'});
+   },{id,outcome});
+   if(download)await download;await pause(p);
+   await saveFeedback(p).getByText(outcome==='success'?startedDownload:outcome==='rejection'?rejectedDownload:uncertainDownload,{exact:true}).waitFor();
+   assert.equal(downloads.length,outcome==='success'?1:0);
+   if(outcome==='success')assert.equal(downloads[0],saveAs?'Feedback copy.cctvproj':'Project One.cctvproj');
+   assert.equal(await p.getByText(/Synthetic secret|Synthetic sensitive rejection/).count(),0);
+   assert.equal(await readCount(p),reads+1+(outcome==='success'?1:0),'One saved-event read plus the established successful-export refresh');
+   assert.deepEqual(await p.evaluate(()=>window.__appTransport.snapshot()),exported);
+   assert.equal(await p.evaluate(()=>window.__appTransport.requests.filter(r=>r.path==='/api/project/save-content').length),1);
+   const posts=await p.evaluate(()=>window.__appTransport.requests.filter(r=>r.method==='POST').map(r=>r.path));
+   assert.ok(posts.every(path=>['/api/monitoring/preferences','/api/project/save-content'].includes(path)));
+   await button(p,'Dismiss download notice').click();assert.equal(await saveFeedback(p).count(),0);
+   const requests=await p.evaluate(()=>window.__appTransport.requests.length);
+   await p.evaluate(()=>{window.__appTransport.savePrompts=[null];});await button(p,'Project').click();await button(p,'Save As').click();await pause(p);
+   assert.equal(await p.evaluate(()=>window.__appTransport.requests.length),requests);assert.equal(await saveFeedback(p).count(),0);
+ });
+ await check(13,'same-owner Save, Save As, subsequent Save and prompt cancellation',async p=>{
+   const downloads=[];p.on('download',d=>downloads.push(d.suggestedFilename()));const before=await p.evaluate(()=>window.__appTransport.snapshot());
+   for(const [saveAs,name] of [[false,'Project One.cctvproj'],[true,'Chosen copy.cctvproj'],[false,'Chosen copy.cctvproj']]){
+     const id=await submitSave(p,saveAs),next=downloads.length+1,download=waitDownloads(p,downloads,next);await exportResponse(p,id);await download;assert.equal(downloads.at(-1),name);
+   }
+   const requests=await p.evaluate(()=>window.__appTransport.requests.length);
+   await p.evaluate(()=>{window.__appTransport.savePrompts=[null];});await button(p,'Project').click();await button(p,'Save As').click();await pause(p);
+   assert.equal(await p.evaluate(()=>window.__appTransport.requests.length),requests);assert.equal(downloads.length,3);
+   assert.deepEqual(await p.evaluate(()=>window.__appTransport.snapshot()),before);
+ });
+ for(const transition of ['B','same-project-reopen'])for(const phase of ['export-success','export-transport','export-json','refresh'])
+ await check(13,'Save owner '+transition+' invalidates '+phase,async p=>{
+   const downloads=[];p.on('download',d=>downloads.push(d.suggestedFilename()));
+   const original=await p.evaluate(()=>window.__appTransport.snapshot());
+   if(phase==='refresh')await p.evaluate(()=>{window.__appTransport.holdSessions=true;});
+   const id=await submitSave(p,phase!=='refresh','Obsolete A.cctvproj');let oldRead;
+   await saveFeedback(p).getByText(preparingDownload,{exact:true}).waitFor();
+   if(phase==='refresh'){await exportResponse(p,id);oldRead=(await heldSessions(p))[0];}
+   const target=await p.evaluate(transition=>{
+     const s=window.__appTransport,target=transition==='B'?s.nextProject(true):s.snapshot();
+     if(transition!=='B'){target.metadataWriteContext.generation='33333333-3333-4333-8333-333333333333';target.project.devices[0].technician.location='Reopened location';}
+     s.expectedOpen={jsonData:'{"syntheticOpen":true}',session:target};return target;
+   },transition);
+   const filename=transition==='B'?'B chosen.cctvproj':'Reopened chosen.cctvproj';
+   await p.locator('input[type=file]').first().setInputFiles({name:filename,mimeType:'application/json',buffer:Buffer.from('{"syntheticOpen":true}')});
+   if(phase==='refresh'){
+     await p.waitForFunction(old=>window.__appTransport.requests.some(r=>r.path==='/api/project/session'&&r.state==='pending'&&r.id!==old),oldRead);
+     const next=await p.evaluate(old=>window.__appTransport.requests.find(r=>r.path==='/api/project/session'&&r.state==='pending'&&r.id!==old).id,oldRead);await release(p,next,target);
+   }
+   await p.waitForFunction(()=>document.querySelector('input[type=file]').value==='');await pause(p);
+   assert.equal(await saveFeedback(p).count(),0,'New owner must not show obsolete save feedback');
+   const reads=await readCount(p),before=await p.evaluate(()=>window.__appTransport.snapshot());
+   if(phase==='refresh'){await release(p,oldRead,original);await p.evaluate(()=>{window.__appTransport.holdSessions=false;});}
+   else{await p.evaluate(({id,phase})=>{const r=window.__appTransport.requests.find(r=>r.id===id);if(phase==='export-transport')r.reject();else if(phase==='export-json')r.resolveText('{');else r.resolve({content:'{"old":true}'});},{id,phase});await pause(p);}
+   assert.equal(downloads.length,0,'Obsolete save must not initiate a browser download');assert.equal(await readCount(p),reads,'Obsolete save must not start a current-owner refresh');
+   assert.equal(await saveFeedback(p).count(),0,'Late obsolete response must not restore feedback');
+   await inspect(p);assert.equal(await confirmed(p),transition==='B'?'New project location':'Reopened location');await close(p);
+   const nextSave=await submitSave(p),download=waitDownloads(p,downloads,1);await exportResponse(p,nextSave);await download;assert.equal(downloads[0],filename,'Obsolete filename must not overwrite the newly opened filename');
+   assert.deepEqual(await p.evaluate(()=>window.__appTransport.snapshot()),before);
+   const posts=await p.evaluate(()=>window.__appTransport.requests.filter(r=>r.method==='POST').map(r=>r.path));
+   assert.equal(posts.filter(path=>path==='/api/project/save-content').length,2);assert.equal(posts.filter(path=>path==='/api/project/open').length,1);
+   assert.ok(posts.every(path=>['/api/monitoring/preferences','/api/project/save-content','/api/project/open'].includes(path)));
+ });
  const startReverify=async p=>{
    await p.evaluate(()=>{const s=window.__appTransport;s.expectedReverify=true;s.holdSessions=true;});
    await button(p,'Project').click();await button(p,'Reverify').click();
@@ -329,7 +532,7 @@ async function suite(){
      else r.resolve({decision});
    },{id,mode,decision});await pause(p);
  };
- const readCount=p=>p.evaluate(()=>window.__appTransport.requests.filter(r=>r.path==='/api/project/session').length);
+ function readCount(p){return p.evaluate(()=>window.__appTransport.requests.filter(r=>r.path==='/api/project/session').length);}
  const oneDecision=async(p,reverifyCount=1)=>{
    const posts=await p.evaluate(()=>window.__appTransport.requests.filter(r=>r.method==='POST').map(r=>r.path));
    assert.equal(posts.filter(path=>path==='/api/project/reverify/replacements/fixture-candidate').length,1);
@@ -831,7 +1034,7 @@ async function suite(){
 (async()=>{let fatal;
  try{await setup();await suite();}catch(e){fatal=String(e.stack);console.error(fatal);}
  finally{try{await cleanup();}catch(e){fatal=String(e.stack);console.error('CLEANUP UNCERTAIN; preserve '+root+': '+fatal);}}
- const families=Object.fromEntries(Array.from({length:12},(_,i)=>{const rows=results.filter(r=>r.family===i+1);return[i+1,{passed:rows.filter(r=>r.status==='passed').length,failed:rows.filter(r=>r.status==='failed').length,status:!rows.length?(nameOwnerOnly||reverifyRefreshOnly||reverifyOwnerOnly||replacementOwnerOnly||cancelAckOnly||acceptedAfterCloseOnly?'not-executed-filter':'blocked'):rows.some(r=>r.status==='failed')?'failed':'passed'}];}));
+ const families=Object.fromEntries(Array.from({length:14},(_,i)=>{const rows=results.filter(r=>r.family===i+1);return[i+1,{passed:rows.filter(r=>r.status==='passed').length,failed:rows.filter(r=>r.status==='failed').length,status:!rows.length?(savedEventOnly||saveOwnerOnly||nameOwnerOnly||reverifyRefreshOnly||reverifyOwnerOnly||replacementOwnerOnly||cancelAckOnly||acceptedAfterCloseOnly?'not-executed-filter':'blocked'):rows.some(r=>r.status==='failed')?'failed':'passed'}];}));
  console.log(JSON.stringify({families,results,summaries,boundary,contextsCreated:contexts.length,cleanupConfirmed:closed,listenerClosed:server?!server.listening:null,browserDisconnected:browser?!browser.isConnected():null,fixtureRoot:root,remainingFixtureRoot:root?fs.existsSync(root):false,removedOwnedFiles:removedFiles,fatal},null,2));
- if(fatal||results.length!==(nameOwnerOnly?1:reverifyRefreshOnly?7:reverifyOwnerOnly?12:replacementOwnerOnly?41:cancelAckOnly?27:acceptedAfterCloseOnly?1:96)||results.some(r=>r.status==='failed'))process.exitCode=1;
+ if(fatal||results.length!==(savedEventOnly?1:saveOwnerOnly?34:nameOwnerOnly?1:reverifyRefreshOnly?7:reverifyOwnerOnly?12:replacementOwnerOnly?41:cancelAckOnly?27:acceptedAfterCloseOnly?1:130)||results.some(r=>r.status==='failed'))process.exitCode=1;
 })();

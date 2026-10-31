@@ -92,6 +92,8 @@ export default function App() {
     }
   };
   const [projectFilename, setProjectFilename] = useState('');
+  const [projectSaveNotice, setProjectSaveNotice] = useState<{owner:typeof locationProjectOwner;text:string}|null>(null);
+  const saveNoticeSubmission = useRef(0);
   const openProjectInput = useRef<HTMLInputElement>(null);
   const addExistingProjectInput = useRef<HTMLInputElement>(null);
   const [interfaces, setInterfaces] = useState<NICInfo[]>([]);
@@ -293,7 +295,15 @@ export default function App() {
           acceptPair(data.data?.pair || null);
           if (data.data?.project) {sessionReads.current.revision++;ownLocationProject(data.data.project.id,locationProjectOwnerRef.current.mode);setProject(data.data.project);}
         }
-        if ((data.type === 'PROJECT_SESSION_CHANGED' || data.type === 'PROJECT_SAVED') && data.data?.session) {
+        if (data.type === 'PROJECT_SAVED' && data.data?.session) {
+          // Saved-event snapshots have no revision: read current state instead of installing them.
+          const saved = data.data.session, context = saved.metadataWriteContext, current = projectSessionContext.current;
+          const owner = locationProjectOwnerRef.current;
+          if(sessionReads.current.active && !locationProjectTransitions.current && isMetadataWriteContext(context) && current
+            && context.generation === current.generation && context.projectId === current.projectId && context.mode === current.mode
+            && saved.project?.id === owner.projectId && saved.mode === owner.mode)void fetchData();
+        }
+        if (data.type === 'PROJECT_SESSION_CHANGED' && data.data?.session) {
           sessionReads.current.revision++;
           ownLocationProject(data.data.session.project.id,data.data.session.mode);
           if(projectSessionContext.current?.generation!==data.data.session.metadataWriteContext?.generation)ownLocationProject(data.data.session.project.id,data.data.session.mode,true);
@@ -424,20 +434,44 @@ export default function App() {
       await handleCreateFromCurrent();
       return;
     }
-    const filename = await saveProjectDownload({
-      saveAs,
-      currentFilename: projectFilename,
-      suggestedFilename: `${project?.name || 'CCTV_Project'}.cctvproj`,
-      chooseFilename: fallback => window.prompt('Save project as:', fallback),
-      fetchContent: async () => (await postProjectAction('/api/project/save-content') as { content: string }).content,
-      download: (content, downloadFilename) => {
-        const url = URL.createObjectURL(new Blob([content], { type: 'application/json' }));
-        const anchor = document.createElement('a');
-        anchor.href = url; anchor.download = downloadFilename; anchor.click();
-        URL.revokeObjectURL(url);
-      },
-    });
-    if (filename) setProjectFilename(filename);
+    const owner = locationProjectOwnerRef.current;
+    const isCurrent = () => sessionReads.current.active && owner === locationProjectOwnerRef.current;
+    let submission = 0, rejected = false;
+    const report = (text:string) => { if(isCurrent() && submission === saveNoticeSubmission.current)setProjectSaveNotice({owner,text}); };
+    try {
+      const filename = await saveProjectDownload({
+        saveAs,
+        currentFilename: projectFilename,
+        suggestedFilename: `${project?.name || 'CCTV_Project'}.cctvproj`,
+        chooseFilename: fallback => window.prompt('Save project as:', fallback),
+        fetchContent: async () => {
+          submission = ++saveNoticeSubmission.current;
+          report('Preparing project download...');
+          sessionReads.current.revision++;
+          const response = await fetch('http://localhost:3001/api/project/save-content', {
+            method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({}),
+          });
+          if (!isCurrent()) return '';
+          const result = await response.json();
+          if (!isCurrent()) return '';
+          if (!response.ok) { rejected = true; throw new Error('Project export rejected.'); }
+          if (!result || typeof result.content !== 'string') throw new Error('Project export response unavailable.');
+          await fetchData();
+          return result.content;
+        },
+        download: (content, downloadFilename) => {
+          if (!isCurrent()) return;
+          const url = URL.createObjectURL(new Blob([content], { type: 'application/json' }));
+          const anchor = document.createElement('a');
+          anchor.href = url; anchor.download = downloadFilename; anchor.click();
+          URL.revokeObjectURL(url);
+          report('Project download started. Verify the file was saved.');
+        },
+      });
+      if (isCurrent() && submission === saveNoticeSubmission.current && filename) setProjectFilename(filename);
+    } catch {
+      report(rejected ? 'Project export could not be completed. No project download was started.' : 'Project export/download outcome unavailable. Verify whether the file was saved before trying again.');
+    }
   };
 
   // Section 14: Fast Scan Trigger
@@ -675,6 +709,12 @@ export default function App() {
           ZONE 2 & 3: MAIN WORKSPACE CANVAS
       ───────────────────────────────────────────────────────────── */}
       <main className="flex-1 p-3 sm:p-4 space-y-3 w-full max-w-[1900px] mx-auto">
+        {projectSaveNotice && projectSaveNotice.owner === locationProjectOwner && projectSaveNotice.owner === locationProjectOwnerRef.current && (
+          <div role="status" aria-label="Project download" className="flex items-center justify-between gap-3 rounded border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900 dark:border-amber-800 dark:bg-amber-950 dark:text-amber-100">
+            <p>{projectSaveNotice.text}</p>
+            <button type="button" onClick={()=>setProjectSaveNotice(null)} className="shrink-0 rounded border px-2 py-1">Dismiss download notice</button>
+          </div>
+        )}
         {/* Section 16: New Device Notification (when triggered) */}
         {newDeviceDetected && (
           <NewDeviceNotification
