@@ -72,12 +72,14 @@ export class ProjectReverificationWorkflow {
     if (this.isRunning()) throw new ProjectValidationError('Project reverification is already running.');
     const session = this.db.getSession(); if (session.mode !== 'PROJECT') throw new ProjectValidationError('Open or create a Project before reverifying.');
     const run = { generation: this.db.getSessionGeneration() };
-    const baseline = structuredClone(this.db.getProjectMemberDevices()), staging = new SiteProjectDatabase(); staging.startQuickWork(); this.activeRun = run; this.candidates.clear();
+    const staging = new SiteProjectDatabase(); staging.startQuickWork(); this.activeRun = run; this.candidates.clear();
     try {
       const outcome = await this.discover(staging);
       if (!this.isCurrentRun(run)) throw this.staleSessionError();
       if (outcome === 'BUSY') throw new ProjectValidationError('Project reverification could not start because discovery is already running.');
       if (outcome === 'CANCELLED') throw new ProjectValidationError('Project reverification was cancelled.');
+      // Reconcile observations against current members, including edits accepted during discovery.
+      const baseline = structuredClone(this.db.getProjectMemberDevices());
       const plan = ProjectReverificationEngine.plan(baseline, staging.getDevices(), this.localHost);
       if (!this.isCurrentRun(run)) throw this.staleSessionError();
       for (const candidate of plan.possibleReplacements) {
@@ -110,7 +112,16 @@ export class ProjectReverificationWorkflow {
   public decide(candidateId: string, decision: 'CONFIRMED'|'REJECTED'|'DEFERRED'): { device?: Device } {
     const candidate = this.candidates.get(candidateId); if (!candidate) throw new ProjectValidationError('This replacement candidate is no longer available. Run Reverify again.');
     if (candidate.generation !== this.db.getSessionGeneration()) throw this.staleSessionError();
-    const device = decision === 'CONFIRMED' ? this.db.confirmProjectReplacement(candidate.originalDeviceId, candidate.replacement) : undefined;
+    if (!this.db.isProjectMember(candidate.originalDeviceId)) {
+      this.candidates.delete(candidateId);
+      throw new ProjectValidationError('This replacement candidate is no longer available. Run Reverify again.');
+    }
+    let device: Device | undefined;
+    try { device = decision === 'CONFIRMED' ? this.db.confirmProjectReplacement(candidate.originalDeviceId, candidate.replacement) : undefined; }
+    catch (error) {
+      if (error instanceof ProjectValidationError && 'code' in error && error.code === 'REPLACEMENT_ALREADY_OWNED') this.candidates.delete(candidateId);
+      throw error;
+    }
     if (decision === 'REJECTED') this.db.appendHistory({type:'REPLACEMENT_REJECTED',title:'Kept Original Device',summary:'Technician reviewed the candidate and kept the original Project identity.',deviceId:candidate.originalDeviceId,source:'PROJECT_REVERIFY'});
     if (decision === 'DEFERRED') this.db.appendHistory({type:'REPLACEMENT_DEFERRED',title:'Replacement Decision Deferred',summary:'Technician chose to decide on this replacement candidate later.',deviceId:candidate.originalDeviceId,source:'PROJECT_REVERIFY'});
     if (decision !== 'DEFERRED') this.candidates.delete(candidateId); return { device };

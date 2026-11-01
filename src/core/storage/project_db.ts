@@ -300,20 +300,24 @@ export class SiteProjectDatabase {
   public getDevices(): Device[] { return this.session.project.devices; }
   public getProjectMemberDevices(): Device[] { return this.session.project.devices.filter(device => !this.currentOnlyDeviceIds.has(device.id)); }
   public isProjectMember(id: string): boolean { return this.getProjectMemberDevices().some(device => device.id === id); }
-  public applyReverification(memberDevices: Device[], liveOnlyDevices: Device[], persistentChanged: boolean, dirtyBefore: boolean): void {
+  public applyReverification(memberDevices: Device[], liveOnlyDevices: Device[], persistentChanged: boolean, _dirtyBefore: boolean): void {
     const memberIds = new Set(memberDevices.map(device => device.id));
     this.session.project.devices = [...clone(memberDevices), ...clone(liveOnlyDevices).filter(device => !memberIds.has(device.id))];
     this.currentOnlyDeviceIds = new Set(liveOnlyDevices.filter(device => !memberIds.has(device.id)).map(device => device.id));
     for (const device of memberDevices) if (device.sessionVerification === 'VERIFIED') this.restoreDiscoveredDevice(device);
     this.session.project.totalDevices = this.session.project.devices.length;
     reconcileCollisionState(this.session.project.devices,this.session.project.collisions);
-    this.session.dirty = dirtyBefore || persistentChanged;
+    // Current store state is authoritative; a pre-discovery dirty snapshot may be obsolete.
+    this.session.dirty = this.session.dirty || persistentChanged;
     if (persistentChanged) this.session.project.updatedAt = new Date().toISOString();
   }
   public confirmProjectReplacement(originalId: string, replacement: Device): Device {
     const index = this.session.project.devices.findIndex(device => device.id === originalId && !this.currentOnlyDeviceIds.has(device.id));
     if (index < 0) throw new ProjectValidationError('Original Project device is no longer available for replacement review.');
     const original = this.session.project.devices[index];
+    if (this.getProjectMemberDevices().some(device => device !== original && sameIdentity(device, replacement))) {
+      throw Object.assign(new ProjectValidationError('This replacement candidate is no longer available. Run Reverify again.'), { code: 'REPLACEMENT_ALREADY_OWNED' });
+    }
     const timestamp = new Date().toISOString();
     const history = Array.from(new Set([...(original.network.ipAddressHistory || [original.network.ipAddress]), original.network.ipAddress, replacement.network.ipAddress]));
     const updated: Device = { ...original, ...clone(replacement), id: original.id, technician: clone(original.technician), firstSeenAt: original.firstSeenAt, anchor: clone(replacement.anchor), network: { ...clone(replacement.network), ipAddressHistory: history }, sessionVerification: 'VERIFIED', lastSeenAt: replacement.lastSeenAt || timestamp };
@@ -446,12 +450,23 @@ export class SiteProjectDatabase {
       throw error;
     }
     const tempPath = `${filePath}.${crypto.randomUUID()}.tmp`;
+    let renameStarted = false;
     try {
       await fs.mkdir(dirname(filePath), { recursive: true });
       await fs.writeFile(tempPath, json, { encoding: 'utf8', flag: 'wx' });
+      renameStarted = true;
       await fs.rename(tempPath, filePath);
     } catch (error) {
-      this.session.project.lastSavedAt = previousSavedAt;
+      // Only a definite pre-rename failure with unchanged content permits restoration.
+      if (!renameStarted) {
+        let matchesAttemptedSnapshot = false;
+        try { matchesAttemptedSnapshot = this.#serializeProject() === json; } catch { /* Preserve unconfirmed state. */ }
+        if (matchesAttemptedSnapshot) {
+          if (hadSavedAt) this.session.project.lastSavedAt = previousSavedAt;
+          else delete this.session.project.lastSavedAt;
+          this.session.project.updatedAt = previousUpdatedAt;
+        }
+      }
       await fs.rm(tempPath, { force: true }).catch(() => undefined);
       throw error;
     }

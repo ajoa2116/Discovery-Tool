@@ -215,6 +215,69 @@ await test('authenticated generation-bound project exports',{timeout:20000},asyn
         assert.equal(f.authority.state().drain,'COMPLETE');
       }finally{heldWrite.resolve();await saving;observed.toBundle=project;heldWrite=undefined;writeEntered=undefined;await f.close();}
     });
+    const failurePayload=(priorSavedAt=false)=>JSON.stringify({...JSON.parse(synthetic),
+      ...(priorSavedAt?{lastSavedAt:'2026-10-01T12:00:00.000Z'}:{}),totalDevices:1,
+      devices:[{id:'synthetic-camera',anchor:{macAddress:'00:11:22:33:44:50',vendor:'Synthetic'},
+        network:{ipAddress:'192.0.2.50'},technician:{name:'Earlier Name',location:'Earlier Location',notes:'Earlier Notes'},
+        status:'UNKNOWN',sessionVerification:'NOT_VERIFIED',evidenceProvenance:'SYNTHETIC_TEST'}]});
+    for(const stage of ['mkdir','writeFile'] as const)for(const priorSavedAt of [false,true])for(const dirty of [false,true])await t.test(stage+' failure restores '+(priorSavedAt?'existing':'absent')+' timestamps; dirty='+dirty,async()=>{
+      const f=await fixture(),operation=fs[stage];let calls=0;
+      try{
+        f.authority.importProjectJson(failurePayload(priorSavedAt));
+        if(dirty)f.store.updateDeviceTechnicianFields('synthetic-camera',{notes:'Accepted Notes'});
+        const before=f.store.getSession();events.length=0;
+        Object.assign(fs,{[stage]:async()=>{calls++;throw Error('Synthetic pre-rename failure');}});
+        const result=await f.send('/api/project/save',before.metadataWriteContext);
+        assert.equal(result.status,500);assert.deepEqual(Object.keys(result.body),['error']);assert.equal(result.attachment,false);
+        assert.deepEqual(f.store.getSession(),before);
+        assert.equal(Object.prototype.hasOwnProperty.call(f.store.getSession().project,'lastSavedAt'),priorSavedAt);
+        assert.equal(calls,1);assert.equal(events.filter(v=>v==='remove').length,1);assert.equal(events.includes('rename'),false);
+        assert.equal(events.some(v=>v.startsWith('write:')),false);assert.equal(f.authority.state().drain,'COMPLETE');
+        assert.equal(f.authority.createNewProject('After pre-rename failure').name,'After pre-rename failure');assert.equal(calls,1);
+      }finally{Object.assign(fs,{[stage]:operation});await f.close();}
+    });
+    for(const stage of ['mkdir','writeFile'] as const)for(const field of ['name','location','notes'] as const)await t.test('held '+stage+' failure preserves newer '+field+' and timestamps',async()=>{
+      const f=await fixture(),operation=fs[stage],entered=deferred<void>(),release=deferred<void>();let calls=0,saving:ReturnType<typeof f.send>|undefined;
+      try{
+        f.authority.importProjectJson(failurePayload());events.length=0;
+        Object.assign(fs,{[stage]:async()=>{calls++;entered.resolve();await release.promise;throw Error('Synthetic held failure');}});
+        saving=f.send('/api/project/save',f.store.getMetadataWriteContext());await entered.promise;
+        f.store.updateDeviceTechnicianFields('synthetic-camera',{[field]:'Newer '+field});
+        const newer=f.store.getSession();assert.equal(newer.dirty,true);
+        assert.throws(()=>f.authority.startQuickWork(),{code:'REPLACEMENT_PENDING'});
+        release.resolve();const result=await saving;assert.equal(result.status,500);
+        assert.deepEqual(f.store.getSession(),newer);assert.equal(f.store.getSession().project.devices[0].technician?.[field],'Newer '+field);
+        assert.equal(calls,1);assert.equal(events.filter(v=>v==='remove').length,1);assert.equal(events.includes('rename'),false);
+        assert.equal(f.authority.state().drain,'COMPLETE');
+      }finally{release.resolve();await saving;Object.assign(fs,{[stage]:operation});await f.close();}
+    });
+    for(const stage of ['mkdir','writeFile'] as const)await t.test(stage+' failure preserves state when snapshot comparison fails',async()=>{
+      const f=await fixture(),operation=fs[stage],entered=deferred<void>(),release=deferred<void>();
+      const observed=f.store as unknown as {toBundle:()=>unknown},projection=observed.toBundle;
+      let saving:ReturnType<typeof f.send>|undefined,calls=0,comparisons=0;
+      try{
+        events.length=0;Object.assign(fs,{[stage]:async()=>{calls++;entered.resolve();await release.promise;throw Error('Synthetic I/O failure');}});
+        saving=f.send('/api/project/save',f.store.getMetadataWriteContext());await entered.promise;
+        const attempted=f.store.getSession();observed.toBundle=()=>{comparisons++;throw Error('Synthetic unavailable comparison');};
+        release.resolve();assert.equal((await saving).status,500);assert.deepEqual(f.store.getSession(),attempted);
+        assert.equal(calls,1);assert.equal(comparisons,1);assert.equal(events.filter(v=>v==='remove').length,1);
+        assert.equal(events.includes('rename'),false);assert.equal(f.authority.state().drain,'COMPLETE');
+      }finally{release.resolve();await saving;observed.toBundle=projection;Object.assign(fs,{[stage]:operation});await f.close();}
+    });
+    for(const syntheticReplacement of [false,true])await t.test('rename rejection remains uncertain; synthetic replacement='+syntheticReplacement,async()=>{
+      const f=await fixture(),rename=fs.rename;let calls=0,replaced=false;
+      try{
+        events.length=0;const before=f.store.getSession();
+        fs.rename=async()=>{calls++;replaced=syntheticReplacement;throw Error('Synthetic rename acknowledgment failure');};
+        const result=await f.send('/api/project/save',before.metadataWriteContext);
+        assert.equal(result.status,500);assert.deepEqual(result.body,{error:'Project export outcome unavailable. Verify the file before trying again.'});
+        const written=JSON.parse(events.find(v=>v.startsWith('write:'))!.slice('write:'.length)).project,current=f.store.getSession();
+        assert.equal(current.project.lastSavedAt,written.lastSavedAt);assert.equal(current.project.updatedAt,written.updatedAt);
+        assert.notEqual(current.project.lastSavedAt,before.project.lastSavedAt);assert.equal(current.dirty,before.dirty);
+        assert.equal(current.filePath,before.filePath);assert.equal(replaced,syntheticReplacement);assert.equal(calls,1);
+        assert.equal(events.filter(v=>v==='remove').length,1);assert.equal(f.authority.state().drain,'COMPLETE');
+      }finally{fs.rename=rename;await f.close();}
+    });
     await t.test('failed asynchronous file work releases exclusion only on settlement',async()=>{
       const f=await fixture(),write=fs.writeFile;heldWrite=deferred<void>();writeEntered=deferred<void>();let saving:ReturnType<typeof f.send>|undefined;
       fs.writeFile=(async()=>{writeEntered!.resolve();await heldWrite!.promise;throw Error('Synthetic file failure');}) as typeof fs.writeFile;
@@ -237,7 +300,7 @@ await test('authenticated generation-bound project exports',{timeout:20000},asyn
         events.length=0;const context=f.store.getMetadataWriteContext(),result=await f.send('/api/project/save',context);
         assert.equal(result.status,500);assert.equal(result.body.error,'Project export outcome unavailable. Verify the file before trying again.');
         assert.equal(committed,true);assert.equal(events.filter(v=>v.startsWith('write:')).length,1);
-      }finally{f.store.getProject=view;fs.rename=rename;assert.equal(f.store.getSession().filePath,'synthetic-output.cctvproj');await f.close();}
+      }finally{f.store.getProject=view;fs.rename=rename;const session=f.store.getSession(),written=JSON.parse(events.find(v=>v.startsWith('write:'))!.slice('write:'.length)).project;assert.equal(session.filePath,'synthetic-output.cctvproj');assert.equal(session.project.lastSavedAt,written.lastSavedAt);assert.equal(session.project.updatedAt,written.updatedAt);await f.close();}
     });
   }finally{Object.assign(fs,original);}
   assert.ok(summaries.every(s=>s.closed&&s.sockets===0&&s.work===0));console.log(JSON.stringify({fixtures:summaries.length,requests:summaries.reduce((n,s)=>n+s.requests,0),retainedSockets:0,retainedOperations:0}));

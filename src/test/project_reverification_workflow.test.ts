@@ -89,6 +89,105 @@ async function run(){
   const settled = <T,>(promise:Promise<T>) => promise.then(result=>({result,error:null as Error|null}),error=>({result:null,error:error as Error}));
   const snapshot = (db:SiteProjectDatabase) => JSON.stringify(db.getSession());
   const stale = (error:Error|null) => error instanceof ProjectValidationError && /Project session changed/.test(error.message) && /Reverify/.test(error.message);
+  for(const decision of ['CONFIRMED','REJECTED','DEFERRED'] as const)for(const savedRemoval of [false,true]){
+    const db=cleanProject([structuredClone(saved)]),flow=workflow(db,[structuredClone(replacement)]),summary=await flow.run();
+    const candidateId=summary.possibleReplacements[0].candidateId!,generation=db.getSessionGeneration();
+    db.removeDeviceFromProject(saved.id);if(savedRemoval)db.exportProjectJsonForSave();
+    const before=snapshot(db);let rejection:unknown;
+    try{flow.decide(candidateId,decision);}catch(error){rejection=error;}
+    assert(rejection instanceof ProjectValidationError&&rejection.message==='This replacement candidate is no longer available. Run Reverify again.','REMOVED '+decision+' '+savedRemoval+': stale decision requires fresh review');
+    assert(snapshot(db)===before&&db.getSessionGeneration()===generation&&db.getSession().dirty===!savedRemoval,'REMOVED '+decision+' '+savedRemoval+': denial preserves devices, metadata, history, timestamps and dirty state');
+    db.upsertDevice(structuredClone(saved));const readded=snapshot(db);let retry:unknown;
+    try{flow.decide(candidateId,decision);}catch(error){retry=error;}
+    assert(retry instanceof ProjectValidationError&&retry.message==='This replacement candidate is no longer available. Run Reverify again.'&&snapshot(db)===readded,'REMOVED '+decision+' '+savedRemoval+': re-adding the member cannot revive the invalidated candidate');
+  }
+  for(const decision of ['CONFIRMED','REJECTED','DEFERRED'] as const){
+    const db=cleanProject([structuredClone(saved)]),flow=workflow(db,[structuredClone(replacement)]),summary=await flow.run();
+    const generation=db.getSessionGeneration();db.removeDeviceFromCurrentList(saved.id);
+    assert(db.isProjectMember(saved.id)&&!db.getProject().devices.some(item=>item.id===saved.id),'HIDDEN '+decision+': Current List visibility is separate from Project membership');
+    flow.decide(summary.possibleReplacements[0].candidateId!,decision);
+    const expectedHistory=decision==='CONFIRMED'?'REPLACEMENT_CONFIRMED':decision==='REJECTED'?'REPLACEMENT_REJECTED':'REPLACEMENT_DEFERRED';
+    assert(db.isProjectMember(saved.id)&&db.getSessionGeneration()===generation&&db.listProjectHistory().some(event=>event.type===expectedHistory)&&db.getSession().dirty,'HIDDEN '+decision+': legitimate decision remains available to a hidden Project member');
+    assert(db.getDeviceById(saved.id)?.anchor.macAddress===(decision==='CONFIRMED'?replacement.anchor.macAddress:saved.anchor.macAddress),'HIDDEN '+decision+': only explicit confirmation changes physical identity');
+  }
+  for(const identity of ['MAC','UUID','SERIAL'] as const)for(const reverse of [false,true]){
+    const first=device('original-a','192.168.1.20','00:11:22:33:44:10',{technician:{name:'Original A',notes:'Keep A'}});
+    const second=device('original-b','192.168.1.20','00:11:22:33:44:20',{technician:{name:'Original B',notes:'Keep B'}});
+    const replacement=device('shared-replacement','192.168.1.20',identity==='MAC'?'00:11:22:33:44:66':null,{
+      anchor:{macAddress:identity==='MAC'?'00:11:22:33:44:66':null,vendor:'Fixture',model:'Camera',
+        onvifEndpointUuid:identity==='UUID'?'Shared-Replacement-UUID':undefined,serialNumber:identity==='SERIAL'?'Replacement-Serial':undefined}});
+    const db=cleanProject([first,second]),flow=workflow(db,[replacement]),summary=await flow.run();
+    const candidates=[...summary.possibleReplacements];if(reverse)candidates.reverse();
+    assert(candidates.length===2,'CONFIRM '+identity+' '+reverse+': shared address yields two explicit review candidates');
+    const accepted=flow.decide(candidates[0].candidateId!,'CONFIRMED');
+    assert(accepted.device?.id===candidates[0].originalDeviceId&&db.getProjectMemberDevices().length===2,'CONFIRM '+identity+' '+reverse+': first confirmation permits distinct members sharing an IP');
+    const before=snapshot(db),generation=db.getSessionGeneration();let conflict:unknown;
+    try{flow.decide(candidates[1].candidateId!,'CONFIRMED');}catch(error){conflict=error;}
+    assert(conflict instanceof ProjectValidationError&&'code' in conflict&&conflict.code==='REPLACEMENT_ALREADY_OWNED'&&conflict.message.includes('Run Reverify again'),'CONFIRM '+identity+' '+reverse+': second physical ownership claim requires fresh review');
+    assert(snapshot(db)===before&&db.getSessionGeneration()===generation,'CONFIRM '+identity+' '+reverse+': denial preserves devices, metadata, history, dirty state and timestamps');
+    let retry:unknown;try{flow.decide(candidates[1].candidateId!,'CONFIRMED');}catch(error){retry=error;}
+    assert(retry instanceof ProjectValidationError&&retry.message==='This replacement candidate is no longer available. Run Reverify again.'&&snapshot(db)===before,'CONFIRM '+identity+' '+reverse+': conflicted candidate is invalidated without persistent side effects');
+    let direct:unknown;try{db.confirmProjectReplacement(candidates[1].originalDeviceId!,replacement);}catch(error){direct=error;}
+    assert(direct instanceof ProjectValidationError&&snapshot(db)===before&&!flow.isRunning(),'CONFIRM '+identity+' '+reverse+': direct store call also rejects duplicate ownership');
+  }
+  for(const sharedSecondary of ['UUID','SERIAL'] as const){
+    const original=device('original','192.168.1.20','00:11:22:33:44:10');
+    const owner=device('other-member','192.168.1.20','00:11:22:33:44:20');
+    const replacement=device('different-camera','192.168.1.20','00:11:22:33:44:66');
+    if(sharedSecondary==='UUID'){owner.anchor.onvifEndpointUuid='shared-secondary';replacement.anchor.onvifEndpointUuid='shared-secondary';}
+    else{owner.anchor.serialNumber='shared-secondary';replacement.anchor.serialNumber='shared-secondary';}
+    const db=cleanProject([original,owner]),flow=workflow(db,[replacement]),summary=await flow.run();
+    const candidate=summary.possibleReplacements.find(item=>item.originalDeviceId===original.id)!;
+    const confirmed=flow.decide(candidate.candidateId!,'CONFIRMED');
+    assert(confirmed.device?.anchor.macAddress===replacement.anchor.macAddress&&db.getDeviceById(owner.id)?.anchor.macAddress===owner.anchor.macAddress&&db.getProjectMemberDevices().length===2,'CONFIRM distinct MAC with shared '+sharedSecondary+': existing identity conflict rules prevent false duplicate ownership');
+  }
+  for(const field of ['name','location','notes'] as const)for(const found of [false,true]){
+    const db=cleanProject([structuredClone(saved)]),gate=deferred<'COMPLETED'>();let discoveries=0;
+    const flow=new ProjectReverificationWorkflow(db,async staging=>{discoveries++;if(found)staging.upsertDevice(structuredClone(same));return gate.promise;});
+    const pending=settled(flow.run());
+    try{
+      assert(!db.getSession().dirty&&flow.isRunning(),'EDIT '+field+' '+found+': clean Project held in injected discovery');
+      db.updateDeviceTechnicianFields(saved.id,{[field]:'Accepted '+field});
+      const accepted=db.getSession(),generation=db.getSessionGeneration();gate.resolve('COMPLETED');const outcome=await pending;
+      const current=db.getSession(),retained=current.project.devices.find(item=>item.id===saved.id)!;
+      assert(!outcome.error&&retained.technician?.[field]==='Accepted '+field&&JSON.stringify(retained.technician)===JSON.stringify(accepted.project.devices[0].technician),'EDIT '+field+' '+found+': accepted technician metadata survives settlement');
+      assert(current.dirty,'EDIT '+field+' '+found+': current dirty state survives');
+      assert(current.project.updatedAt===accepted.project.updatedAt,'EDIT '+field+' '+found+': edit timestamp survives');
+      assert(accepted.project.auditLogs.every(event=>current.project.auditLogs.some(record=>JSON.stringify(record)===JSON.stringify(event))),'EDIT '+field+' '+found+': accepted edit history survives');
+      assert(retained.sessionVerification===(found?'VERIFIED':'NOT_FOUND')&&db.getSessionGeneration()===generation&&discoveries===1&&!flow.isRunning(),'EDIT '+field+' '+found+': verification applies without changing owner or repeating discovery');
+      const exported=JSON.parse(db.exportProjectJsonForSave());
+      assert(exported.project.devices[0].technician[field]==='Accepted '+field&&!db.getSession().dirty,'EDIT '+field+' '+found+': explicit Save serializes accepted metadata');
+    }finally{gate.resolve('COMPLETED');await pending;}
+  }
+  {
+    const db=cleanProject([structuredClone(saved)]),gate=deferred<'COMPLETED'>();
+    const flow=new ProjectReverificationWorkflow(db,async staging=>{staging.upsertDevice(structuredClone(same));return gate.promise;}),pending=settled(flow.run());
+    try{
+      db.upsertDevice({...structuredClone(db.getDeviceById(saved.id)!),configuredState:{inferred:false,manualOverride:true,updatedAt:'2026-11-01T12:00:00Z'},configurationEvidence:{verifiedOperations:['DEVICE_NAME'],updatedAt:'2026-11-01T12:00:00Z'}});
+      const accepted=db.getSession();gate.resolve('COMPLETED');const outcome=await pending,current=db.getSession();
+      assert(!outcome.error&&JSON.stringify(current.project.devices[0].configuredState)===JSON.stringify(accepted.project.devices[0].configuredState)&&JSON.stringify(current.project.devices[0].configurationEvidence)===JSON.stringify(accepted.project.devices[0].configurationEvidence)&&current.dirty,'EDIT configuration: current persistent technician-owned fields survive');
+    }finally{gate.resolve('COMPLETED');await pending;}
+  }
+  {
+    const db=cleanProject([structuredClone(saved)]),gate=deferred<'COMPLETED'>();db.updateDeviceTechnicianFields(saved.id,{notes:'Saved while discovery waits'});
+    const flow=new ProjectReverificationWorkflow(db,async staging=>{staging.upsertDevice(structuredClone(same));return gate.promise;}),pending=settled(flow.run());
+    try{
+      db.exportProjectJsonForSave();const savedAt=db.getSession().project.updatedAt;gate.resolve('COMPLETED');const outcome=await pending;
+      assert(!outcome.error&&!db.getSession().dirty&&db.getSession().project.updatedAt===savedAt&&db.getDeviceById(saved.id)?.technician?.notes==='Saved while discovery waits','EDIT saved during discovery: stale dirty=true cannot override current clean state');
+    }finally{gate.resolve('COMPLETED');await pending;}
+  }
+  {
+    const db=cleanProject([structuredClone(saved)]),gate=deferred<'COMPLETED'>();
+    const flow=new ProjectReverificationWorkflow(db,async staging=>{staging.upsertDevice(structuredClone(same));return gate.promise;}),pending=settled(flow.run());
+    try{
+      db.removeDeviceFromProject(saved.id);gate.resolve('COMPLETED');const outcome=await pending;
+      assert(!outcome.error&&db.getProjectMemberDevices().length===0&&!db.getProjectMemberDevices().some(item=>item.id===saved.id)&&db.getSession().dirty,'EDIT membership: settlement cannot resurrect a removed member');
+    }finally{gate.resolve('COMPLETED');await pending;}
+  }
+  {
+    const db=cleanProject([structuredClone(saved)]),before=db.getSession();await workflow(db,[same]).run();
+    assert(!db.getSession().dirty&&db.getSession().project.updatedAt===before.project.updatedAt&&db.getDeviceById(saved.id)?.sessionVerification==='VERIFIED','EDIT unchanged verification: clean state and edit timestamp stay unchanged');
+  }
   const projectB=cleanProject([device('saved','10.9.8.7','12:34:56:78:90:ab',{technician:{name:'Project B',notes:'Keep B metadata'}})]).exportProjectJson();
   const openInMemory = async (db:SiteProjectDatabase,json:string) => {
     const original=fs.readFile;
