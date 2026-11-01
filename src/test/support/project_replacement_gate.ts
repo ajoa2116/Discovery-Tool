@@ -7,7 +7,7 @@ import type { IsolatedReplacementPermissions } from './project_replacement_permi
 
 export type ReplacementResult =
   | {readonly status:'COMMITTED';readonly projectId:string;readonly generation:string;readonly mode:'PROJECT'|'QUICK_WORK'}
-  | {readonly status:'BLOCKED';readonly reason:'OPEN_PENDING'|'ACTIVATION_UNRESOLVED'|'REPLACEMENT_ACTIVE'}
+  | {readonly status:'BLOCKED';readonly reason:'OPEN_PENDING'|'ACTIVATION_UNRESOLVED'|'REPLACEMENT_ACTIVE'|'AUTHORITY_RETIRED'}
   | {readonly status:'REJECTED_BEFORE_ACTIVATION';readonly reason:'STALE_GENERATION'|'VALIDATION_REJECTED'}
   | {readonly status:'UNKNOWN';readonly reason:'ACTIVATION_UNCERTAIN'};
 type Operation =
@@ -23,7 +23,8 @@ const assignedStores=new WeakSet<SiteProjectDatabase>();
  * Without optional permissions, enforcement is facade-only. Matching constructor
  * hooks can additionally protect fresh ISOLATED_TEST stores. Production stores
  * do not enable the hook; production-wide exclusion remains unproven.
- * No retirement, reset/unlock, persistence, rollback or independent work queue.
+ * Retirement revokes commits permanently; it is not process retirement or rollback.
+ * No reset/unlock, persistence or independent work queue.
  * UNKNOWN activation latches this facade closed; status/settlement cannot erase it.
  */
 export class ProjectReplacementGateProof {
@@ -35,6 +36,7 @@ export class ProjectReplacementGateProof {
   readonly #pending=new Set<Promise<Readonly<OpenAdmissionDisposition>>>();
   #executing=false;
   #unresolved=false;
+  #retired=false;
 
   constructor(store:SiteProjectDatabase,validationError:typeof ProjectValidationError,options:{
     epoch:string;capacity?:number;permissions?:IsolatedReplacementPermissions;
@@ -53,17 +55,27 @@ export class ProjectReplacementGateProof {
           return {status:'REJECTED_BEFORE_ACTIVATION',reason:'VALIDATION_REJECTED'};
         throw Error('Replacement outcome unavailable.');
       }});
-    this.#permissions?.bindStore(store,()=>this.#executing&&!this.#unresolved);
+    this.#permissions?.bindStore(store,()=>!this.#retired&&this.#executing&&!this.#unresolved);
     assignedStores.add(store);
   }
 
   generation():string{return this.#store.getMetadataWriteContext().generation;}
   state(){return Object.freeze({pendingOpen:this.#pending.size,unresolved:this.#unresolved,executing:this.#executing});}
+  /** Synchronous revocation precedes any caller cleanup. Never waits on held work. */
+  retire(){this.#retired=true;return this.retirementState();}
+  retirementState(){return Object.freeze({retired:this.#retired,
+    drain:this.#pending.size||this.#executing?'UNRESOLVED' as const:'COMPLETE' as const,
+    pendingContinuations:this.#pending.size,unresolvedActivation:this.#unresolved});}
   status(identity:OpenAttemptIdentity){return this.#coordinator.status(identity);}
-  settle(identity:OpenAttemptIdentity){return this.#coordinator.settle(identity);}
+  settle(identity:OpenAttemptIdentity){return this.#track(this.#coordinator.settle(identity));}
 
   importProjectJson(input:OpenAdmissionInput):Promise<Readonly<OpenAdmissionDisposition>>{
+    // Read existing dispositions after retirement, but never reserve new admissions.
+    if(this.#retired)return Promise.resolve(this.#coordinator.status(input));
     const completion=this.#coordinator.admit(input);
+    return this.#track(completion);
+  }
+  #track(completion:Promise<Readonly<OpenAdmissionDisposition>>){
     // Track promises, not just IDs: an immediate conflicting replay must not release
     // the reservation of the original, still-pending admission.
     this.#pending.add(completion);
@@ -84,6 +96,7 @@ export class ProjectReplacementGateProof {
   }
 
   #commit(operation:Operation,expectedGeneration:string,permit?:symbol):ReplacementResult{
+    if(this.#retired)return {status:'BLOCKED',reason:'AUTHORITY_RETIRED'};
     if(this.#executing)return {status:'BLOCKED',reason:'REPLACEMENT_ACTIVE'};
     if(this.#unresolved)return {status:'BLOCKED',reason:'ACTIVATION_UNRESOLVED'};
     if(this.#pending.size&&permit!==this.#permit)return {status:'BLOCKED',reason:'OPEN_PENDING'};
