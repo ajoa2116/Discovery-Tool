@@ -9,13 +9,13 @@ import type { ActivationResult, OpenAdmissionInput } from '../../core/projects/p
  * The constructor is injected to preserve import-after-tripwire test ordering.
  */
 export function activateProjectImportOnce(
-  store:SiteProjectDatabase,input:Readonly<OpenAdmissionInput>,validationError:typeof ProjectValidationError,
+  store:SiteProjectDatabase,input:Readonly<OpenAdmissionInput>,validationError:typeof ProjectValidationError,permission?:unknown,
 ):ActivationResult{
   const beforeIdentity=store.getSessionGeneration(),beforeSession=store.getSession();
   const beforeContext=store.getMetadataWriteContext();
   if(beforeContext.generation!==input.originatingGeneration)throw Error('Activation outcome unavailable.');
   try{
-    const imported=store.importProjectJson(input.payload);
+    const imported=store.importProjectJson(input.payload,permission);
     const afterIdentity=store.getSessionGeneration(),afterContext=store.getMetadataWriteContext(),afterSession=store.getSession();
     if(afterIdentity===beforeIdentity||afterContext.generation===beforeContext.generation
       ||afterContext.mode!=='PROJECT'||afterSession.mode!=='PROJECT'

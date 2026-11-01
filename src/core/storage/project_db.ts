@@ -15,6 +15,12 @@ const SECRET_KEY = /(password|passwd|credential|authorization|token|secret|api[_
 
 export class ProjectValidationError extends Error {}
 
+/** Constructor-only test seam; correlation/permission is never authentication. */
+export type ProjectReplacementOperation = 'startQuickWork'|'createNewProject'|'createProjectFromCurrentResults'|'importProjectJson';
+export type IsolatedProjectReplacementCheck = (context:Readonly<{
+  store:SiteProjectDatabase;generation:symbol;operation:ProjectReplacementOperation;args:readonly unknown[];
+}>,permission:unknown)=>boolean;
+
 /** Only supplied when the caller recomputed topology for this diagnostic run. */
 export type DiagnosticNetworkRelationship = Pick<ReachabilityEvidence,
   'subnetClassification' | 'relationshipAdapter' | 'pairEligibility'>;
@@ -81,7 +87,25 @@ function prepareLoadedDevice(device: Device): Device {
 }
 
 export class SiteProjectDatabase {
-  constructor(private readonly isolation: 'TECHNICIAN' | 'ISOLATED_TEST' = 'TECHNICIAN') {}
+  readonly #testReplacementCheck?:IsolatedProjectReplacementCheck;
+  #checkingReplacement=false;
+  constructor(private readonly isolation: 'TECHNICIAN' | 'ISOLATED_TEST' = 'TECHNICIAN',replacementCheck?:IsolatedProjectReplacementCheck) {
+    if(replacementCheck!==undefined){
+      if(isolation!=='ISOLATED_TEST'||typeof replacementCheck!=='function')
+        throw new ProjectValidationError('Replacement permission hooks require a fresh isolated test store.');
+      this.#testReplacementCheck=replacementCheck;
+    }
+  }
+  #requireReplacement(operation:ProjectReplacementOperation,args:readonly unknown[],permission:unknown):void {
+    if(!this.#testReplacementCheck)return;
+    if(this.#checkingReplacement)throw new ProjectValidationError('Project replacement permission denied.');
+    this.#checkingReplacement=true;
+    try{
+      const context=Object.freeze({store:this,generation:this.sessionGeneration,operation,args:Object.freeze([...args])});
+      if(this.#testReplacementCheck(context,permission)!==true)
+        throw new ProjectValidationError('Project replacement permission denied.');
+    }finally{this.#checkingReplacement=false;}
+  }
   public acceptsEvidence(device: Device): boolean {
     return device.evidenceProvenance === undefined || device.evidenceProvenance === 'PHYSICAL_NETWORK' || this.isolation === 'ISOLATED_TEST';
   }
@@ -122,20 +146,23 @@ export class SiteProjectDatabase {
     this.hiddenCurrentDeviceIds.clear(); this.currentOnlyDeviceIds.clear(); this.removedProjectIdentities = [];
   }
 
-  public startQuickWork(): SiteProject {
+  public startQuickWork(permission?:unknown): SiteProject {
+    this.#requireReplacement('startQuickWork',[],permission);
     this.resetTransientDeviceState();
     this.session = { mode: 'QUICK_WORK', project: makeProject('Quick Work'), dirty: false };
     return this.session.project;
   }
 
-  public createNewProject(name: string, location = '', description = ''): SiteProject {
+  public createNewProject(name: string, location = '', description = '',permission?:unknown): SiteProject {
+    this.#requireReplacement('createNewProject',[name,location,description],permission);
     if (!name.trim()) throw new ProjectValidationError('Project name is required.');
     this.resetTransientDeviceState(); this.session = { mode: 'PROJECT', project: makeProject(name.trim(), location.trim(), description.trim()), dirty: true };
     this.appendHistory({ type:'PROJECT_CREATED', title:'Project Created', summary:`Project “${this.session.project.name}” was created.`, details:{ creationMethod:'NEW_PROJECT' } });
     return this.session.project;
   }
 
-  public createProjectFromCurrentResults(name: string, description = ''): SiteProject {
+  public createProjectFromCurrentResults(name: string, description = '',permission?:unknown): SiteProject {
+    this.#requireReplacement('createProjectFromCurrentResults',[name,description],permission);
     if (!name.trim()) throw new ProjectValidationError('Project name is required.');
     const current = this.getProject();
     const project = makeProject(name.trim(), current.siteLocation, description.trim());
@@ -344,7 +371,8 @@ export class SiteProjectDatabase {
     return JSON.stringify(this.toBundle(), null, 2);
   }
 
-  public importProjectJson(jsonData: string): SiteProject {
+  public importProjectJson(jsonData: string,permission?:unknown): SiteProject {
+    this.#requireReplacement('importProjectJson',[jsonData],permission);
     let parsed: unknown;
     try { parsed = JSON.parse(jsonData); } catch { throw new ProjectValidationError('The project file is not valid JSON.'); }
     const project = this.parseBundle(parsed);
