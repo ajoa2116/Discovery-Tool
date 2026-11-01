@@ -49,7 +49,7 @@ module.exports=function installAppFixture(){
    }else if(method==='POST'&&u.pathname==='/api/monitoring/preferences'){
      check(JSON.stringify(body)===JSON.stringify({enabled:false,cadenceMs:30000}),'monitoring-body');response=clone(monitoring);
    }else if(method==='POST'&&u.pathname==='/api/project/save-content'){
-     check(state.expectedExports>0&&JSON.stringify(body)==='{}','unissued-project-export');state.expectedExports--;held=true;
+     check(state.expectedExports>0&&body&&Object.keys(body).join(',')==='metadataWriteContext'&&JSON.stringify(body.metadataWriteContext)===JSON.stringify(state.session.metadataWriteContext),'unissued-project-export');state.expectedExports--;held=true;
    }else if(method==='POST'&&u.pathname==='/api/project/open'){
      check(state.expectedOpen&&JSON.stringify(body)===JSON.stringify({jsonData:state.expectedOpen.jsonData}),'unissued-project-open');held=state.expectedOpen.held===true;if(!held)state.session=clone(state.expectedOpen.session);state.expectedOpen=null;response=clone(state.session.project);
    }else if(method==='POST'&&['/api/project/new','/api/project/from-current'].includes(u.pathname)){

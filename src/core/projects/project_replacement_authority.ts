@@ -1,6 +1,7 @@
 import { isDeepStrictEqual } from 'node:util';
 import type { SiteProjectDatabase, ProjectValidationError, ProjectReplacementOperation, IsolatedProjectReplacementCheck } from '../storage/project_db.ts';
-import type { SiteProject } from '../../types/index.ts';
+import type { SiteProject, ProjectSession } from '../../types/index.ts';
+export type ProjectExportOperation='exportProjectJson'|'exportProjectJsonForSave'|'saveProject';
 
 export class ProjectReplacementAuthorityError extends Error {
   constructor(readonly disposition:'BLOCKED'|'REJECTED_BEFORE_ACTIVATION'|'UNKNOWN',readonly code:string){
@@ -13,6 +14,9 @@ export interface ProjectReplacementAuthority {
   createNewProject(name:string,location?:string,description?:string,expectedGeneration?:symbol):SiteProject;
   createProjectFromCurrentResults(name:string,description?:string,expectedGeneration?:symbol):SiteProject;
   importProjectJson(json:string,expectedGeneration?:symbol):SiteProject;
+  exportJson(context:unknown):string;
+  exportForSave(context:unknown):{content:string;filename:string;session:ProjectSession};
+  saveFile(context:unknown,filePath?:string):Promise<{filePath:string;session:ProjectSession}>;
   retire():Readonly<{retired:boolean;drain:'UNRESOLVED'|'COMPLETE';pendingContinuations:number;unresolvedActivation:boolean}>;
   state():ReturnType<ProjectReplacementAuthority['retire']>;
 }
@@ -24,11 +28,11 @@ export interface ProjectReplacementAuthority {
  */
 export function createProjectReplacementProtection(store:SiteProjectDatabase,validationError:typeof ProjectValidationError,
   importCommit:(json:string,permission:unknown,filePath?:string)=>SiteProject){
-  const grants=new WeakMap<object,{operation:ProjectReplacementOperation;args:readonly unknown[];generation:symbol;active:boolean;used:boolean}>();
-  const pending=new Set<Promise<SiteProject>>();
-  let claimed=false,retired=false,executing=false,uncertain=false;
+  const grants=new WeakMap<object,{operation:ProjectReplacementOperation|ProjectExportOperation;args:readonly unknown[];generation:symbol;active:boolean;used:boolean}>();
+  const pending=new Set<Promise<unknown>>();
+  let claimed=false,retired=false,executing=false,uncertain=false,exporting=false;
   let ownerToken:object|undefined;
-  const state=()=>Object.freeze({retired,drain:pending.size||executing?'UNRESOLVED' as const:'COMPLETE' as const,
+  const state=()=>Object.freeze({retired,drain:pending.size||executing||exporting?'UNRESOLVED' as const:'COMPLETE' as const,
     pendingContinuations:pending.size,unresolvedActivation:uncertain});
   const check:IsolatedProjectReplacementCheck=(context,permission)=>{
     if(!permission||typeof permission!=='object')return false;
@@ -42,9 +46,24 @@ export function createProjectReplacementProtection(store:SiteProjectDatabase,val
   const requireLive=()=>{
     if(!claimed||retired||uncertain)throw new ProjectReplacementAuthorityError('BLOCKED',retired?'AUTHORITY_RETIRED':'AUTHORITY_UNAVAILABLE');
   };
+  const checkExport=(operation:ProjectExportOperation,args:readonly unknown[],permission:unknown)=>{
+    if(!permission||typeof permission!=='object')return false;
+    const grant=grants.get(permission);if(!grant||!grant.active||grant.used)return false;
+    grant.used=true;
+    return claimed&&!retired&&!uncertain&&exporting&&!executing&&grant.operation===operation
+      &&grant.generation===store.getSessionGeneration()&&grant.args.length===args.length&&grant.args.every((v,i)=>v===args[i]);
+  };
+  function beginExport(context:unknown,operation:ProjectExportOperation,args:readonly unknown[]){
+    requireLive();
+    if(executing||exporting||pending.size)throw new ProjectReplacementAuthorityError('BLOCKED','REPLACEMENT_PENDING');
+    store.requireMetadataWriteContext(context);
+    exporting=true;
+    const permission=Object.freeze({}),grant={operation,args:[...args],generation:store.getSessionGeneration(),active:true,used:false};
+    grants.set(permission,grant);return {permission,release:()=>{grant.active=false;exporting=false;}};
+  }
   function replace(operation:ProjectReplacementOperation,args:readonly unknown[],expectedGeneration=store.getSessionGeneration(),filePath?:string,prepared=false):SiteProject{
     requireLive();
-    if(executing||pending.size&&!prepared)throw new ProjectReplacementAuthorityError('BLOCKED','REPLACEMENT_PENDING');
+    if(executing||exporting||pending.size&&!prepared)throw new ProjectReplacementAuthorityError('BLOCKED','REPLACEMENT_PENDING');
     if(store.getSessionGeneration()!==expectedGeneration)throw new ProjectReplacementAuthorityError('REJECTED_BEFORE_ACTIVATION','STALE_GENERATION');
     executing=true;
     const permission=Object.freeze({}),grant={operation,args:Object.freeze([...args]),generation:expectedGeneration,active:true,used:false};
@@ -80,13 +99,41 @@ export function createProjectReplacementProtection(store:SiteProjectDatabase,val
     createNewProject:(name:string,location='',description='',generation?:symbol)=>replace('createNewProject',[name,location,description],generation),
     createProjectFromCurrentResults:(name:string,description='',generation?:symbol)=>replace('createProjectFromCurrentResults',[name,description],generation),
     importProjectJson:(json:string,generation?:symbol)=>replace('importProjectJson',[json],generation),
+    exportJson:(context:unknown)=>{
+      const lease=beginExport(context,'exportProjectJson',[]);
+      try{return store.exportProjectJson(lease.permission);}finally{lease.release();}
+    },
+    exportForSave:(context:unknown)=>{
+      const lease=beginExport(context,'exportProjectJsonForSave',[]);
+      let before:ProjectSession|undefined;
+      try{before=store.getSession();return {content:store.exportProjectJsonForSave(lease.permission),
+        filename:`${store.getProject().name.replace(/[^a-z0-9_-]+/gi,'_')}.cctvproj`,session:store.getSession()};}
+      catch(error){
+        let unchanged=false;try{unchanged=error instanceof validationError&&before!==undefined&&isDeepStrictEqual(before,store.getSession());}catch{}
+        if(unchanged)throw error;
+        throw new ProjectReplacementAuthorityError('UNKNOWN','EXPORT_OUTCOME_UNAVAILABLE');
+      }
+      finally{lease.release();}
+    },
+    saveFile:(context:unknown,filePath?:string)=>{
+      const lease=beginExport(context,'saveProject',[filePath]);
+      let completion:Promise<{filePath:string;session:ProjectSession}>;
+      try{completion=store.saveProject(filePath,lease.permission).then(path=>{
+        try{return {filePath:path,session:store.getSession()};}
+        catch{throw new ProjectReplacementAuthorityError('UNKNOWN','EXPORT_OUTCOME_UNAVAILABLE');}
+      });}
+      catch(error){lease.release();throw error;}
+      pending.add(completion);
+      void completion.then(()=>{pending.delete(completion);lease.release();},()=>{pending.delete(completion);lease.release();});
+      return completion;
+    },
     retire:()=>{retired=true;return state();},state,
   });
-  return Object.freeze({check,
+  return Object.freeze({check,checkExport,
     claim(){if(claimed)throw new ProjectReplacementAuthorityError('BLOCKED','STORE_ALREADY_CLAIMED');claimed=true;ownerToken=Object.freeze({});return authority;},
     openProject(filePath:string,read:()=>Promise<string>):Promise<SiteProject>{
       requireLive();
-      if(executing||pending.size)throw new ProjectReplacementAuthorityError('BLOCKED','REPLACEMENT_PENDING');
+      if(executing||exporting||pending.size)throw new ProjectReplacementAuthorityError('BLOCKED','REPLACEMENT_PENDING');
       const generation=store.getSessionGeneration(),owner=ownerToken;
       // Preparation is outside the synchronous mutation body. Permission is issued
       // only after the read, with the original owner/generation still valid.

@@ -1,3 +1,4 @@
+import { registerProjectExportRoutes } from './project_export_routes.ts';
 import {createCurrentListRouter} from './current_list_routes.ts';
 import {hasIdentity} from '../shared/identity_policy.ts';
 import { pairBlocksMonitoring } from '../core/engine/incremental_discovery_monitor.ts';
@@ -336,25 +337,7 @@ export function constructBackend(dependencies: BackendDependencies = {}) {
     }
   });
 
-  app.post('/api/project/save-content', (req, res) => {
-    try {
-      const content = projectDb.exportProjectJsonForSave();
-      broadcast({ type: 'PROJECT_SAVED', data: { session: projectDb.getSession() } });
-      res.json({ filename: `${projectDb.getProject().name.replace(/[^a-z0-9_-]+/gi, '_')}.cctvproj`, content });
-    } catch (error) {
-      res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
-    }
-  });
-
-  app.post('/api/project/save', async (req, res) => {
-    try {
-      const filePath = req.body.filePath ? await projectDb.saveAs(req.body.filePath) : await projectDb.saveProject();
-      broadcast({ type: 'PROJECT_SAVED', data: { session: projectDb.getSession() } });
-      res.json({ filePath, session: projectDb.getSession() });
-    } catch (error) {
-      res.status(error instanceof ProjectValidationError ? 400 : 500).json({ error: error instanceof Error ? error.message : String(error) });
-    }
-  });
+  registerProjectExportRoutes(app,replacementAuthority,broadcast);
 
   app.post('/api/project/reverify', async (_req, res) => {
     try {
@@ -382,12 +365,6 @@ export function constructBackend(dependencies: BackendDependencies = {}) {
 
   app.get('/api/project/devices', (req, res) => {
     res.json(projectDb.getDevices());
-  });
-
-  app.get('/api/project/export', (req, res) => {
-    res.setHeader('Content-Type', 'application/json');
-    res.setHeader('Content-Disposition', 'attachment; filename=cctv_site_export.cctvproj');
-    res.send(projectDb.exportProjectJson());
   });
 
   // Available IP Finder (Section 25)

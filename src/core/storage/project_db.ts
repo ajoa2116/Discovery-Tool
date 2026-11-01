@@ -7,7 +7,7 @@ import { dirname } from 'node:path';
 import { CctvProjectBundle, Device, IPCollisionRecord, ProjectSession, ReachabilityEvidence, RogueDHCPOffer, SiteProject } from '../../types/index.ts';
 import { appStateDb } from './app_db.ts';
 import { AppendProjectHistory, ProjectHistoryFilter, ProjectHistoryService } from './project_history.ts';
-import { createProjectReplacementProtection, ProjectReplacementAuthorityError } from '../projects/project_replacement_authority.ts';
+import { createProjectReplacementProtection, ProjectReplacementAuthorityError, type ProjectExportOperation } from '../projects/project_replacement_authority.ts';
 
 const PROJECT_FORMAT = 'CCTV_DISCOVERY_PROJECT' as const;
 const PROJECT_SCHEMA_VERSION = 1 as const;
@@ -369,18 +369,36 @@ export class SiteProjectDatabase {
   public listProjectHistory(filter: ProjectHistoryFilter = 'ALL', deviceId?: string) { return this.session.mode === 'PROJECT' ? ProjectHistoryService.list(this.session.project.auditLogs, filter, deviceId) : []; }
   public recordConfigurationHistory(deviceId:string, operation:string, result:'SUCCESS'|'FAILED'|'CANCELLED'|'UNKNOWN', details:Record<string,unknown>={}) { this.appendHistory({type:'CONFIGURATION',title:'Configuration Operation',summary:`${operation} completed with result ${result}.`,deviceId,result,level:result==='SUCCESS'?'SUCCESS':result==='FAILED'?'ERROR':'INFO',category:'PROVISIONING',details:{operation,...details}}); }
 
-  public exportProjectJson(): string {
+  #requireExport(operation:ProjectExportOperation,args:readonly unknown[],permission:unknown){
+    const boundary=protectedStores.get(this);
+    if(boundary&&!boundary.checkExport(operation,args,permission))throw new ProjectReplacementAuthorityError('BLOCKED','EXPORT_PERMISSION_DENIED');
+  }
+  #serializeProject():string{
     if (this.session.mode !== 'PROJECT') throw new ProjectValidationError('Create a project before saving Quick Work results.');
     return JSON.stringify(this.toBundle(), null, 2);
   }
+  public exportProjectJson(permission?:unknown): string {
+    this.#requireExport('exportProjectJson',[],permission);return this.#serializeProject();
+  }
 
-  public exportProjectJsonForSave(): string {
+  public exportProjectJsonForSave(permission?:unknown): string {
+    this.#requireExport('exportProjectJsonForSave',[],permission);
     if (this.session.mode !== 'PROJECT') throw new ProjectValidationError('Create a project before saving Quick Work results.');
+    const hadSavedAt = Object.prototype.hasOwnProperty.call(this.session.project, 'lastSavedAt');
+    const previousSavedAt = this.session.project.lastSavedAt, previousUpdatedAt = this.session.project.updatedAt;
     const now = new Date().toISOString();
     this.session.project.lastSavedAt = now;
     this.session.project.updatedAt = now;
+    let content: string;
+    try { content = JSON.stringify(this.toBundle(), null, 2); }
+    catch (error) {
+      if (hadSavedAt) this.session.project.lastSavedAt = previousSavedAt;
+      else delete this.session.project.lastSavedAt;
+      this.session.project.updatedAt = previousUpdatedAt;
+      throw error;
+    }
     this.session.dirty = false;
-    return JSON.stringify(this.toBundle(), null, 2);
+    return content;
   }
 
   public importProjectJson(jsonData: string,permission?:unknown): SiteProject {
@@ -398,7 +416,9 @@ export class SiteProjectDatabase {
     const project = this.importProjectJson(await fs.readFile(filePath, 'utf8')); this.session.filePath = filePath; return project;
   }
 
-  public async saveProject(filePath = this.session.filePath): Promise<string> {
+  public async saveProject(filePath?:string,permission?:unknown): Promise<string> {
+    this.#requireExport('saveProject',[filePath],permission);
+    if(filePath===undefined)filePath=this.session.filePath;
     if (!filePath) throw new ProjectValidationError('Choose a .cctvproj file location first.');
     if (!filePath.toLowerCase().endsWith('.cctvproj')) throw new ProjectValidationError('Project filename must use the .cctvproj extension.');
     if (this.session.mode !== 'PROJECT') throw new ProjectValidationError('Quick Work is not persisted automatically. Create a project first.');
@@ -412,11 +432,19 @@ export class SiteProjectDatabase {
         if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
       }
     }
-    const previousSavedAt = this.session.project.lastSavedAt;
+    const hadSavedAt = Object.prototype.hasOwnProperty.call(this.session.project, 'lastSavedAt');
+    const previousSavedAt = this.session.project.lastSavedAt, previousUpdatedAt = this.session.project.updatedAt;
     const now = new Date().toISOString();
     this.session.project.lastSavedAt = now;
     this.session.project.updatedAt = now;
-    const json = this.exportProjectJson();
+    let json: string;
+    try { json = this.#serializeProject(); }
+    catch (error) {
+      if (hadSavedAt) this.session.project.lastSavedAt = previousSavedAt;
+      else delete this.session.project.lastSavedAt;
+      this.session.project.updatedAt = previousUpdatedAt;
+      throw error;
+    }
     const tempPath = `${filePath}.${crypto.randomUUID()}.tmp`;
     try {
       await fs.mkdir(dirname(filePath), { recursive: true });
@@ -428,7 +456,10 @@ export class SiteProjectDatabase {
       throw error;
     }
     this.session.filePath = filePath;
-    this.session.dirty = false;
+    // File I/O may overlap accepted edits. Only the exact persisted snapshot is clean.
+    let matchesSavedSnapshot = false;
+    try { matchesSavedSnapshot = this.#serializeProject() === json; } catch { /* Unconfirmed content stays dirty. */ }
+    this.session.dirty = !matchesSavedSnapshot;
     return filePath;
   }
 

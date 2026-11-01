@@ -534,6 +534,7 @@ export default function App() {
     }
     const owner = locationProjectOwnerRef.current;
     const isCurrent = () => sessionReads.current.active && owner === locationProjectOwnerRef.current;
+    const saveContext=projectSessionContext.current?{...projectSessionContext.current}:undefined;
     let submission = 0, rejected = false;
     const report = (text:string) => { if(isCurrent() && submission === saveNoticeSubmission.current)setProjectSaveNotice({owner,text}); };
     try {
@@ -543,12 +544,12 @@ export default function App() {
         suggestedFilename: `${project?.name || 'CCTV_Project'}.cctvproj`,
         chooseFilename: fallback => window.prompt('Save project as:', fallback),
         fetchContent: async () => {
-          if(exportBlocked())throw new Error(openUncertainMessage);
+          if(exportBlocked()||!isCurrent())throw new Error(openUncertainMessage);
           submission = ++saveNoticeSubmission.current;
           report('Preparing project download...');
           sessionReads.current.revision++;
           const response = await fetch('http://localhost:3001/api/project/save-content', {
-            method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({}),
+            method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({metadataWriteContext:saveContext}),
           });
           if (!isCurrent()) return '';
           const result = await response.json();
