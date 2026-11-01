@@ -70,6 +70,10 @@ import { applyTheme } from './theme.ts';
 import { saveProjectDownload } from './project_download.ts';
 import { ApplicationPreferences, persistApplicationPreferences, readApplicationPreferences, resolveOpenPreference, shouldNotifyForDiscovery, updateApplicationPreferences } from './preferences.ts';
 
+class ProjectCreationError extends Error {
+  constructor(readonly outcome:'rejected'|'blocked'|'uncertain'|'refresh'|'obsolete'){super(outcome);}
+}
+
 export default function App() {
   // Regression markers: obsolete useState<TaskItem[]>([]) activity state and unsafe global Available IPs finder are intentionally absent.
   // Appearance retains ['LIGHT','DARK','SYSTEM'] through SettingsMenu; persistence remains browser-local.
@@ -92,6 +96,38 @@ export default function App() {
     }
   };
   const [projectFilename, setProjectFilename] = useState('');
+  const [creationFeedback,setCreationFeedback]=useState<{text:string;owner:typeof locationProjectOwner}|null>(null);
+  const creationSubmission=useRef(0);
+  const openExportMarker='cctv-project-open-unresolved-v1';
+  const openUncertainMessage='Project Open outcome is uncertain. Save and Save As are unavailable because the active project could not be confirmed.';
+  const [replacementLabel,setReplacementLabel]=useState(()=>{
+    try{const marker=sessionStorage.getItem(openExportMarker);return marker?.startsWith('new:')?'New Project':marker?.startsWith('from-current:')?'Create Project from Current Results':'Project Open';}
+    catch{return 'Project replacement';}
+  });
+  const activeReplacementMarker=useRef<string|null>(null);
+  const [openExportState,setOpenExportState]=useState<'IDLE'|'PENDING'|'UNCERTAIN'>(()=>{
+    try{return sessionStorage.getItem(openExportMarker)===null?'IDLE':'UNCERTAIN';}catch{return 'UNCERTAIN';}
+  });
+  const openExportRef=useRef(openExportState);
+  const saveRestriction=openExportState==='IDLE'?undefined:openExportState==='PENDING'
+    ?'Save and Save As are unavailable while a project replacement is in progress.'
+    :'Save and Save As are unavailable because the active project could not be confirmed.';
+  const exportBlocked=()=>openExportRef.current!=='IDLE';
+  const setOpenExport=(next:'IDLE'|'PENDING'|'UNCERTAIN',operation:'open'|'new'|'from-current'='open')=>{
+    if(next==='PENDING')setReplacementLabel(operation==='new'?'New Project':operation==='from-current'?'Create Project from Current Results':'Project Open');
+    try{
+      if(next==='IDLE'){
+        if(sessionStorage.getItem(openExportMarker)!==activeReplacementMarker.current)throw new Error('Obsolete replacement marker');
+        sessionStorage.removeItem(openExportMarker);activeReplacementMarker.current=null;
+      }else if(next==='PENDING'){
+        const marker=operation==='open'?'unresolved':`${operation}:${crypto.randomUUID()}`;
+        sessionStorage.setItem(openExportMarker,marker);activeReplacementMarker.current=marker;
+      }else if(sessionStorage.getItem(openExportMarker)===null){
+        sessionStorage.setItem(openExportMarker,activeReplacementMarker.current??'unresolved');
+      }
+    }catch{openExportRef.current='UNCERTAIN';setOpenExportState('UNCERTAIN');return false;}
+    openExportRef.current=next;setOpenExportState(next);return true;
+  };
   const [projectSaveNotice, setProjectSaveNotice] = useState<{owner:typeof locationProjectOwner;text:string}|null>(null);
   const saveNoticeSubmission = useRef(0);
   const openProjectInput = useRef<HTMLInputElement>(null);
@@ -378,6 +414,13 @@ export default function App() {
   }, []);
 
   const postProjectAction = async (path: string, body: Record<string, unknown> = {}) => {
+    const opening=path==='/api/project/open';
+    const creating=path==='/api/project/new'||path==='/api/project/from-current';
+    const replacement=['/api/project/new','/api/project/open','/api/project/from-current','/api/project/quick-work'].includes(path);
+    if(replacement&&exportBlocked())throw new Error(openUncertainMessage);
+    if((opening||creating)&&!setOpenExport('PENDING',opening?'open':path==='/api/project/new'?'new':'from-current'))throw new Error(openUncertainMessage);
+    const generationBeforeOpen=projectSessionContext.current?.generation;
+    let knownRejected=false;
     // A requested project operation supersedes older reads before its response arrives.
     sessionReads.current.revision++;
     const replacesProject=['/api/project/new','/api/project/open','/api/project/from-current','/api/project/quick-work'].includes(path);
@@ -386,33 +429,87 @@ export default function App() {
       const owner=locationProjectOwnerRef.current;
       ownLocationProject(owner.projectId,owner.mode,true);
     }
+    const submittingOwner=locationProjectOwnerRef.current;
     try {
       const response = await fetch(`http://localhost:3001${path}`, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
       });
       const result = await response.json();
-      if (!response.ok) throw new Error(result.error || 'Project operation failed.');
-      await fetchData();
+      if(creating&&submittingOwner!==locationProjectOwnerRef.current)throw new ProjectCreationError('obsolete');
+      if (!response.ok) {
+        if(creating){
+          knownRejected=response.status===400&&typeof result?.error==='string';
+          if(knownRejected&&!setOpenExport('IDLE'))throw new ProjectCreationError('uncertain');
+          throw new ProjectCreationError(typeof result?.error==='string'&&[400,409].includes(response.status)
+            ?response.status===400?'rejected':'blocked':'uncertain');
+        }
+        knownRejected=opening&&response.status===400&&typeof result?.error==='string';
+        if(knownRejected&&!setOpenExport('IDLE'))throw new Error(openUncertainMessage);
+        throw new Error(result.error || 'Project operation failed.');
+      }
+      if(opening){
+        const refresh=await fetchData(true);
+        if(!result||typeof result.id!=='string'||refresh.state!=='applied'||refresh.project.id!==result.id
+          ||refresh.owner!==locationProjectOwnerRef.current||refresh.revision!==sessionReads.current.revision
+          ||!isMetadataWriteContext(projectSessionContext.current)||projectSessionContext.current.generation===generationBeforeOpen
+          ||locationProjectOwnerRef.current.mode!=='PROJECT'||!setOpenExport('IDLE'))throw new Error(openUncertainMessage);
+      }else if(creating){
+        if(!result||typeof result.id!=='string')throw new ProjectCreationError('uncertain');
+        const refresh=await fetchData(true);
+        if(refresh.state!=='applied'||refresh.project.id!==result.id||refresh.owner!==locationProjectOwnerRef.current
+          ||refresh.revision!==sessionReads.current.revision||!isMetadataWriteContext(projectSessionContext.current)
+          ||projectSessionContext.current.generation===generationBeforeOpen||locationProjectOwnerRef.current.mode!=='PROJECT'
+          ||!setOpenExport('IDLE'))throw new ProjectCreationError('refresh');
+      }else await fetchData();
       return result;
+    } catch(error){
+      if(opening&&!knownRejected){setOpenExport('UNCERTAIN');throw new Error(openUncertainMessage);}
+      if(creating){
+        if(!knownRejected)setOpenExport('UNCERTAIN');
+        if(error instanceof ProjectCreationError)throw error;
+        throw new ProjectCreationError(submittingOwner===locationProjectOwnerRef.current?'uncertain':'obsolete');
+      }
+      throw error;
     } finally { if(replacesProject)locationProjectTransitions.current--; }
   };
 
+  const submitCreation=async(path:string,body:Record<string,unknown>,label:string)=>{
+    if(exportBlocked())return;
+    const submission=++creationSubmission.current;setCreationFeedback(null);
+    const pending=postProjectAction(path,body),owner=locationProjectOwnerRef.current;
+    try{
+      await pending;
+      if(submission!==creationSubmission.current)return;
+      setProjectFilename('');setCreationFeedback({owner:locationProjectOwnerRef.current,text:`${label} completed. The displayed project was refreshed.`});
+    }catch(error){
+      if(submission!==creationSubmission.current||owner!==locationProjectOwnerRef.current
+        ||error instanceof ProjectCreationError&&error.outcome==='obsolete')return;
+      const outcome=error instanceof ProjectCreationError?error.outcome:'uncertain';
+      const text=outcome==='rejected'?`${label} request was rejected before activation.`
+        :outcome==='blocked'?`${label} request was not accepted. The current project state was not verified.`
+        :outcome==='refresh'?`${label} completed, but the displayed project state could not be confirmed.`
+        :`${label} outcome unavailable. The operation may have changed the active project. Check the current project state before trying again.`;
+      setCreationFeedback({owner,text});
+    }
+  };
+
   const handleNewProject = async () => {
+    if(exportBlocked())return;
     const name = window.prompt('Project/site name:');
     if (!name?.trim()) return;
     const location = window.prompt('Site location (optional):') || '';
-    await postProjectAction('/api/project/new', { name, location });
-    setProjectFilename('');
+    await submitCreation('/api/project/new', { name, location },'New Project');
   };
 
   const handleCreateFromCurrent = async () => {
+    if(exportBlocked())return;
     const name = window.prompt('Project/site name for these results:');
     if (!name?.trim()) return;
-    await postProjectAction('/api/project/from-current', { name });
-    setProjectFilename('');
+    await submitCreation('/api/project/from-current', { name },'Create Project from Current Results');
   };
 
   const handleOpenProject = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    if(exportBlocked()){event.target.value='';return;}
     const file = event.target.files?.[0];
     if (!file) return;
     try {
@@ -430,6 +527,7 @@ export default function App() {
   const confirmAddExisting=async()=>{if(!addExisting)return;const response=await fetch('http://localhost:3001/api/project/add-existing/confirm',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({planId:addExisting.preview.planId,confirmed:true})}),data=await response.json();if(!response.ok)throw new Error(data.error||'The updated Project could not be created.');const url=URL.createObjectURL(new Blob([data.content],{type:'application/json'})),anchor=document.createElement('a');anchor.href=url;anchor.download=addExisting.filename;anchor.click();URL.revokeObjectURL(url);setAddExisting(null);window.alert(`Updated Project downloaded as ${addExisting.filename}. Keep this file as the new Project copy.`)};
 
   const handleSaveProject = async (saveAs = false) => {
+    if(exportBlocked())return;
     if (projectSession?.mode !== 'PROJECT') {
       await handleCreateFromCurrent();
       return;
@@ -445,6 +543,7 @@ export default function App() {
         suggestedFilename: `${project?.name || 'CCTV_Project'}.cctvproj`,
         chooseFilename: fallback => window.prompt('Save project as:', fallback),
         fetchContent: async () => {
+          if(exportBlocked())throw new Error(openUncertainMessage);
           submission = ++saveNoticeSubmission.current;
           report('Preparing project download...');
           sessionReads.current.revision++;
@@ -460,7 +559,7 @@ export default function App() {
           return result.content;
         },
         download: (content, downloadFilename) => {
-          if (!isCurrent()) return;
+          if (!isCurrent()||exportBlocked()) return;
           const url = URL.createObjectURL(new Blob([content], { type: 'application/json' }));
           const anchor = document.createElement('a');
           anchor.href = url; anchor.download = downloadFilename; anchor.click();
@@ -468,7 +567,7 @@ export default function App() {
           report('Project download started. Verify the file was saved.');
         },
       });
-      if (isCurrent() && submission === saveNoticeSubmission.current && filename) setProjectFilename(filename);
+      if (!exportBlocked() && isCurrent() && submission === saveNoticeSubmission.current && filename) setProjectFilename(filename);
     } catch {
       report(rejected ? 'Project export could not be completed. No project download was started.' : 'Project export/download outcome unavailable. Verify whether the file was saved before trying again.');
     }
@@ -685,10 +784,12 @@ export default function App() {
       {/* ─────────────────────────────────────────────────────────────
           ZONE 1: CLEAN TOP HEADER CONTROL (Sections 3 & 4)
       ───────────────────────────────────────────────────────────── */}
+      {openExportState!=='IDLE'&&<div role="alert" aria-label="Project Open export interlock" className="border-b border-amber-400 bg-amber-50 p-3 text-sm text-amber-950">{openExportState==='UNCERTAIN'?(replacementLabel==='Project Open'?openUncertainMessage:`${replacementLabel} outcome is uncertain. Save and Save As are unavailable because the active project could not be confirmed.`):replacementLabel==='Project Open'?'Opening project. Save and Save As are unavailable until the Open result is confirmed.':`${replacementLabel} is in progress. Save and Save As are unavailable until the replacement result is confirmed.`}</div>}
+      {creationFeedback&&creationFeedback.owner===locationProjectOwner&&<div role="status" aria-label="Project replacement feedback" className="border-b border-amber-300 bg-amber-50 p-3 text-sm text-amber-950">{creationFeedback.text}</div>}
       <header className="border-b border-slate-200 dark:border-slate-800 bg-white dark:bg-slate-900 px-4 sm:px-6 py-2 flex items-center justify-between gap-4">
         <div className="flex items-center gap-2 min-w-0"><ShieldCheck className="w-5 h-5 text-blue-600 shrink-0"/><div className="min-w-0"><h1 className="font-bold text-sm sm:text-base text-slate-900 dark:text-white truncate">CCTV Network Assistant</h1><p className="text-[11px] text-slate-500 truncate">{projectSession?.mode==='PROJECT'?(project?.name||'Project'):'Quick Work'}{projectSession?.dirty&&<span className="text-amber-600"> • Unsaved</span>}</p></div></div>
         <div ref={menuAreaRef} className="flex items-center gap-1.5 shrink-0">
-          <div className="relative"><button aria-haspopup="menu" aria-expanded={openMenu==='PROJECT'} onClick={()=>setOpenMenu(openMenu==='PROJECT'?null:'PROJECT')} className="ui-header-button">Project <ChevronDown className="w-3.5 h-3.5"/></button>{openMenu==='PROJECT'&&<div role="menu" className="ui-menu"><button onClick={()=>{void handleNewProject();setOpenMenu(null)}}>New Project</button>{projectSession?.mode==='QUICK_WORK'&&(project?.devices.length||0)>0&&<button onClick={()=>{void handleCreateFromCurrent();setOpenMenu(null)}}>Create Project from Results</button>}{projectSession?.mode==='QUICK_WORK'&&<button disabled={selectedDeviceIds.size===0} onClick={()=>{addExistingProjectInput.current?.click();setOpenMenu(null)}}>Add Selected to Existing Project</button>}<button onClick={()=>{openProjectInput.current?.click();setOpenMenu(null)}}>Open Project</button><button onClick={()=>{void handleSaveProject(false);setOpenMenu(null)}}>Save Project</button>{projectSession?.mode==='PROJECT'&&<><button onClick={()=>{void handleSaveProject(true);setOpenMenu(null)}}>Save As</button><button onClick={()=>{openProjectHistory();setOpenMenu(null)}}>History</button><button disabled={projectReverifyOpen} onClick={()=>{setProjectReverifyOpen(true);setOpenMenu(null)}}>Reverify</button></>}</div>}</div>
+          <div className="relative"><button aria-haspopup="menu" aria-expanded={openMenu==='PROJECT'} onClick={()=>setOpenMenu(openMenu==='PROJECT'?null:'PROJECT')} className="ui-header-button">Project <ChevronDown className="w-3.5 h-3.5"/></button>{openMenu==='PROJECT'&&<div role="menu" className="ui-menu">{saveRestriction&&<p id="project-menu-save-restriction" className="max-w-xs px-3 py-2 text-xs text-amber-800">{saveRestriction}</p>}<button onClick={()=>{void handleNewProject();setOpenMenu(null)}}>New Project</button>{projectSession?.mode==='QUICK_WORK'&&(project?.devices.length||0)>0&&<button onClick={()=>{void handleCreateFromCurrent();setOpenMenu(null)}}>Create Project from Results</button>}{projectSession?.mode==='QUICK_WORK'&&<button disabled={selectedDeviceIds.size===0} onClick={()=>{addExistingProjectInput.current?.click();setOpenMenu(null)}}>Add Selected to Existing Project</button>}<button onClick={()=>{openProjectInput.current?.click();setOpenMenu(null)}}>Open Project</button><button disabled={Boolean(saveRestriction)} aria-describedby={saveRestriction?'project-menu-save-restriction':undefined} className="disabled:cursor-not-allowed disabled:opacity-50" onClick={()=>{void handleSaveProject(false);setOpenMenu(null)}}>Save Project</button>{projectSession?.mode==='PROJECT'&&<><button disabled={Boolean(saveRestriction)} aria-describedby={saveRestriction?'project-menu-save-restriction':undefined} className="disabled:cursor-not-allowed disabled:opacity-50" onClick={()=>{void handleSaveProject(true);setOpenMenu(null)}}>Save As</button><button onClick={()=>{openProjectHistory();setOpenMenu(null)}}>History</button><button disabled={projectReverifyOpen} onClick={()=>{setProjectReverifyOpen(true);setOpenMenu(null)}}>Reverify</button></>}</div>}</div>
           <div className="relative"><button aria-haspopup="menu" aria-expanded={openMenu==='TOOLS'} onClick={()=>setOpenMenu(openMenu==='TOOLS'?null:'TOOLS')} className="ui-header-button">Tools <ChevronDown className="w-3.5 h-3.5"/></button>{openMenu==='TOOLS'&&<div role="menu" className="ui-menu"><button onClick={()=>{setNetworkAdapterOpen(true);setOpenMenu(null)}}>Network Adapter</button><button onClick={()=>{setIsLegacyModalOpen(true);setOpenMenu(null)}}>Add Device Manually</button><button onClick={()=>{setReportSetOpen(true);setOpenMenu(null)}}>Report Set ({reportSet.members.length})</button><button onClick={()=>{void openReports();setOpenMenu(null)}}>Reports</button></div>}</div>
           <div className="relative"><button aria-haspopup="menu" aria-expanded={openMenu==='SETTINGS'} onClick={()=>setOpenMenu(openMenu==='SETTINGS'?null:'SETTINGS')} className="ui-header-button"><Settings className="w-4 h-4"/>Settings <ChevronDown className="w-3.5 h-3.5"/></button>{openMenu==='SETTINGS'&&<SettingsMenu preferences={preferences} onPreferences={changePreferences} monitoring={diagnosticRefresh} preflight={preflight} onClose={()=>setOpenMenu(null)}/>}</div>
           <Tasks navigation={taskNavigation} onSnapshot={setTaskSnapshot} onOpen={()=>{closeAttentionPanels();setSelectedDeviceForInspector(null);}} onDiagnostic={(id,taskId)=>{const device=project?.devices.find(d=>d.id===id);if(device)foregroundDiagnostics(device,taskId);else window.alert('This device is no longer in the current inventory.');}} onResult={(result,correlationId)=>{
@@ -875,7 +976,7 @@ export default function App() {
       {/* ─────────────────────────────────────────────────────────────
           MODALS, DRAWERS & ZONE 4 INSPECTOR
       ───────────────────────────────────────────────────────────── */}
-      <AttentionActions kind={attentionAction==='SAVE'&&!hasUnsavedAttention(projectSession)?null:attentionAction} collisions={project?.collisions||[]} onCollision={openCollision} onSave={handleSaveProject} onClose={()=>setAttentionAction(null)}/>
+      <AttentionActions kind={attentionAction==='SAVE'&&!hasUnsavedAttention(projectSession)?null:attentionAction} collisions={project?.collisions||[]} onCollision={openCollision} onSave={handleSaveProject} saveRestriction={saveRestriction} onClose={()=>setAttentionAction(null)}/>
       {/* Zone 4: Device Inspector Drawer (v1.5 Section 8) */}
       <DeviceInspectorDrawer
         key={`location-project-${locationProjectOwner.generation}`}

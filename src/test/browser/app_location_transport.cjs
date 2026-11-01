@@ -9,8 +9,11 @@ const replacementOwnerOnly=process.argv[2]==='--replacement-owner-only';
 const cancelAckOnly=process.argv[2]==='--cancel-ack-only';
 const acceptedAfterCloseOnly=process.argv[2]==='--accepted-after-close-only';
 const saveOwnerOnly=process.argv[2]==='--save-owner-only';
+const creationInterlockOnly=process.argv[2]==='--creation-interlock-only';
+const creationOnly=process.argv[2]==='--creation-feedback-only';
+const openInterlockOnly=process.argv[2]==='--open-interlock-only';
 const savedEventOnly=process.argv[2]==='--stale-saved-event-only';
-assert.deepEqual(process.argv.slice(2),savedEventOnly?['--stale-saved-event-only']:saveOwnerOnly?['--save-owner-only']:nameOwnerOnly?['--open-name-owner-only']:reverifyRefreshOnly?['--reverify-refresh-only']:reverifyOwnerOnly?['--reverify-owner-only']:replacementOwnerOnly?['--replacement-owner-only']:cancelAckOnly?['--cancel-ack-only']:acceptedAfterCloseOnly?['--accepted-after-close-only']:[],'Unsupported fixture selector');
+assert.deepEqual(process.argv.slice(2),creationInterlockOnly?['--creation-interlock-only']:creationOnly?['--creation-feedback-only']:openInterlockOnly?['--open-interlock-only']:savedEventOnly?['--stale-saved-event-only']:saveOwnerOnly?['--save-owner-only']:nameOwnerOnly?['--open-name-owner-only']:reverifyRefreshOnly?['--reverify-refresh-only']:reverifyOwnerOnly?['--reverify-owner-only']:replacementOwnerOnly?['--replacement-owner-only']:cancelAckOnly?['--cancel-ack-only']:acceptedAfterCloseOnly?['--accepted-after-close-only']:[],'Unsupported fixture selector');
 const repo=path.resolve(__dirname,'../../..'),entry='/src/test/browser/app_location_transport.html';
 
 
@@ -141,6 +144,12 @@ async function pageFixture(){
  await pause(p);return f;
 }
 async function check(family,name,run,expectedConsole=false){
+ if(creationInterlockOnly&&family!==17)return;
+ if(family===17&&!creationInterlockOnly)return;
+ if(creationOnly&&family!==16)return;
+ if(family===16&&!creationOnly)return;
+ if(openInterlockOnly&&family!==15)return;
+ if(family===15&&!openInterlockOnly)return;
  if(savedEventOnly&&(family!==14||name!=='saved event cannot replace newer metadata; applied'))return;
  if(saveOwnerOnly&&![13,14].includes(family))return;
  if([13,14].includes(family)&&!saveOwnerOnly&&!savedEventOnly&&process.argv.length>2)return;
@@ -177,6 +186,219 @@ async function check(family,name,run,expectedConsole=false){
  // Independent application assertions may fail; remaining cases use fresh isolated contexts.
 }
 async function suite(){
+ for(const operation of ['new','from-current'])for(const outcome of ['success','400','409','transport','json','500','refresh-failed','obsolete'])
+ await check(16,operation+' feedback '+outcome,async p=>{
+   const label=operation==='new'?'New Project':'Create Project from Current Results',path='/api/project/'+operation;
+   const before=await p.evaluate(operation=>{const s=window.__appTransport;
+     s.session.dirty=true;if(operation==='from-current'){s.session.mode='QUICK_WORK';s.session.metadataWriteContext.mode='QUICK_WORK';}
+     s.emit('PROJECT_SESSION_CHANGED',{session:s.snapshot()});
+     s.creationPrompts=[{message:operation==='new'?'Project/site name:':'Project/site name for these results:',value:'Created fixture'}];
+     const body={name:'Created fixture'};
+     if(operation==='new'){s.creationPrompts.push({message:'Site location (optional):',value:'Exact created site'});body.location='Exact created site';}
+     s.expectedCreation={path:'/api/project/'+operation,body};return s.snapshot();
+   },operation);await pause(p);
+   await button(p,'Project').click();await button(p,operation==='new'?'New Project':'Create Project from Results').click();
+   await p.waitForFunction(path=>window.__appTransport.requests.some(r=>r.path===path&&r.state==='pending'),path);
+   assert.equal(await p.getByText('Created fixture',{exact:true}).count(),0);
+   if(outcome==='obsolete')await eventProject(p,true);
+   await p.evaluate(({path,outcome})=>{const s=window.__appTransport,r=s.requests.find(r=>r.path===path&&r.state==='pending');
+     if(['transport','obsolete'].includes(outcome))r.reject('Synthetic transport failure');
+     else if(outcome==='json')r.resolveText('{');
+     else if(['400','409','500'].includes(outcome))r.resolve({error:'PRIVATE_SERVER_DETAIL'},Number(outcome));
+     else{
+       if(outcome==='success'){s.session=s.nextProject(true);s.session.project.name='Created fixture';s.session.dirty=true;}
+       else s.holdSessions=true;
+       r.resolve({id:outcome==='success'?s.session.project.id:'Confirmed-created-id',name:'Created fixture'});
+     }
+   },{path,outcome});
+   if(outcome==='refresh-failed'){
+     const [read]=await heldSessions(p);await p.evaluate(id=>window.__appTransport.requests.find(r=>r.id===id).resolve({error:'Session unavailable'},503),read);
+   }
+   const feedback=p.getByRole('status',{name:'Project replacement feedback'});
+   if(outcome==='obsolete'){await pause(p);assert.equal(await feedback.count(),0);}
+   else{
+     const message=outcome==='success'?`${label} completed. The displayed project was refreshed.`
+       :outcome==='400'?`${label} request was rejected before activation.`
+       :outcome==='409'?`${label} request was not accepted. The current project state was not verified.`
+       :outcome==='refresh-failed'?`${label} completed, but the displayed project state could not be confirmed.`
+       :`${label} outcome unavailable. The operation may have changed the active project. Check the current project state before trying again.`;
+     await feedback.getByText(message,{exact:true}).waitFor();
+     await button(p,'Project').click();await button(p,'Project').click();await pause(p);
+     assert.equal(await feedback.textContent(),message);assert.equal(await p.getByText('PRIVATE_SERVER_DETAIL',{exact:true}).count(),0);
+     if(outcome!=='success'){
+       assert.deepEqual(await p.evaluate(()=>window.__appTransport.snapshot()),before);
+       assert.equal(await p.getByRole('button',{name:'Edit name for Camera A',exact:true}).count(),1);
+       assert.ok(!(await p.locator('header').textContent()).includes('Created fixture'));
+     }else{assert.ok((await p.locator('header').textContent()).includes('Created fixture'));assert.equal((await p.evaluate(()=>window.__appTransport.snapshot())).dirty,true);}
+   }
+   const posts=await p.evaluate(()=>window.__appTransport.requests.filter(r=>r.method==='POST'&&r.path.startsWith('/api/project/')).map(r=>r.path));
+   assert.deepEqual(posts,[path]);
+ });
+ const interlock=p=>p.getByRole('alert',{name:'Project Open export interlock'});
+ const uncertainOpen='Project Open outcome is uncertain. Save and Save As are unavailable because the active project could not be confirmed.';
+ const startHeldOpen=async p=>{
+   await p.evaluate(()=>{const s=window.__appTransport;s.allowOpenAlerts=true;s.session.dirty=true;s.emit('PROJECT_SESSION_CHANGED',{session:s.snapshot()});s.expectedOpen={jsonData:'{"syntheticOpen":true}',session:s.snapshot(),held:true};});
+   await p.locator('input[type=file]').first().setInputFiles({name:'Opened.cctvproj',mimeType:'application/json',buffer:Buffer.from('{"syntheticOpen":true}')});
+   await p.waitForFunction(()=>window.__appTransport.requests.some(r=>r.path==='/api/project/open'&&r.state==='pending'));
+   return p.evaluate(()=>window.__appTransport.requests.find(r=>r.path==='/api/project/open'&&r.state==='pending').id);
+ };
+ const blockedSaves=async p=>{
+   const before=await p.evaluate(()=>({exports:window.__appTransport.requests.filter(r=>r.path==='/api/project/save-content').length,session:window.__appTransport.snapshot()}));
+   const uncertain=(await interlock(p).textContent()).includes('outcome is uncertain');
+   const explanation=uncertain?'Save and Save As are unavailable because the active project could not be confirmed.'
+     :'Save and Save As are unavailable while a project replacement is in progress.';
+   for(const name of ['Save Project','Save As']){
+     await button(p,'Project').click();
+     assert.equal(await p.locator('#project-menu-save-restriction').textContent(),explanation);
+     const control=button(p,name);
+     if(await control.count()){
+       assert.equal(await control.isDisabled(),true);assert.equal(await control.getAttribute('aria-describedby'),'project-menu-save-restriction');
+       await control.evaluate(element=>element.click()); // Native disabled control must not dispatch.
+       // Test-only React DOM callback access bypasses native disabled handling to
+       // prove the real menu callback still reaches the central Save guard.
+       await control.evaluate(element=>{const key=Object.keys(element).find(k=>k.startsWith('__reactProps$'));
+         const props=key&&element[key];if(typeof props?.onClick!=='function')throw Error('Missing React menu callback');props.onClick();});
+       await pause(p);
+     }else await button(p,'Project').click();
+   }
+   if(await button(p,'Unsaved changes').count()){
+     await button(p,'Unsaved changes').click();const dialog=p.getByRole('dialog',{name:'Unsaved project changes'});
+     assert.equal(await dialog.locator('#attention-save-restriction').textContent(),explanation);
+     for(const name of ['Save Project','Save As']){
+       const control=dialog.getByRole('button',{name,exact:true});assert.equal(await control.isDisabled(),true);
+       assert.equal(await control.getAttribute('aria-describedby'),'attention-save-restriction');
+       await control.evaluate(element=>element.click());
+     }
+     assert.equal(await dialog.isVisible(),true);await dialog.getByRole('button',{name:'Close',exact:true}).click();
+     assert.equal(await interlock(p).isVisible(),true);
+   }
+   await pause(p);
+   assert.equal(await p.evaluate(()=>window.__appTransport.requests.filter(r=>r.path==='/api/project/save-content').length),before.exports);
+   assert.deepEqual(await p.evaluate(()=>window.__appTransport.snapshot()),before.session);
+ };
+ for(const operation of ['new','from-current'])for(const outcome of ['success','400','409','transport','json','500','refresh-failed','storage','download','foreign-marker'])
+ await check(17,operation+' export interlock '+outcome,async p=>{
+   const downloads=[];p.on('download',d=>downloads.push(d.suggestedFilename()));
+   if(outcome==='download'){
+     await p.evaluate(()=>window.__appTransport.expectedExports=1);await button(p,'Project').click();await button(p,'Save Project').click();
+     await p.waitForFunction(()=>window.__appTransport.requests.some(r=>r.path==='/api/project/save-content'&&r.state==='pending'));
+   }
+   const before=await p.evaluate(({operation,outcome})=>{
+     const s=window.__appTransport;s.session.dirty=true;
+     if(operation==='from-current'){s.session.mode='QUICK_WORK';s.session.metadataWriteContext.mode='QUICK_WORK';}
+     s.emit('PROJECT_SESSION_CHANGED',{session:s.snapshot()});
+     s.creationPrompts=[{message:operation==='new'?'Project/site name:':'Project/site name for these results:',value:'Newly created'}];
+     const body={name:'Newly created'};
+     if(operation==='new'){body.location='Exact site';s.creationPrompts.push({message:'Site location (optional):',value:'Exact site'});}
+     s.expectedCreation={path:'/api/project/'+operation,body};
+     if(outcome==='storage'){
+       const original=Storage.prototype.setItem;s.restoreStorage=()=>{Storage.prototype.setItem=original;};
+       Storage.prototype.setItem=function(key,value){if(key==='cctv-project-open-unresolved-v1')throw Error('Synthetic storage failure');return original.call(this,key,value);};
+     }
+     return s.snapshot();
+   },{operation,outcome});await pause(p);
+   try{
+     await button(p,'Project').click();await button(p,operation==='new'?'New Project':'Create Project from Results').click();
+     await interlock(p).waitFor();await blockedSaves(p);
+     const path='/api/project/'+operation;
+     if(outcome==='storage'){
+       assert.equal(await p.evaluate(path=>window.__appTransport.requests.filter(r=>r.path===path).length,path),0);
+       return;
+     }
+     let marker=await p.evaluate(()=>sessionStorage.getItem('cctv-project-open-unresolved-v1'));assert.ok(marker.startsWith(operation+':'));
+     if(outcome==='foreign-marker'){
+       marker=operation+':foreign-submission';
+       await p.evaluate(marker=>sessionStorage.setItem('cctv-project-open-unresolved-v1',marker),marker);
+     }
+     await p.waitForFunction(path=>window.__appTransport.requests.some(r=>r.path===path&&r.state==='pending'),path);
+     await p.evaluate(({path,outcome})=>{
+       const s=window.__appTransport,r=s.requests.find(r=>r.path===path&&r.state==='pending');
+       if(outcome==='transport')r.reject();else if(outcome==='json')r.resolveText('{');
+       else if(['success','foreign-marker'].includes(outcome)){s.session=s.nextProject(true);s.session.project.name='Newly created';s.session.dirty=true;r.resolve(s.session.project);}
+       else if(outcome==='refresh-failed'){s.holdSessions=true;r.resolve({id:'confirmed-created-project'});}
+       else r.resolve({error:'Synthetic replacement response'},outcome==='400'?400:outcome==='409'?409:500);
+     },{path,outcome});
+     if(outcome==='refresh-failed'){
+       const [read]=await heldSessions(p);await p.evaluate(id=>{const s=window.__appTransport;s.requests.find(r=>r.id===id).resolve({error:'Unavailable'},503);s.holdSessions=false;},read);
+     }
+     if(['success','400'].includes(outcome)){
+       await interlock(p).waitFor({state:'hidden'});assert.equal(await p.evaluate(()=>sessionStorage.getItem('cctv-project-open-unresolved-v1')),null);
+       await button(p,'Project').click();assert.equal(await button(p,'Save Project').isEnabled(),true);
+       if(await button(p,'Save As').count())assert.equal(await button(p,'Save As').isEnabled(),true);
+       assert.equal(await p.locator('#project-menu-save-restriction').count(),0);await button(p,'Project').click();
+       if(outcome==='400')assert.deepEqual(await p.evaluate(()=>window.__appTransport.snapshot()),before);
+       else assert.ok((await p.locator('header').textContent()).includes('Newly created'));
+     }else{
+       const label=operation==='new'?'New Project':'Create Project from Current Results';
+       await interlock(p).getByText(`${label} outcome is uncertain. Save and Save As are unavailable because the active project could not be confirmed.`,{exact:true}).waitFor();
+       if(outcome==='download'){await p.evaluate(()=>window.__appTransport.requests.find(r=>r.path==='/api/project/save-content').resolve({content:'{"synthetic":true}'}));await pause(p);assert.equal(downloads.length,0);}
+       if(outcome!=='foreign-marker')assert.deepEqual(await p.evaluate(()=>window.__appTransport.snapshot()),before);
+       await blockedSaves(p);
+       await button(p,'Project').click();await button(p,'New Project').click();
+       if(operation==='from-current'){await button(p,'Project').click();if(await button(p,'Create Project from Results').count())await button(p,'Create Project from Results').click();else await button(p,'Project').click();}
+       await p.locator('input[type=file]').first().setInputFiles({name:'Cannot retry.cctvproj',mimeType:'application/json',buffer:Buffer.from('{}')});
+       await p.evaluate(()=>{const s=window.__appTransport;s.reconcile();s.emit('PROJECT_SESSION_CHANGED',{session:s.snapshot()});});await pause(p);
+       assert.equal(await p.evaluate(()=>sessionStorage.getItem('cctv-project-open-unresolved-v1')),marker);
+       await p.reload();await button(p,'Edit name for Camera A').waitFor();
+       await interlock(p).getByText(`${label} outcome is uncertain. Save and Save As are unavailable because the active project could not be confirmed.`,{exact:true}).waitFor();await blockedSaves(p);
+       assert.equal(await p.evaluate(()=>window.__appTransport.requests.filter(r=>r.method==='POST'&&r.path.startsWith('/api/project/')).length),0);
+     }
+   }finally{if(outcome==='storage')await p.evaluate(()=>window.__appTransport.restoreStorage());}
+ });
+ for(const mode of ['transport','json','500','409','failed-refresh','stale-refresh','unchanged-refresh'])
+ await check(15,'Open interlock '+mode+' persists through inspection and reload',async p=>{
+   const downloads=[];p.on('download',d=>downloads.push(d.suggestedFilename()));
+   const id=await startHeldOpen(p);await interlock(p).waitFor();await blockedSaves(p);
+   assert.equal(await p.evaluate(()=>sessionStorage.getItem('cctv-project-open-unresolved-v1')),'unresolved');
+   await p.evaluate(({id,mode})=>{const s=window.__appTransport,r=s.requests.find(r=>r.id===id);
+     if(mode==='transport')r.reject();else if(mode==='json')r.resolveText('{');
+     else if(['500','409'].includes(mode))r.resolve({error:'Synthetic Open response'},Number(mode));
+     else{s.holdSessions=true;r.resolve(s.session.project);}
+   },{id,mode});
+   if(mode.endsWith('refresh')){
+     const [read]=await heldSessions(p);
+     if(mode==='stale-refresh')await eventProject(p,true);
+     await p.evaluate(({read,mode})=>{const s=window.__appTransport;s.requests.find(r=>r.id===read).resolve(mode==='failed-refresh'?{error:'Unavailable'}:s.snapshot(),mode==='failed-refresh'?503:200);s.holdSessions=false;},{read,mode});
+   }
+   await interlock(p).getByText(uncertainOpen,{exact:true}).waitFor();
+   await p.evaluate(()=>{const s=window.__appTransport;s.holdSessions=false;s.reconcile();s.emit('PROJECT_SESSION_CHANGED',{session:s.snapshot()});});await pause(p);
+   await blockedSaves(p);
+   await button(p,'Project').click();await button(p,'New Project').click();
+   await p.locator('input[type=file]').first().setInputFiles({name:'Retry.cctvproj',mimeType:'application/json',buffer:Buffer.from('{}')});
+   await p.evaluate(()=>{const s=window.__appTransport;s.session.mode='QUICK_WORK';s.session.metadataWriteContext.mode='QUICK_WORK';s.emit('PROJECT_SESSION_CHANGED',{session:s.snapshot()});});await pause(p);
+   await button(p,'Project').click();await button(p,'Create Project from Results').click();await blockedSaves(p);
+   assert.equal(await p.evaluate(()=>window.__appTransport.requests.filter(r=>r.method==='POST'&&r.path.startsWith('/api/project/')).length),1);
+   assert.equal(downloads.length,0);
+   await p.reload();await button(p,'Edit name for Camera A').waitFor();await interlock(p).getByText(uncertainOpen,{exact:true}).waitFor();await blockedSaves(p);
+   assert.equal(await p.evaluate(()=>window.__appTransport.requests.filter(r=>r.method==='POST'&&r.path.startsWith('/api/project/')).length),0);
+ });
+ for(const outcome of ['rejection','admission'])await check(15,'known Open '+outcome+' permits normal Save',async p=>{
+   const id=await startHeldOpen(p);
+   await p.evaluate(({id,outcome})=>{const s=window.__appTransport;if(outcome==='admission')s.session.metadataWriteContext.generation='22222222-2222-4222-8222-222222222222';s.requests.find(r=>r.id===id).resolve(outcome==='rejection'?{error:'The project file is not valid JSON.'}:s.session.project,outcome==='rejection'?400:200);},{id,outcome});
+   await interlock(p).waitFor({state:'hidden'});assert.equal(await p.evaluate(()=>sessionStorage.getItem('cctv-project-open-unresolved-v1')),null);
+   const previous=await p.evaluate(()=>{window.__appTransport.expectedExports=1;return window.__appTransport.requests.length;});
+   await button(p,'Project').click();await button(p,'Save Project').click();
+   await p.waitForFunction(previous=>window.__appTransport.requests.some(r=>r.id>previous&&r.path==='/api/project/save-content'),previous);
+   await p.evaluate(()=>window.__appTransport.requests.find(r=>r.path==='/api/project/save-content').resolve({error:'Synthetic rejection'},400));await pause(p);
+ });
+ await check(15,'storage failure prevents Open submission',async p=>{
+   await p.evaluate(()=>{const s=window.__appTransport;s.allowOpenAlerts=true;const original=Storage.prototype.setItem;
+     s.restoreStorage=()=>{Storage.prototype.setItem=original;};Storage.prototype.setItem=function(key,value){if(key==='cctv-project-open-unresolved-v1')throw Error('Synthetic storage failure');return original.call(this,key,value);};});
+   try{
+     await p.locator('input[type=file]').first().setInputFiles({name:'Blocked.cctvproj',mimeType:'application/json',buffer:Buffer.from('{}')});
+     await interlock(p).getByText(uncertainOpen,{exact:true}).waitFor();await blockedSaves(p);
+     assert.equal(await p.evaluate(()=>window.__appTransport.requests.filter(r=>r.path==='/api/project/open').length),0);
+   }finally{await p.evaluate(()=>window.__appTransport.restoreStorage());}
+ });
+ await check(15,'earlier Save download continuation cannot pass an Open latch',async p=>{
+   const downloads=[];p.on('download',d=>downloads.push(d.suggestedFilename()));
+   await p.evaluate(()=>window.__appTransport.expectedExports=1);await button(p,'Project').click();await button(p,'Save Project').click();
+   await p.waitForFunction(()=>window.__appTransport.requests.some(r=>r.path==='/api/project/save-content'&&r.state==='pending'));
+   const id=await startHeldOpen(p);await p.evaluate(id=>window.__appTransport.requests.find(r=>r.id===id).reject(),id);
+   await interlock(p).getByText(uncertainOpen,{exact:true}).waitFor();
+   await p.evaluate(()=>window.__appTransport.requests.find(r=>r.path==='/api/project/save-content').resolve({content:'{"synthetic":true}'}));await pause(p);
+   assert.equal(downloads.length,0);await blockedSaves(p);
+ });
  const submitSave=async(p,saveAs=false,filename='Chosen copy.cctvproj')=>{
    const previous=await p.evaluate(()=>window.__appTransport.requests.filter(r=>r.path==='/api/project/save-content').map(r=>r.id));
    await p.evaluate(({saveAs,filename})=>{const s=window.__appTransport;s.expectedExports=(s.expectedExports||0)+1;if(saveAs)s.savePrompts=[filename];},{saveAs,filename});
@@ -1034,7 +1256,7 @@ async function suite(){
 (async()=>{let fatal;
  try{await setup();await suite();}catch(e){fatal=String(e.stack);console.error(fatal);}
  finally{try{await cleanup();}catch(e){fatal=String(e.stack);console.error('CLEANUP UNCERTAIN; preserve '+root+': '+fatal);}}
- const families=Object.fromEntries(Array.from({length:14},(_,i)=>{const rows=results.filter(r=>r.family===i+1);return[i+1,{passed:rows.filter(r=>r.status==='passed').length,failed:rows.filter(r=>r.status==='failed').length,status:!rows.length?(savedEventOnly||saveOwnerOnly||nameOwnerOnly||reverifyRefreshOnly||reverifyOwnerOnly||replacementOwnerOnly||cancelAckOnly||acceptedAfterCloseOnly?'not-executed-filter':'blocked'):rows.some(r=>r.status==='failed')?'failed':'passed'}];}));
+ const families=Object.fromEntries(Array.from({length:17},(_,i)=>{const rows=results.filter(r=>r.family===i+1);return[i+1,{passed:rows.filter(r=>r.status==='passed').length,failed:rows.filter(r=>r.status==='failed').length,status:!rows.length?(creationInterlockOnly||creationOnly||openInterlockOnly||savedEventOnly||saveOwnerOnly||nameOwnerOnly||reverifyRefreshOnly||reverifyOwnerOnly||replacementOwnerOnly||cancelAckOnly||acceptedAfterCloseOnly?'not-executed-filter':'blocked'):rows.some(r=>r.status==='failed')?'failed':'passed'}];}));
  console.log(JSON.stringify({families,results,summaries,boundary,contextsCreated:contexts.length,cleanupConfirmed:closed,listenerClosed:server?!server.listening:null,browserDisconnected:browser?!browser.isConnected():null,fixtureRoot:root,remainingFixtureRoot:root?fs.existsSync(root):false,removedOwnedFiles:removedFiles,fatal},null,2));
- if(fatal||results.length!==(savedEventOnly?1:saveOwnerOnly?34:nameOwnerOnly?1:reverifyRefreshOnly?7:reverifyOwnerOnly?12:replacementOwnerOnly?41:cancelAckOnly?27:acceptedAfterCloseOnly?1:130)||results.some(r=>r.status==='failed'))process.exitCode=1;
+ if(fatal||results.length!==(creationInterlockOnly?20:creationOnly?16:openInterlockOnly?11:savedEventOnly?1:saveOwnerOnly?34:nameOwnerOnly?1:reverifyRefreshOnly?7:reverifyOwnerOnly?12:replacementOwnerOnly?41:cancelAckOnly?27:acceptedAfterCloseOnly?1:130)||results.some(r=>r.status==='failed'))process.exitCode=1;
 })();

@@ -22,7 +22,7 @@ module.exports=function installAppFixture(){
  window.WebSocket=class{constructor(){check(false,'WebSocket-construction');}};
  window.EventSource=class{constructor(){check(false,'EventSource-construction');}};
  window.open=()=>{check(false,'window-open');};
- window.alert=()=>{check(false,'unexpected-alert');};window.prompt=(message)=>{check(message==='Save project as:'&&state.savePrompts?.length>0,'unexpected-prompt');return state.savePrompts.shift();};
+ window.alert=message=>{check(state.allowOpenAlerts===true,'unexpected-alert');(state.alerts||=[]).push(message);};window.prompt=(message)=>{if(state.creationPrompts?.length){const next=state.creationPrompts.shift();check(message===next.message,'wrong-creation-prompt');return next.value;}check(message==='Save project as:'&&state.savePrompts?.length>0,'unexpected-prompt');return state.savePrompts.shift();};
  window.fetch=(url,options={})=>{
    const href=typeof url==='string'?url:url instanceof URL?url.href:url.url;
    const u=new URL(href,location.href),method=options.method||'GET';
@@ -51,7 +51,9 @@ module.exports=function installAppFixture(){
    }else if(method==='POST'&&u.pathname==='/api/project/save-content'){
      check(state.expectedExports>0&&JSON.stringify(body)==='{}','unissued-project-export');state.expectedExports--;held=true;
    }else if(method==='POST'&&u.pathname==='/api/project/open'){
-     check(state.expectedOpen&&JSON.stringify(body)===JSON.stringify({jsonData:state.expectedOpen.jsonData}),'unissued-project-open');state.session=clone(state.expectedOpen.session);state.expectedOpen=null;response=clone(state.session.project);
+     check(state.expectedOpen&&JSON.stringify(body)===JSON.stringify({jsonData:state.expectedOpen.jsonData}),'unissued-project-open');held=state.expectedOpen.held===true;if(!held)state.session=clone(state.expectedOpen.session);state.expectedOpen=null;response=clone(state.session.project);
+   }else if(method==='POST'&&['/api/project/new','/api/project/from-current'].includes(u.pathname)){
+     check(state.expectedCreation?.path===u.pathname&&JSON.stringify(body)===JSON.stringify(state.expectedCreation.body),'unissued-project-creation');state.expectedCreation=null;held=true;
    }else if(method==='POST'&&u.pathname==='/api/project/reverify'){
      check(state.expectedReverify===true&&JSON.stringify(body)==='{}','unissued-reverify');state.expectedReverify=false;held=true;
    }else if(method==='POST'&&u.pathname==='/api/project/reverify/cancel'){
@@ -68,7 +70,7 @@ module.exports=function installAppFixture(){
      const signal=options.signal;
      const detach=()=>signal?.removeEventListener('abort',abort);
      record.resolve=(data,status=200)=>{check(record.state==='pending','duplicate-response:'+record.id);detach();record.state='resolved';record.response=clone(data);resolve(new Response(JSON.stringify(data),{status,headers:{'Content-Type':'application/json'}}));};
-     record.resolveText=(text,status=200)=>{check(record.state==='pending'&&['/api/project/save-content','/api/project/reverify/replacements/fixture-candidate','/api/project/reverify/replacements/fixture-candidate-two','/api/project/reverify/replacements/fixture-candidate-four','/api/project/reverify/cancel'].includes(record.path),'unissued-text-response');detach();record.state='resolved';record.response=text;resolve(new Response(text,{status,headers:{'Content-Type':'application/json'}}));};
+     record.resolveText=(text,status=200)=>{check(record.state==='pending'&&['/api/project/new','/api/project/from-current','/api/project/open','/api/project/save-content','/api/project/reverify/replacements/fixture-candidate','/api/project/reverify/replacements/fixture-candidate-two','/api/project/reverify/replacements/fixture-candidate-four','/api/project/reverify/cancel'].includes(record.path),'unissued-text-response');detach();record.state='resolved';record.response=text;resolve(new Response(text,{status,headers:{'Content-Type':'application/json'}}));};
      record.reject=(message='Injected transport failure')=>{check(record.state==='pending','duplicate-rejection:'+record.id);detach();record.state='rejected';reject(Error(message));};
      const abort=()=>{if(record.state==='pending'){detach();if(historyRead&&record.ignoreHistoryAbort===true){record.abortObserved=true;return;}record.state='aborted';reject(new DOMException('Fixture request aborted','AbortError'));}};
      if(signal?.aborted){abort();return;}signal?.addEventListener('abort',abort,{once:true});
