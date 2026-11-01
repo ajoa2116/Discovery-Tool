@@ -28,7 +28,8 @@ import { Server as HttpsServer } from 'node:https';
 import type { Socket } from 'node:net';
 import { WebSocketServer } from 'ws';
 import { pipelineEngine } from '../core/engine/pipeline.ts';
-import { projectDb } from '../core/storage/project_db.ts';
+import { projectDb as activeProjectDb, claimProjectReplacementAuthority, type SiteProjectDatabase } from '../core/storage/project_db.ts';
+import { ProjectReplacementAuthorityError } from '../core/projects/project_replacement_authority.ts';
 import { appStateDb } from '../core/storage/app_db.ts';
 import { osVault } from '../core/storage/vault.ts';
 import { DuplicateRemediationService } from '../core/edge_cases/duplicate_remediation_service.ts';
@@ -68,6 +69,8 @@ type DiscoveryMonitor = Pick<IncrementalDiscoveryMonitor, 'start'|'stop'|'getSta
 // A closed provider may report a late error. This sink retains no backend graph.
 const closedProviderError = () => {};
 export interface BackendDependencies {
+  /** Trusted composition only: must be a fresh protected store; never authorization. */
+  projectStore?:SiteProjectDatabase;
   createHttpServer?: (app: express.Express) => Server | HttpsServer;
   // Trusted composition seam only; it cannot supply authorization or receipts.
   nonAuthorizingBinding?: {
@@ -85,6 +88,9 @@ export interface BackendDependencies {
 /** Trusted composition only. Authorization and camera authority are never dependencies. */
 export function constructBackend(dependencies: BackendDependencies = {}) {
   const deps = { ...dependencies };
+  const projectDb=deps.projectStore??activeProjectDb;
+  // Claim before constructing services or accepting work. No same-store handoff.
+  const replacementAuthority=claimProjectReplacementAuthority(projectDb);
   let state: 'constructed'|'starting'|'running'|'stopping'|'stopped' = 'constructed';
   const initializationAbort = new AbortController();
   const live = () => !initializationAbort.signal.aborted && (state === 'starting' || state === 'running');
@@ -271,29 +277,47 @@ export function constructBackend(dependencies: BackendDependencies = {}) {
     } catch (error) { res.status(400).json({ error: error instanceof Error ? error.message : String(error) }); }
   });
 
+  const replacementError=(res:express.Response,error:unknown,committed=false)=>{
+    if(committed){
+      res.status(500).json({error:'Project replacement outcome unavailable. The current project could not be confirmed.'});
+      return;
+    }
+    const status=error instanceof ProjectReplacementAuthorityError?(error.disposition==='UNKNOWN'?500:409)
+      :error instanceof ProjectValidationError?400:500;
+    res.status(status).json({error:error instanceof ProjectValidationError||error instanceof ProjectReplacementAuthorityError
+      ?error.message:'Project replacement outcome unavailable. The current project could not be confirmed.'});
+  };
   app.post('/api/project/quick-work', (req, res) => {
-    const project = projectDb.startQuickWork();
-    broadcast({ type: 'PROJECT_SESSION_CHANGED', data: { session: projectDb.getSession() } });
-    res.json(project);
+    let committed=false;
+    try {
+      const project = replacementAuthority.startQuickWork();
+      committed=true;
+      broadcast({ type: 'PROJECT_SESSION_CHANGED', data: { session: projectDb.getSession() } });
+      res.json(project);
+    }catch(error){replacementError(res,error,committed);}
   });
 
   app.post('/api/project/new', (req, res) => {
+    let committed=false;
     try {
-      const project = projectDb.createNewProject(req.body.name, req.body.location, req.body.description);
+      const project = replacementAuthority.createNewProject(req.body.name, req.body.location, req.body.description);
+      committed=true;
       broadcast({ type: 'PROJECT_SESSION_CHANGED', data: { session: projectDb.getSession() } });
       res.status(201).json(project);
     } catch (error) {
-      res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
+      replacementError(res,error,committed);
     }
   });
 
   app.post('/api/project/from-current', (req, res) => {
+    let committed=false;
     try {
-      const project = projectDb.createProjectFromCurrentResults(req.body.name, req.body.description);
+      const project = replacementAuthority.createProjectFromCurrentResults(req.body.name, req.body.description);
+      committed=true;
       broadcast({ type: 'PROJECT_SESSION_CHANGED', data: { session: projectDb.getSession() } });
       res.status(201).json(project);
     } catch (error) {
-      res.status(400).json({ error: error instanceof Error ? error.message : String(error) });
+      replacementError(res,error,committed);
     }
   });
   app.post('/api/project/add-existing/preview',async(req,res)=>{try{const ids=Array.isArray(req.body.deviceIds)?req.body.deviceIds.map(String):[],selected=ids.map((id:string)=>projectDb.getDeviceById(id)).filter(Boolean);const adapters=await advancedScanService.listAdapters().catch(()=>[]);res.json(addToExistingProjectService.preview(String(req.body.jsonData||''),selected,LocalHostIdentity.fromAdapters(adapters)))}catch(error){safeError(res,error,400,'ADD_TO_EXISTING_PROJECT_PREVIEW')}});
@@ -301,12 +325,14 @@ export function constructBackend(dependencies: BackendDependencies = {}) {
   app.post('/api/project/add-existing/cancel',(req,res)=>res.json({cancelled:addToExistingProjectService.cancel(String(req.body.planId||''))}));
 
   app.post('/api/project/open', (req, res) => {
+    let committed=false;
     try {
-      const project = projectDb.importProjectJson(req.body.jsonData);
+      const project = replacementAuthority.importProjectJson(req.body.jsonData);
+      committed=true;
       broadcast({ type: 'PROJECT_SESSION_CHANGED', data: { session: projectDb.getSession() } });
       res.json(project);
     } catch (error) {
-      res.status(error instanceof ProjectValidationError ? 400 : 500).json({ error: error instanceof Error ? error.message : String(error) });
+      replacementError(res,error,committed);
     }
   });
 
@@ -673,6 +699,7 @@ export function constructBackend(dependencies: BackendDependencies = {}) {
   }, { [Symbol.iterator]: activeControllers }, () => cleanup(closeWebSocket), () => cleanup(closeHttp));
   function shutdown(): Promise<void> {
     if (closing) return closing;
+    replacementAuthority.retire(); // Revoke synchronously, before any awaited cleanup.
     state = 'stopping';
     closing = Promise.resolve().then(async () => {
       await cleanup(() => authentication.dispose());
@@ -683,6 +710,7 @@ export function constructBackend(dependencies: BackendDependencies = {}) {
         await cleanup(async () => { await tasks.cancel(task.id); });
       }
       await cleanup(() => coordinator.shutdown());
+      if(replacementAuthority.state().drain!=='COMPLETE')cleanupErrors.push(new Error('Project replacement work has not drained.'));
       wss?.off('connection', acceptConnection);
       for (const provider of [server, wss]) {
         provider?.off('error', fail);
@@ -785,5 +813,6 @@ export function constructBackend(dependencies: BackendDependencies = {}) {
       default: return 'Pair recovery persistence is unverified.';
     }
   };
-  return { app, start, shutdown, failure, initialized: () => initialization, recoveryDiagnostic, status: () => ({ state, recoveryInspected, recoveryInitialization }) };
+  return { app, start, shutdown, failure, initialized: () => initialization, recoveryDiagnostic,
+    status: () => ({ state, recoveryInspected, recoveryInitialization, replacement:replacementAuthority.state() }) };
 }

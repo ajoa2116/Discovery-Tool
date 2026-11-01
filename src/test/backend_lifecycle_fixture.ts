@@ -7,6 +7,7 @@ import type { Socket } from 'node:net';
 import type { Server } from 'node:http';
 import type { WebSocketServer } from 'ws';
 import { constructBackend, type BackendDependencies } from '../server/backend_application.ts';
+import { createProtectedProjectStore, type SiteProjectDatabase } from '../core/storage/project_db.ts';
 
 export function deferred<T>() {
   let resolve!: (value: T) => void, reject!: (error: Error) => void;
@@ -78,7 +79,7 @@ export async function exerciseStagedLifecycle() {
   assert.equal(late.http.listening, false); assert.equal(late.backend.status().recoveryInspected, false);
   assert.equal(late.backend.status().state, 'stopped');
 }
-export function lifecycleFixture(options: { delayListen?: boolean; failAt?: string; recovery?: Promise<any>; credentials?: Promise<void>; cleanupFailure?: string; errorDuringDiagnosticStart?: boolean } = {}) {
+export function lifecycleFixture(options: { projectStore?:SiteProjectDatabase; delayListen?: boolean; failAt?: string; recovery?: Promise<any>; credentials?: Promise<void>; cleanupFailure?: string; errorDuringDiagnosticStart?: boolean } = {}) {
   const events: string[] = [], signals: AbortSignal[] = [];
   let listenCallback = () => {}, reconcile = () => {};
   let verifyUpgrade: (info: any) => boolean = () => false;
@@ -113,7 +114,9 @@ export function lifecycleFixture(options: { delayListen?: boolean; failAt?: stri
     getState: () => ({ enabled: false, running: false, status: 'OFF', intervalMs: 30000, maxConcurrency: 3 }),
     setIntervalMs() {}, refreshNow: async () => {}, yieldToTechnician: async () => {}, runNow: async () => 'SKIPPED',
   });
+  const projectStore=options.projectStore??createProtectedProjectStore();
   const dependencies: BackendDependencies = {
+    projectStore,
     createHttpServer() { events.push('http.create'); broken('http'); return http as unknown as Server; },
     createWebSocketServer(args: any) {
       events.push('ws.create'); broken('ws'); verifyUpgrade = args.verifyClient;
@@ -137,6 +140,6 @@ export function lifecycleFixture(options: { delayListen?: boolean; failAt?: stri
     res.end = ((chunk?: any) => { resolve({ status: res.statusCode, body: String(chunk ?? '') }); return res; }) as typeof res.end;
     backend.app(req as any, res as any, (error?: any) => reject(error ?? Error('Unanswered synthetic request')));
   });
-  return { backend, events, signals, http, ws, request, verifyUpgrade: (req: any) => verifyUpgrade({ req }),
+  return { backend, projectStore, events, signals, http, ws, request, verifyUpgrade: (req: any) => verifyUpgrade({ req }),
     lateListen: () => listenCallback(), lateReconcile: () => reconcile(), diagnosticDevice: (device: any) => diagnosticDevice(device), discoveryCallbacks };
 }

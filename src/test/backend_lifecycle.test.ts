@@ -3,7 +3,6 @@ import { test } from 'node:test';
 import { getEventListeners } from 'node:events';
 import { deferred, lifecycleFixture } from './backend_lifecycle_fixture.ts';
 import { pipelineEngine } from '../core/engine/pipeline.ts';
-import { projectDb } from '../core/storage/project_db.ts';
 import { SiteProjectDatabase } from '../core/storage/project_db.ts';
 import { TaskManager } from '../core/tasks/task_manager.ts';
 import { OSCredentialVault, type CredentialStore } from '../core/storage/vault.ts';
@@ -118,19 +117,27 @@ test('discovery cancellation failure cannot skip task cancellation, client termi
 });
 
 test('synchronous provider failure stops subsequent acquisition and late monitor callbacks are inert', async () => {
+  // Positive control: the live callback reaches the actual fixture-owned store.
+  const probe=lifecycleFixture(),probeApply=probe.projectStore.applyDiagnosticRefresh;
+  let observed=0;
+  probe.projectStore.applyDiagnosticRefresh=()=>{observed++;return undefined as any;};
+  try{
+    await probe.backend.start();await probe.backend.initialized();
+    probe.diagnosticDevice({});assert.equal(observed,1);
+  }finally{probe.projectStore.applyDiagnosticRefresh=probeApply;await probe.backend.shutdown();}
   const f = lifecycleFixture({ errorDuringDiagnosticStart: true });
   await assert.rejects(f.backend.start(), /synchronous provider error/);
   await f.backend.shutdown();
   assert.ok(!f.events.includes('discovery.start')); assert.ok(!f.events.some(e => e.startsWith('listen:')));
-  const apply = projectDb.applyDiagnosticRefresh, scan = pipelineEngine.runDiscoveryScan;
+  const apply = f.projectStore.applyDiagnosticRefresh, scan = pipelineEngine.runDiscoveryScan;
   let mutations = 0, scans = 0;
-  projectDb.applyDiagnosticRefresh = () => { mutations++; return undefined as any; };
+  f.projectStore.applyDiagnosticRefresh = () => { mutations++; return undefined as any; };
   pipelineEngine.runDiscoveryScan = async () => { scans++; return 'BUSY'; };
   try {
     f.diagnosticDevice({}); await f.discoveryCallbacks.runCycle('late');
     assert.equal(f.discoveryCallbacks.canRun().allowed, false);
     assert.equal(mutations, 0); assert.equal(scans, 0);
-  } finally { projectDb.applyDiagnosticRefresh = apply; pipelineEngine.runDiscoveryScan = scan; }
+  } finally { f.projectStore.applyDiagnosticRefresh = apply; pipelineEngine.runDiscoveryScan = scan; }
 });
 
 test('Pair cancellation prevents late adapter inspection from resurrecting any preparation path', async () => {

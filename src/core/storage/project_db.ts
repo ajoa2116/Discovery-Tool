@@ -7,10 +7,13 @@ import { dirname } from 'node:path';
 import { CctvProjectBundle, Device, IPCollisionRecord, ProjectSession, ReachabilityEvidence, RogueDHCPOffer, SiteProject } from '../../types/index.ts';
 import { appStateDb } from './app_db.ts';
 import { AppendProjectHistory, ProjectHistoryFilter, ProjectHistoryService } from './project_history.ts';
+import { createProjectReplacementProtection, ProjectReplacementAuthorityError } from '../projects/project_replacement_authority.ts';
 
 const PROJECT_FORMAT = 'CCTV_DISCOVERY_PROJECT' as const;
 const PROJECT_SCHEMA_VERSION = 1 as const;
 const APPLICATION_VERSION = '1.6.0';
+const protectedConstruction=Symbol('private protected store construction');
+const protectedStores=new WeakMap<SiteProjectDatabase,ReturnType<typeof createProjectReplacementProtection>>();
 const SECRET_KEY = /(password|passwd|credential|authorization|token|secret|api[_-]?key|session[_-]?key)/i;
 
 export class ProjectValidationError extends Error {}
@@ -89,7 +92,16 @@ function prepareLoadedDevice(device: Device): Device {
 export class SiteProjectDatabase {
   readonly #testReplacementCheck?:IsolatedProjectReplacementCheck;
   #checkingReplacement=false;
-  constructor(private readonly isolation: 'TECHNICIAN' | 'ISOLATED_TEST' = 'TECHNICIAN',replacementCheck?:IsolatedProjectReplacementCheck) {
+  constructor(private readonly isolation: 'TECHNICIAN' | 'ISOLATED_TEST' = 'TECHNICIAN',replacementCheck?:IsolatedProjectReplacementCheck,protection?:symbol) {
+    if(protection!==undefined){
+      if(protection!==protectedConstruction||replacementCheck!==undefined)throw new ProjectValidationError('Invalid protected store construction.');
+      const boundary=createProjectReplacementProtection(this,ProjectValidationError,(json,permission,filePath)=>{
+        const project=this.importProjectJson(json,permission);
+        if(filePath!==undefined)this.session.filePath=filePath;
+        return project;
+      });
+      this.#testReplacementCheck=boundary.check;protectedStores.set(this,boundary);
+    }
     if(replacementCheck!==undefined){
       if(isolation!=='ISOLATED_TEST'||typeof replacementCheck!=='function')
         throw new ProjectValidationError('Replacement permission hooks require a fresh isolated test store.');
@@ -380,7 +392,11 @@ export class SiteProjectDatabase {
     return this.getProject();
   }
 
-  public async openProject(filePath: string): Promise<SiteProject> { const project = this.importProjectJson(await fs.readFile(filePath, 'utf8')); this.session.filePath = filePath; return project; }
+  public async openProject(filePath: string): Promise<SiteProject> {
+    const boundary=protectedStores.get(this);
+    if(boundary)return boundary.openProject(filePath,()=>fs.readFile(filePath,'utf8'));
+    const project = this.importProjectJson(await fs.readFile(filePath, 'utf8')); this.session.filePath = filePath; return project;
+  }
 
   public async saveProject(filePath = this.session.filePath): Promise<string> {
     if (!filePath) throw new ProjectValidationError('Choose a .cctvproj file location first.');
@@ -446,4 +462,13 @@ export class SiteProjectDatabase {
   private markDirty(): void { this.session.project.totalDevices = this.session.project.devices.length; this.session.project.updatedAt = new Date().toISOString(); this.session.dirty = true; }
 }
 
-export const projectDb = new SiteProjectDatabase();
+/** Fresh composition only; ordinary staging stores and isolated hooks stay independent. */
+export function createProtectedProjectStore(isolation:'TECHNICIAN'|'ISOLATED_TEST'='TECHNICIAN'){
+  return new SiteProjectDatabase(isolation,undefined,protectedConstruction);
+}
+export function claimProjectReplacementAuthority(store:SiteProjectDatabase){
+  const boundary=protectedStores.get(store);
+  if(!boundary)throw new ProjectReplacementAuthorityError('BLOCKED','UNPROTECTED_STORE');
+  return boundary.claim();
+}
+export const projectDb = createProtectedProjectStore();
