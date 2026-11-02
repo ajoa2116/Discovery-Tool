@@ -124,4 +124,101 @@ function createCallerAssessment(input){
     }catch(e){return deny(e.reason??e.code??'caller-invalid-evidence');}
   }});
 }
-module.exports={profile,callerRefs,derive,createCallerAssessment,relativeSpecifier};
+// Current-source extension only. Historical backend observations/admission are not inherited.
+const sourceScopeProfile='address-identity-outside-source-scope-v1';
+const outsideCallers=[
+  ['src/shared/device_sort.ts','./address_validation.ts',['ipv4Number']],
+  ['src/shared/pair_adapter.ts','./address_validation.ts',['prefixMask']],
+  ['src/ui/App.tsx','../shared/address_validation.ts',['prefixMask']],
+  ['src/ui/components/DeviceRemovalDialog.tsx','../../shared/identity_policy.ts',['hasIdentity']],
+  ['src/ui/components/LegacyOnboardModal.tsx','../../shared/address_validation.ts',['normalizeIPv4','normalizeManualMac']],
+];
+const consumerLinks=[
+  ['src/ui/main.tsx','./App.tsx','src/ui/App.tsx','default','App','jsx'],
+  ['src/ui/App.tsx','./components/MasterDeviceTable.tsx','src/ui/components/MasterDeviceTable.tsx','MasterDeviceTable','MasterDeviceTable','jsx'],
+  ['src/ui/components/MasterDeviceTable.tsx','../../shared/device_sort.ts','src/shared/device_sort.ts','sortDevices','sortDevices','call'],
+  ['src/ui/App.tsx','../shared/pair_adapter.ts','src/shared/pair_adapter.ts','pairAdapterInterfaces','pairAdapterInterfaces','call'],
+  ['src/ui/components/MasterDeviceTable.tsx','./DeviceRemovalDialog.tsx','src/ui/components/DeviceRemovalDialog.tsx','DeviceRemovalDialog','DeviceRemovalDialog','jsx'],
+  ['src/ui/App.tsx','./components/LegacyOnboardModal.tsx','src/ui/components/LegacyOnboardModal.tsx','LegacyOnboardModal','LegacyOnboardModal','jsx'],
+];
+const scopePaths=[...new Set([...outsideCallers.map(r=>r[0]),...consumerLinks.flatMap(r=>[r[0],r[2]]),
+  'src/shared/address_validation.ts','src/shared/identity_policy.ts','index.html','package.json','tsconfig.json','vite.config.ts','scripts/build-identity.cjs'])].sort();
+const sourceScopeRefs=()=>scopePaths.map(path=>({root:'source-scope',path}));
+function deriveSourceScope(input,check=(ok,reason)=>{if(!ok)throw Object.assign(Error(reason),{code:'CALLER_MAPPING_DENIED',reason});}){
+  const same=(a,b)=>hash(a)===hash(b),refs=sourceScopeRefs();
+  check(input.scopeProfile===sourceScopeProfile,'scope-opt-in');
+  check(input.roots?.length===1&&input.roots[0].id==='source-scope','scope-root');
+  const before=observeCatalogFiles(input.roots,refs);
+  check(same(before,input.scopeObservations),'scope-current-identity');
+  const root=input.roots[0].path,texts=new Map(),trees=new Map();
+  const text=name=>{if(!texts.has(name)){const value=fs.readFileSync(path.join(root,name),'utf8');check(Buffer.byteLength(value)<=2*1024*1024,'scope-text-bound');texts.set(name,value);}return texts.get(name);};
+  const tree=name=>{if(!trees.has(name)){const value=ts.createSourceFile(name,text(name),ts.ScriptTarget.Latest,true,name.endsWith('.tsx')?ts.ScriptKind.TSX:ts.ScriptKind.TS);check(value.parseDiagnostics.length===0,'scope-syntax');trees.set(name,value);}return trees.get(name);};
+  const imports=name=>tree(name).statements.flatMap((n,statementIndex)=>{
+    if(!ts.isImportDeclaration(n))return [];
+    const c=n.importClause;
+    return [{statementIndex,line:tree(name).getLineAndCharacterOfPosition(n.getStart()).line+1,specifier:n.moduleSpecifier.text,
+      typeOnly:c?.isTypeOnly??false,default:c?.name?.text??null,namespace:c?.namedBindings&&ts.isNamespaceImport(c.namedBindings)?c.namedBindings.name.text:null,
+      named:c?.namedBindings&&ts.isNamedImports(c.namedBindings)?c.namedBindings.elements.map(e=>({imported:e.propertyName?.text??e.name.text,local:e.name.text,typeOnly:e.isTypeOnly})):[],attributes:n.attributes?.getText(tree(name))??null}];
+  });
+  const occurrence=(source,specifier)=>{const rows=imports(source).filter(r=>r.specifier===specifier);check(rows.length===1&&!rows[0].typeOnly&&!rows[0].attributes,'scope-import-occurrence');return rows[0];};
+  const resolve=(source,specifier)=>path.posix.normalize(path.posix.join(path.posix.dirname(source),specifier));
+  const uses=(source,local,kind)=>{const rows=[];const visit=n=>{if(kind==='call'&&ts.isCallExpression(n)&&ts.isIdentifier(n.expression)&&n.expression.text===local||kind==='jsx'&&(ts.isJsxOpeningElement(n)||ts.isJsxSelfClosingElement(n))&&ts.isIdentifier(n.tagName)&&n.tagName.text===local)rows.push({line:tree(source).getLineAndCharacterOfPosition(n.getStart()).line+1,kind});ts.forEachChild(n,visit);};visit(tree(source));return rows;};
+  const links=consumerLinks.map(([source,specifier,target,imported,local,kind])=>{
+    const row=occurrence(source,specifier);check(resolve(source,specifier)===target,'scope-consumer-target');
+    check(imported==='default'?row.default===local:row.named.some(b=>b.imported===imported&&b.local===local&&!b.typeOnly),'scope-consumer-binding');
+    const usage=uses(source,local,kind);check(usage.length>0,'scope-consumer-use');
+    return {source,target,imported,local,import:row,uses:usage};
+  });
+  const html=text('index.html').replace(/<!--[\s\S]*?-->/g,''),scripts=[...html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script\s*>/gi)];
+  check(scripts.length===1&&/^\s*type\s*=\s*["']module["']\s+src\s*=\s*["']\/src\/ui\/main\.tsx["']\s*$/.test(scripts[0][1])&&!scripts[0][2].trim(),'scope-html-entry');
+  const pkg=JSON.parse(text('package.json')),config=JSON.parse(text('tsconfig.json'));
+  check(pkg.scripts?.build==='tsc && vite build && node scripts/build-identity.cjs','scope-build-command');
+  check(config.compilerOptions?.noEmit===true&&config.compilerOptions.moduleResolution==='bundler'&&config.compilerOptions.jsx==='react-jsx'&&same(config.include,['src'])&&!config.extends&&!config.files&&!config.references&&!config.exclude,'scope-typescript-build');
+  // Match the reviewed declarative Vite configuration without evaluating its imports.
+  const vite=tree('vite.config.ts'),viteImports=imports('vite.config.ts');
+  check(viteImports.length===2&&viteImports[0].specifier==='vite'&&viteImports[0].named.some(b=>b.imported==='defineConfig'&&b.local==='defineConfig')&&viteImports[1].specifier==='@vitejs/plugin-react'&&viteImports[1].default==='react','scope-vite-imports');
+  const exports=vite.statements.filter(ts.isExportAssignment),declarations=vite.statements.filter(n=>!ts.isImportDeclaration(n)&&!ts.isExportAssignment(n));
+  check(exports.length===1&&declarations.length===0,'scope-vite-config');
+  const expression=exports[0].expression;
+  check(ts.isCallExpression(expression)&&ts.isIdentifier(expression.expression)&&expression.expression.text==='defineConfig'&&expression.arguments.length===1&&ts.isObjectLiteralExpression(expression.arguments[0]),'scope-vite-config');
+  const options=expression.arguments[0].properties;
+  check(options.every(n=>ts.isPropertyAssignment(n)&&ts.isIdentifier(n.name)&&['plugins','server'].includes(n.name.text))&&options.length===2&&new Set(options.map(n=>n.name.text)).size===2,'scope-vite-config');
+  const plugins=options.find(n=>n.name.text==='plugins').initializer;
+  check(ts.isArrayLiteralExpression(plugins)&&plugins.elements.length===1&&ts.isCallExpression(plugins.elements[0])&&plugins.elements[0].expression.getText(vite)==='react'&&plugins.elements[0].arguments.length===0,'scope-vite-plugins');
+  const records=outsideCallers.map(([source,specifier,names])=>{
+    const row=occurrence(source,specifier),target=resolve(source,specifier);
+    check(!row.default&&!row.namespace&&same(row.named.map(b=>b.imported),names)&&row.named.every(b=>!b.typeOnly&&b.imported===b.local),'scope-caller-binding');
+    check(scopePaths.includes(target),'scope-original-target');
+    const exported=tree(target).statements.filter(n=>n.modifiers?.some(m=>m.kind===ts.SyntaxKind.ExportKeyword)).flatMap(n=>
+      ts.isFunctionDeclaration(n)?[n.name?.text]:ts.isVariableStatement(n)?n.declarationList.declarations.filter(d=>ts.isIdentifier(d.name)).map(d=>d.name.text):[]);
+    check(names.every(n=>exported.includes(n)),'scope-target-export');
+    const chain=source==='src/ui/App.tsx'?[links[0]]:source==='src/shared/pair_adapter.ts'?[links[0],links[3]]:source==='src/ui/components/LegacyOnboardModal.tsx'?[links[0],links[5]]:source==='src/shared/device_sort.ts'?[links[0],links[1],links[2]]:[links[0],links[1],links[4]];
+    return {source,sourceMeasurement:before.find(r=>r.path===source),originalImport:row,originalTarget:target,targetMeasurement:before.find(r=>r.path===target),
+      consumerChain:chain,allSourceImports:imports(source),realm:'frontend-source-static-chain',generatedDestination:null,backendDestination:null,requiredFacade:null};
+  });
+  check(same(before,observeCatalogFiles(input.roots,refs)),'scope-final-identity');
+  return clone({version:1,profile:sourceScopeProfile,parentProfile:profile,records,observations:before,
+    build:{htmlEntry:{source:'index.html',target:'src/ui/main.tsx'},command:pkg.scripts.build,typecheck:{configuration:'tsconfig.json',noEmit:true},
+      bundler:{configuration:'vite.config.ts',plugin:'@vitejs/plugin-react',entryBasis:'root HTML module entry',outputMapping:'not-established-without-build-evidence'},
+      postBuild:{source:'scripts/build-identity.cjs',executed:false,outputMapping:'not-established-by-this-contract'}},
+    boundaries:{historicalBackendMapping:'not-revalidated',otherConsumers:'not-inventoried',transitiveClosure:'not-established',pluginRuntimeBehavior:'not-established',
+      runtimeEquivalence:'not-established',liveBindingsAndEvaluation:'not-established',toolResolution:'not-established',unresolvedDispositions:'unchanged-none-issued',sourceObservation:'sequential-not-pinned-loader-consumption'},
+    physical:{authoritativeBaseline:825,ceiling:64,achievedPayloadCount:null,ceilingMet:false},
+    executionAuthority:false,stagingAdmission:false,runtimeTrust:false,signingApproval:false,productionAuthority:false,productionReady:false});
+}
+function createSourceScopeAssessment(input){
+  if(input.scopeProfile!==sourceScopeProfile||!input.scopeContract||owners.has(input.scopeContract))throw Object.assign(Error('scope-opt-in-or-owner'),{code:'CALLER_MAPPING_DENIED'});
+  owners.add(input.scopeContract);const reserved=hash(input);let terminal=false;
+  return Object.freeze({assess(){
+    const deny=reason=>{terminal=true;return freeze({version:1,profile:sourceScopeProfile,status:'denied',reason,executionAuthority:false,stagingAdmission:false,runtimeTrust:false,signingApproval:false,productionAuthority:false,productionReady:false});};
+    if(terminal)return deny('scope-sticky-denial');
+    try{
+      const check=(ok,reason)=>{if(!ok)throw Object.assign(Error(reason),{reason});};
+      check(hash(input)===reserved,'scope-record-changed');const expected=deriveSourceScope(input,check);
+      check(Array.isArray(input.scopeContract.records)&&input.scopeContract.records.length===5,'scope-five-callers');
+      check(hash(input.scopeContract)===hash(expected),'scope-contract-correspondence');terminal=true;
+      return freeze({version:1,profile:sourceScopeProfile,status:'blocked',contract:expected,executionAuthority:false,stagingAdmission:false,runtimeTrust:false,signingApproval:false,productionAuthority:false,productionReady:false});
+    }catch(e){return deny(e.reason??e.code??'scope-invalid-evidence');}
+  }});
+}
+module.exports={profile,callerRefs,derive,createCallerAssessment,relativeSpecifier,sourceScopeProfile,sourceScopeRefs,deriveSourceScope,createSourceScopeAssessment};
