@@ -2,26 +2,26 @@
 
 Standing rules: [AGENTS.md](AGENTS.md). Results format: [TASK_RESULTS.md](TASK_RESULTS.md).
 
-The single task slot retains WF-007 as user-accepted COMPLETE for its read-only planning scope. WF-001 through WF-006 remain accepted COMPLETE for their recorded scopes, with all prior blockers/evidence retained. Only the authorized documentation checkpoint publication/verification remains to report. Group A is the first candidate rehearsal, not execution authorization; no subsequent task is approved.
+The single task slot retains WF-008 as user-accepted COMPLETE for its plan-only assessment. WF-001 through WF-007 remain accepted COMPLETE for recorded scopes and prior blockers/evidence remain preserved. Only the authorized documentation checkpoint publication/verification remains to report. Group A is NOT execution-authorized; whole-run confinement remains NOT PROVEN. No subsequent task is approved.
 
 ## Task slot
 
 | Field | Value |
 | --- | --- |
-| Task identifier | WF-007 |
+| Task identifier | WF-008 |
 | Status | COMPLETE |
-| Goal | Identify the shortest safe way to inspect/test existing CCTV frontend without starting protected backend or accessing hardware. |
-| Approved scope / files | Revision 1 read-only preparation finished. Revision 2 permits acceptance/checkpoint records and one documentation-only commit/push of exactly TASKS.md/TASK_RESULTS.md, preserving findings and limitations. No implementation or test/tool changes. |
-| Allowed operations | Record explicit user acceptance and COMPLETE; stage/commit only the two workflow documents, push only to existing origin/codex/post-field-corrections-1 and verify synchronized HEAD/clean index/tree. No test/module/dependency execution, builds, launches or next task. |
-| Tracker/result file writes authorized | Yes, revision 1 WORKFLOW and explicit revision 2 WF-007 checkpoint acceptance instructions. |
-| Acceptance criteria | Viable UI-only options distinguished by logic/component/browser layer and backend/native/generated import boundaries; exact proposed commands/tools/requirements without execution; assess existing permission limits; recommend one smallest useful first rehearsal with safety prerequisites/stops; independent fresh review; REVIEW_REQUIRED or BLOCKED only. |
-| Approved checks / execution boundaries | Static document/data preservation and Git scope/whitespace/synchronization checks only. No tests/builds/launches/dependency imports or execution, fixtures/implementation, backend/native/camera/security operations, gate changes or production changes. Publication limited to revision 2's two-document checkpoint. |
-| Required evidence references and expected measurements | package.json/lockfile, Vite/TS configuration, existing Node logic tests and browser runners/TSX/HTML/import graphs; runtime/dependency declarations inspected as data only. Exact evidence paths, sizes/SHA256 and existing-harness limitations; no historical passes upgraded. |
-| Expected branch / HEAD / working-tree scope | codex/post-field-corrections-1; starting HEAD e41079997bc94b45141c866265bbdd6858fdb4c6; revision 2 verified clean index, exactly TASKS.md/TASK_RESULTS.md modified, no untracked files; remote branch matches starting HEAD. |
-| Stopping conditions | Unexpected changes, conflicts, missing evidence, unexplained failed check or need for implementation/execution; stop after checkpoint/synchronization report. No subsequent task approved. |
-| User approval reference and approved scope revision | Revision 1: "CCTV Network Assistant — WF-007," plan-only UI rehearsal preparation. Revision 2: "CCTV Network Assistant — WF-007 checkpoint," explicitly accepts the read-only planning result and authorizes COMPLETE plus one documentation-only commit/push of the two workflow documents to the existing project branch. |
-| Latest result / blocker reference | WF-007 in TASK_RESULTS.md: retained independent PASS, explicitly accepted COMPLETE for planning only. Group A remains first candidate; exact execution/confinement prerequisites and all limitations remain unsatisfied/unverified as recorded. No execution or next task approved. |
-| User review / acceptance reference | Explicit user acceptance in "CCTV Network Assistant — WF-007 checkpoint." Acceptance grants no rehearsal execution or production authority. |
+| Goal | Determine whether existing documented Windows capabilities/evidence can safely support ui_component_interactions.cjs group A and identify the smallest useful visual fallback if not. |
+| Approved scope / files | Revision 1 assessment finished. Revision 2 permits acceptance records and one documentation-only commit/push of exactly TASKS.md and TASK_RESULTS.md, preserving confinement findings and all history. No implementation or other file changes. |
+| Allowed operations | Record explicit user acceptance and COMPLETE; stage/commit exactly the two workflow documents; push only to existing origin/codex/post-field-corrections-1; verify synchronized HEAD and clean index/tree. No execution, Windows security/camera operations or new task. |
+| Tracker/result file writes authorized | Yes, revision 1 WORKFLOW and revision 2 explicit WF-008 checkpoint instructions. |
+| Acceptance criteria | Proven/not-proven confinement judgment tied to group A; exact required tooling/resources/ownership; missing prerequisites and current authorization decision; smallest visual-feedback fallback with limits; independent review; REVIEW_REQUIRED or BLOCKED, never self-close. |
+| Approved checks / execution boundaries | Static document/data preservation and Git scope/whitespace/synchronization checks only. No builds/tests/launches/dependency execution, Windows security/camera operations, production/staging changes, fixtures or infrastructure. Publication limited to revision 2's two-document checkpoint; group A not execution-authorized. |
+| Required evidence references and expected measurements | WF-007 preserved prerequisites and group A runner/entry/config; UI-TEST-001 historical component report; AppContainer inert model/checkpoint; existing native ownership code as text, optional existing screenshot/static-asset inventory. Repository file-data measurements only; historical external failures/recovery sessions untouched. |
+| Expected branch / HEAD / working-tree scope | codex/post-field-corrections-1; starting HEAD 50bf27fc88d498b425ef3b272bfa96749a237f4c; revision 2 verified clean index, only TASKS.md/TASK_RESULTS.md modified, no untracked files; remote branch matches starting HEAD. |
+| Stopping conditions | Unexpected changes, conflicts, failed checks, missing evidence or need for execution/system changes; stop after checkpoint/synchronization report. Group A remains blocked and no next task approved. |
+| User approval reference and approved scope revision | Revision 1: "CCTV Network Assistant — WF-008," plan-only environment-readiness assessment. Revision 2: "CCTV Network Assistant — WF-008 checkpoint," explicitly accepts the independently reviewed assessment and authorizes COMPLETE plus one documentation-only GitHub commit/push of the two workflow files to the existing branch. |
+| Latest result / blocker reference | WF-008 in TASK_RESULTS.md: retained independent PASS, explicitly accepted COMPLETE for assessment only. Whole-run confinement NOT PROVEN; group A NOT execution-authorized. Findings and prior history preserved; publication results reported after verification. |
+| User review / acceptance reference | Explicit acceptance in "CCTV Network Assistant — WF-008 checkpoint." No execution, production or subsequent task authority granted. |
 
 ## Status contract
 
