@@ -2,26 +2,26 @@
 
 Standing rules: [AGENTS.md](AGENTS.md). Results format: [TASK_RESULTS.md](TASK_RESULTS.md).
 
-This file supports **one task slot only**. It is currently empty: **no task is selected or approved**. The initial `PENDING_APPROVAL` status is inactive; the blank fields below authorize no operations.
+The single task slot retains WF-002 as accepted COMPLETE. WF-001 remains accepted COMPLETE in TASK_RESULTS.md. No task is active and no subsequent task is approved.
 
 ## Task slot
 
 | Field | Value |
 | --- | --- |
-| Task identifier | NONE |
-| Status | PENDING_APPROVAL |
-| Goal | Not specified |
-| Approved scope / files | None |
-| Allowed operations | None |
-| Tracker/result file writes authorized | No |
-| Acceptance criteria | Not specified |
-| Approved checks / execution boundaries | None |
-| Required evidence references and expected measurements | None |
-| Expected branch / HEAD / working-tree scope | Not specified |
-| Stopping conditions | Follow AGENTS.md; task-specific conditions not specified |
-| User approval reference and approved scope revision | None |
-| Latest result / blocker reference | None |
-| User review / acceptance reference | None |
+| Task identifier | WF-002 |
+| Status | COMPLETE |
+| Goal | Test-only generated-byte handoff integration. |
+| Approved scope / files | Revision 1: existing generated selection and source callback contracts; minimal test-support adapter/refactor and focused tests; TASKS.md and TASK_RESULTS.md. Revision 2: acceptance updates and the WF-002 checkpoint document; commit/push exactly the six reviewed files plus that document. No production files. |
+| Allowed operations | Revision 1 implementation/checks are finished. Revision 2 permits workflow acceptance updates, one non-authorizing checkpoint, one seven-file commit and push only to origin/codex/post-field-corrections-1, and synchronization verification. |
+| Tracker/result file writes authorized | Yes, explicitly in the WF-002 prompt. |
+| Acceptance criteria | Existing generated validation binds exact source bytes/observations to direct callback output; reject missing, altered, unapproved or ambiguous entries; retain production-hook denial and false authority flags; report exact focused results and cleanup. |
+| Approved checks / execution boundaries | Recorded focused results only; no test reruns, compilation, module execution, hook registration or broad validation. Git publication is limited to the explicitly authorized revision 2 checkpoint. |
+| Required evidence references and expected measurements | Current generated-artifact selection, byte catalog and source-hook prototype; reuse existing synthetic test infrastructure, not historical archives. |
+| Expected branch / HEAD / working-tree scope | codex/post-field-corrections-1; f72e3a3162c91575f40aa1a2c06d1b1bd2b49fab; initial modifications only TASKS.md and TASK_RESULTS.md from accepted WF-001, preserved. |
+| Stopping conditions | Stop on unexpected changes or an existing synchronized checkpoint. Stop after reporting the authorized checkpoint; do not start another task. |
+| User approval reference and approved scope revision | Revision 1: "CCTV Network Assistant — WF-002." Revision 2: "CCTV Network Assistant — WF-002 acceptance and checkpoint," explicitly authorizing acceptance and the bounded seven-file commit/push. |
+| Latest result / blocker reference | WF-002 in TASK_RESULTS.md: 170/170 recorded focused checks, independent PASS, accepted synthetic callback-only scope; runtime boundaries remain unverified. |
+| User review / acceptance reference | Explicit user acceptance in "CCTV Network Assistant — WF-002 acceptance and checkpoint." |
 
 ## Status contract
 
@@ -42,4 +42,4 @@ This file supports **one task slot only**. It is currently empty: **no task is s
 4. The user reviews the result. Corrections need explicit coverage by the existing approval or a revised approval. The user accepts completion or explicitly replaces/withdraws the task before another task occupies this slot. Do not mark unfinished work `COMPLETE`.
 5. A next task always requires new explicit approval. There is no polling, automatic queue, self-assigned follow-up or recurring task loop.
 
-No task is approved by creating these workflow files.
+This task's approval comes only from the explicit user message referenced above. No next task is approved by this file.
