@@ -15,6 +15,17 @@ These are the standing project rules. [TASKS.md](TASKS.md) holds the single task
 - After reporting results, stop. Successful checks do not authorize another task. Leave finished work for review; only explicit user acceptance permits `COMPLETE`.
 - Task/result file updates must themselves be within the approved write scope. For a read-only task, report in chat and leave these files unchanged unless updates are separately authorized.
 
+## ONE-APPROVAL TASK CYCLE
+
+One explicit user approval may cover implementation, routine corrections within the same named scope, explicitly permitted focused validation, a separate read-only review pass, and recording results and review findings. Record those permissions and their limits in TASKS.md before work; this protocol alone grants none of them. Retain the existing six statuses.
+
+1. Verify the approved branch, HEAD, index, working-tree scope, instructions and required evidence. Perform only the named task and permitted checks. Routine corrections may continue under the same approval only within its files, operations and acceptance criteria; this does not override any stopping condition.
+2. After implementation and permitted validation, obtain a separate reviewer in fresh context. Provide the approval, boundaries and evidence locations, not an inherited implementation conversation or an instruction to confirm the implementer's conclusion. The reviewer must independently read the actual working changes, relevant unchanged contracts and evidence, verify scope and approval boundaries, and distinguish fresh observations from retained results. Re-reading by the implementer is not independent review.
+3. Use an available foreground fresh-context reviewer only when authorized; no scheduling, background agents, services or new infrastructure. Record the reviewer's identity/context separation, reviewed file revisions or hashes, evidence inspected, checks and limitations in TASK_RESULTS.md. Review is read-only and cannot broaden execution or write authority. If fresh independent review cannot be established automatically, record `REVIEW_REQUIRED`, explain the limitation and stop for a separately initiated fresh review; do not claim PASS.
+4. On review PASS, record `REVIEW_REQUIRED` and recommend user acceptance, then report concisely and stop. On a material issue, record `BLOCKED` with detailed findings and stop. Do not silently correct a material review issue or restart the cycle; corrective work must be covered by existing approval and stopping conditions or explicitly revised approval. No auto-close or self-approval: only explicit user acceptance permits `COMPLETE`.
+
+Keep detailed findings in TASK_RESULTS.md and give the user a concise outcome, remaining limits and Git status. No cycle automatically authorizes a subsequent task, production admission or security-gate changes, generated/dependency execution beyond existing exact-path authorization and confinement, Windows security or camera/network operations, Git staging/commits/pushes/releases, broader tests or architecture changes. All security and execution gates below remain binding.
+
 ## Security and execution gates
 
 - Default-deny security, selection, admission, runtime-trust and release gates. Never weaken a guard, change an authority basis, prune unresolved evidence or infer production authorization from a test pass.
